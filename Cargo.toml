@@ -1,0 +1,13 @@
+[package]
+name = "avocadoctl"
+version = "0.1.0"
+edition = "2021"
+description = "Avocado Linux control CLI tool"
+authors = ["Your Name <your.email@example.com>"]
+
+[[bin]]
+name = "avocadoctl"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.4", features = ["derive"] }
