@@ -1,0 +1,4 @@
+ID=extension-release.app-bundle
+VERSION_ID=2.0
+DESCRIPTION="Application Bundle Extension"
+EXTRA_KEY=value

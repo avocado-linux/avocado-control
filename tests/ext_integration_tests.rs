@@ -30,8 +30,6 @@ fn run_avocadoctl(args: &[&str]) -> std::process::Output {
         .expect("Failed to execute avocadoctl")
 }
 
-
-
 /// Test ext list with non-existent directory
 #[test]
 fn test_ext_list_nonexistent_directory() {
@@ -294,23 +292,38 @@ fn test_ext_merge_with_mocks() {
     // Setup mock environment
     let current_dir = std::env::current_dir().expect("Failed to get current directory");
     let fixtures_path = current_dir.join("tests/fixtures");
-    
+
     // Add fixtures path to PATH so mock binaries can be found
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-    
+
     let output = run_avocadoctl_with_env(
         &["ext", "merge"],
-        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)]
+        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
     );
-    
-    assert!(output.status.success(), "ext merge should succeed with mocks");
-    
+
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with mocks"
+    );
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Merging extensions"), "Should show merging message");
-    assert!(stdout.contains("Extensions merged successfully"), "Should show success message");
-    assert!(stdout.contains("systemd-sysext merge"), "Should show sysext operation");
-    assert!(stdout.contains("systemd-confext merge"), "Should show confext operation");
+    assert!(
+        stdout.contains("Merging extensions"),
+        "Should show merging message"
+    );
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show success message"
+    );
+    assert!(
+        stdout.contains("systemd-sysext merge"),
+        "Should show sysext operation"
+    );
+    assert!(
+        stdout.contains("systemd-confext merge"),
+        "Should show confext operation"
+    );
 }
 
 /// Test ext unmerge command with mock systemd binaries
@@ -319,23 +332,46 @@ fn test_ext_unmerge_with_mocks() {
     // Setup mock environment
     let current_dir = std::env::current_dir().expect("Failed to get current directory");
     let fixtures_path = current_dir.join("tests/fixtures");
-    
+
     // Add fixtures path to PATH so mock binaries can be found
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-    
+
     let output = run_avocadoctl_with_env(
         &["ext", "unmerge"],
-        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)]
+        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
     );
-    
-    assert!(output.status.success(), "ext unmerge should succeed with mocks");
-    
+
+    assert!(
+        output.status.success(),
+        "ext unmerge should succeed with mocks"
+    );
+
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Unmerging extensions"), "Should show unmerging message");
-    assert!(stdout.contains("Extensions unmerged successfully"), "Should show success message");
-    assert!(stdout.contains("systemd-sysext unmerge"), "Should show sysext operation");
-    assert!(stdout.contains("systemd-confext unmerge"), "Should show confext operation");
+    assert!(
+        stdout.contains("Unmerging extensions"),
+        "Should show unmerging message"
+    );
+    assert!(
+        stdout.contains("Extensions unmerged successfully"),
+        "Should show success message"
+    );
+    assert!(
+        stdout.contains("systemd-sysext unmerge"),
+        "Should show sysext operation"
+    );
+    assert!(
+        stdout.contains("systemd-confext unmerge"),
+        "Should show confext operation"
+    );
+    assert!(
+        stdout.contains("Running depmod"),
+        "Should show depmod running message"
+    );
+    assert!(
+        stdout.contains("depmod completed successfully"),
+        "Should show depmod completion"
+    );
 }
 
 /// Test ext merge help
@@ -364,6 +400,99 @@ fn test_ext_unmerge_help() {
     );
 }
 
+/// Test ext refresh command with mock systemd binaries
+#[test]
+fn test_ext_refresh_with_mocks() {
+    // Setup mock environment
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Add fixtures path to PATH so mock binaries can be found
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    let output = run_avocadoctl_with_env(
+        &["ext", "refresh"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext refresh should succeed with mocks"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Refreshing extensions"),
+        "Should show refreshing message"
+    );
+    assert!(
+        stdout.contains("Extensions refreshed successfully"),
+        "Should show final success message"
+    );
+    // Should contain both unmerge and merge operations
+    assert!(
+        stdout.contains("systemd-sysext unmerge"),
+        "Should show sysext unmerge operation"
+    );
+    assert!(
+        stdout.contains("systemd-confext unmerge"),
+        "Should show confext unmerge operation"
+    );
+    assert!(
+        stdout.contains("systemd-sysext merge"),
+        "Should show sysext merge operation"
+    );
+    assert!(
+        stdout.contains("systemd-confext merge"),
+        "Should show confext merge operation"
+    );
+    assert!(
+        stdout.contains("Extensions unmerged successfully"),
+        "Should show unmerge success"
+    );
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show merge success"
+    );
+
+    // Verify depmod is only called once at the end (during merge phase)
+    let depmod_count = stdout.matches("Running depmod").count();
+    assert_eq!(
+        depmod_count, 1,
+        "Should call depmod exactly once during refresh (only during merge phase)"
+    );
+    assert!(
+        stdout.contains("Running depmod"),
+        "Should show depmod running message"
+    );
+    assert!(
+        stdout.contains("depmod completed successfully"),
+        "Should show depmod completion"
+    );
+}
+
+/// Test ext refresh help
+#[test]
+fn test_ext_refresh_help() {
+    let output = run_avocadoctl(&["ext", "refresh", "--help"]);
+    assert!(output.status.success(), "Ext refresh help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Unmerge and then merge extensions (refresh extensions)"),
+        "Should contain refresh description"
+    );
+}
+
 /// Test that ext help shows all subcommands
 #[test]
 fn test_ext_help_shows_all_commands() {
@@ -386,5 +515,86 @@ fn test_ext_help_shows_all_commands() {
     assert!(
         stdout.contains("unmerge"),
         "Ext help should mention unmerge subcommand"
+    );
+    assert!(
+        stdout.contains("refresh"),
+        "Ext help should mention refresh subcommand"
+    );
+}
+
+/// Test ext merge with depmod post-processing
+#[test]
+fn test_ext_merge_with_depmod_processing() {
+    // Setup mock environment with release files that require depmod
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Add fixtures path to PATH so mock binaries can be found
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    // Set environment variables to use test release directory and mocks
+    let output = run_avocadoctl_with_env(
+        &["ext", "merge"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            // Override the release directory for testing (if implemented)
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with depmod processing"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Merging extensions"),
+        "Should show merging message"
+    );
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show merge success"
+    );
+    assert!(
+        stdout.contains("Running depmod"),
+        "Should show depmod running message"
+    );
+    assert!(
+        stdout.contains("depmod completed successfully"),
+        "Should show depmod completion"
+    );
+}
+
+/// Test post-merge processing with no depmod needed
+#[test]
+fn test_ext_merge_no_depmod_needed() {
+    // This test verifies that merge works normally when no depmod is needed
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    let output = run_avocadoctl_with_env(
+        &["ext", "merge"],
+        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext merge should succeed without depmod"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show merge success"
     );
 }

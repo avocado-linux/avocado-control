@@ -1,0 +1,6 @@
+#!/bin/bash
+
+# Mock depmod command for testing
+echo "Mock depmod: updating kernel module dependencies"
+echo "Mock depmod completed successfully"
+exit 0

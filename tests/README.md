@@ -46,11 +46,15 @@ cargo test test_ext_list_with_mock_extensions
 - `test_ext_list_help`: Tests `ext list --help` command
 - `test_ext_merge_help`: Tests `ext merge --help` command
 - `test_ext_unmerge_help`: Tests `ext unmerge --help` command
+- `test_ext_refresh_help`: Tests `ext refresh --help` command
 - `test_ext_list_nonexistent_directory`: Tests error handling for missing directories
 - `test_ext_list_with_mock_extensions`: Tests extension listing with mock data
 - `test_ext_list_empty_directory`: Tests behavior with empty extensions directory
 - `test_ext_merge_with_mocks`: Tests merge command with mock systemd binaries
 - `test_ext_unmerge_with_mocks`: Tests unmerge command with mock systemd binaries
+- `test_ext_refresh_with_mocks`: Tests refresh command (unmerge + merge) with mock systemd binaries
+- `test_ext_merge_with_depmod_processing`: Tests merge command with post-merge depmod processing
+- `test_ext_merge_no_depmod_needed`: Tests merge command when no depmod is needed
 - `test_example_config_fixture`: Tests example config file validation
 
 ## Configuration Testing
@@ -84,14 +88,32 @@ The `tests/fixtures/` directory contains example files used for testing:
 - `example_config.toml`: Sample configuration file demonstrating the TOML format
 - `mock-systemd-sysext`: Mock systemd-sysext binary for testing merge/unmerge operations
 - `mock-systemd-confext`: Mock systemd-confext binary for testing merge/unmerge operations
+- `mock-depmod`: Mock depmod binary for testing post-merge processing
+- `extension-release.d/`: Directory containing sample extension release files for testing post-merge processing
 
-#### Mock Systemd Binaries
+#### Mock Binaries
 
-The mock binaries simulate the behavior of real systemd tools:
-- Support `merge` and `unmerge` actions
-- Support `--json=short` output format
-- Return appropriate JSON responses for testing
-- Activated when `AVOCADO_TEST_MODE` environment variable is set
+The mock binaries simulate the behavior of real system tools:
+- `mock-systemd-sysext` and `mock-systemd-confext`: Support `merge` and `unmerge` actions with `--json=short` output format
+- `mock-depmod`: Simulates kernel module dependency updates
+- All mock binaries are activated when `AVOCADO_TEST_MODE` environment variable is set
+- Return appropriate output for testing assertions
+
+#### Extension Release Files
+
+The `tests/fixtures/extension-release.d/` directory contains sample extension release files:
+- `extension-release.nvidia-driver`: Contains `AVOCADO_ON_MERGE=depmod` to test depmod triggering
+- `extension-release.app-bundle`: Contains no post-merge directives
+- `extension-release.utils`: Contains `AVOCADO_ON_MERGE=other_command` to test non-depmod values
+
+Use the `AVOCADO_EXTENSION_RELEASE_DIR` environment variable to override the default `/usr/lib/extension-release.d` path for testing.
+
+#### depmod Behavior
+
+The extension system automatically calls `depmod` to rebuild the kernel module dependency database:
+- **After `ext merge`**: Always calls `depmod` if any extension release file contains `AVOCADO_ON_MERGE=depmod`
+- **After `ext unmerge`**: Always calls `depmod` to clean up module dependencies
+- **During `ext refresh`**: Calls `depmod` only once at the end (after merge), not after the unmerge phase
 
 The tests verify that:
 - Only valid extensions are listed

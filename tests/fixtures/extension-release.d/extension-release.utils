@@ -1,0 +1,4 @@
+ID=extension-release.utils
+VERSION_ID=3.0
+DESCRIPTION="Utilities Extension"
+AVOCADO_ON_MERGE="other_command"

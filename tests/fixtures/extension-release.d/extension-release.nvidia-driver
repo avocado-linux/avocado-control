@@ -1,0 +1,4 @@
+ID=extension-release.nvidia-driver
+VERSION_ID=1.0
+DESCRIPTION="NVIDIA Driver Extension"
+AVOCADO_ON_MERGE=depmod

@@ -1,8 +1,9 @@
 use crate::config::Config;
 use clap::{ArgMatches, Command};
-use std::fs;
-use std::process::{Command as ProcessCommand, Stdio};
 use serde_json::Value;
+use std::fs;
+use std::path::Path;
+use std::process::{Command as ProcessCommand, Stdio};
 
 /// Create the ext subcommand definition
 pub fn create_command() -> Command {
@@ -11,11 +12,14 @@ pub fn create_command() -> Command {
         .subcommand(Command::new("list").about("List all available extensions"))
         .subcommand(
             Command::new("merge")
-                .about("Merge extensions using systemd-sysext and systemd-confext")
+                .about("Merge extensions using systemd-sysext and systemd-confext"),
         )
         .subcommand(
             Command::new("unmerge")
-                .about("Unmerge extensions using systemd-sysext and systemd-confext")
+                .about("Unmerge extensions using systemd-sysext and systemd-confext"),
+        )
+        .subcommand(
+            Command::new("refresh").about("Unmerge and then merge extensions (refresh extensions)"),
         )
 }
 
@@ -30,6 +34,9 @@ pub fn handle_command(matches: &ArgMatches, config: &Config) {
         }
         Some(("unmerge", _)) => {
             unmerge_extensions();
+        }
+        Some(("refresh", _)) => {
+            refresh_extensions();
         }
         _ => {
             println!("Use 'avocadoctl ext --help' for available extension commands");
@@ -88,84 +95,190 @@ fn list_extensions(config: &Config) {
 
 /// Merge extensions using systemd-sysext and systemd-confext
 fn merge_extensions() {
+    match merge_extensions_internal() {
+        Ok(_) => println!("Extensions merged successfully."),
+        Err(e) => {
+            eprintln!("Failed to merge extensions: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Internal merge function that returns a Result for use in remerge
+fn merge_extensions_internal() -> Result<(), SystemdError> {
     println!("Merging extensions...");
 
-    let mut success = true;
-
     // Merge system extensions
-    match run_systemd_command("systemd-sysext", &["merge", "--mutable=ephemeral", "--json=short"]) {
-        Ok(output) => {
-            if let Err(e) = handle_systemd_output("systemd-sysext merge", &output) {
-                eprintln!("Error processing systemd-sysext output: {e}");
-                success = false;
-            }
-        }
-        Err(e) => {
-            eprintln!("Error running systemd-sysext merge: {e}");
-            success = false;
-        }
-    }
+    let output = run_systemd_command(
+        "systemd-sysext",
+        &["merge", "--mutable=ephemeral", "--json=short"],
+    )?;
+    handle_systemd_output("systemd-sysext merge", &output)?;
 
     // Merge configuration extensions
-    match run_systemd_command("systemd-confext", &["merge", "--mutable=ephemeral", "--json=short"]) {
-        Ok(output) => {
-            if let Err(e) = handle_systemd_output("systemd-confext merge", &output) {
-                eprintln!("Error processing systemd-confext output: {e}");
-                success = false;
-            }
-        }
-        Err(e) => {
-            eprintln!("Error running systemd-confext merge: {e}");
-            success = false;
-        }
-    }
+    let output = run_systemd_command(
+        "systemd-confext",
+        &["merge", "--mutable=ephemeral", "--json=short"],
+    )?;
+    handle_systemd_output("systemd-confext merge", &output)?;
 
-    if success {
-        println!("Extensions merged successfully.");
-    } else {
-        std::process::exit(1);
-    }
+    // Process post-merge tasks
+    process_post_merge_tasks()?;
+
+    Ok(())
 }
 
 /// Unmerge extensions using systemd-sysext and systemd-confext
 fn unmerge_extensions() {
+    match unmerge_extensions_internal() {
+        Ok(_) => println!("Extensions unmerged successfully."),
+        Err(e) => {
+            eprintln!("Failed to unmerge extensions: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Internal unmerge function that returns a Result for use in refresh
+fn unmerge_extensions_internal() -> Result<(), SystemdError> {
+    unmerge_extensions_internal_with_depmod(true)
+}
+
+/// Internal unmerge function with optional depmod control
+fn unmerge_extensions_internal_with_depmod(call_depmod: bool) -> Result<(), SystemdError> {
     println!("Unmerging extensions...");
 
-    let mut success = true;
-
     // Unmerge system extensions
-    match run_systemd_command("systemd-sysext", &["unmerge", "--json=short"]) {
-        Ok(output) => {
-            if let Err(e) = handle_systemd_output("systemd-sysext unmerge", &output) {
-                eprintln!("Error processing systemd-sysext output: {e}");
-                success = false;
-            }
-        }
-        Err(e) => {
-            eprintln!("Error running systemd-sysext unmerge: {e}");
-            success = false;
-        }
-    }
+    let output = run_systemd_command("systemd-sysext", &["unmerge", "--json=short"])?;
+    handle_systemd_output("systemd-sysext unmerge", &output)?;
 
     // Unmerge configuration extensions
-    match run_systemd_command("systemd-confext", &["unmerge", "--json=short"]) {
-        Ok(output) => {
-            if let Err(e) = handle_systemd_output("systemd-confext unmerge", &output) {
-                eprintln!("Error processing systemd-confext output: {e}");
-                success = false;
+    let output = run_systemd_command("systemd-confext", &["unmerge", "--json=short"])?;
+    handle_systemd_output("systemd-confext unmerge", &output)?;
+
+    // Run depmod after unmerge if requested
+    if call_depmod {
+        run_depmod()?;
+    }
+
+    Ok(())
+}
+
+/// Refresh extensions (unmerge then merge)
+fn refresh_extensions() {
+    println!("Refreshing extensions (unmerge then merge)...");
+
+    // First unmerge (skip depmod since we'll call it after merge)
+    if let Err(e) = unmerge_extensions_internal_with_depmod(false) {
+        eprintln!("Failed to unmerge extensions: {e}");
+        std::process::exit(1);
+    }
+    println!("Extensions unmerged successfully.");
+
+    // Then merge (this will call depmod via post-merge processing)
+    if let Err(e) = merge_extensions_internal() {
+        eprintln!("Failed to merge extensions: {e}");
+        std::process::exit(1);
+    }
+    println!("Extensions merged successfully.");
+
+    println!("Extensions refreshed successfully.");
+}
+
+/// Process post-merge tasks by checking extension release files
+fn process_post_merge_tasks() -> Result<(), SystemdError> {
+    let release_dir = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR")
+        .unwrap_or_else(|_| "/usr/lib/extension-release.d".to_string());
+
+    // Check if the release directory exists
+    if !Path::new(&release_dir).exists() {
+        // This is not an error - just means no extensions are merged or old systemd version
+        return Ok(());
+    }
+
+    let mut depmod_needed = false;
+
+    // Read all files in the extension release directory
+    match fs::read_dir(&release_dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if check_avocado_on_merge_depmod(&content) {
+                            depmod_needed = true;
+                            // We can break early since we only need to call depmod once
+                            break;
+                        }
+                    }
+                }
             }
         }
         Err(e) => {
-            eprintln!("Error running systemd-confext unmerge: {e}");
-            success = false;
+            // Log the error but don't fail the entire operation
+            eprintln!("Warning: Could not read extension release directory {release_dir}: {e}");
+            return Ok(());
         }
     }
 
-    if success {
-        println!("Extensions unmerged successfully.");
-    } else {
-        std::process::exit(1);
+    // Call depmod if needed
+    if depmod_needed {
+        run_depmod()?;
     }
+
+    Ok(())
+}
+
+/// Check if a release file content contains AVOCADO_ON_MERGE=depmod
+fn check_avocado_on_merge_depmod(content: &str) -> bool {
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("AVOCADO_ON_MERGE=") {
+            let value = line
+                .split('=')
+                .nth(1)
+                .unwrap_or("")
+                .trim_matches('"')
+                .trim();
+            if value == "depmod" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Run the depmod command
+fn run_depmod() -> Result<(), SystemdError> {
+    println!("Running depmod to update kernel module dependencies...");
+
+    // Check if we're in test mode and should use mock commands
+    let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        "mock-depmod"
+    } else {
+        "depmod"
+    };
+
+    let output = ProcessCommand::new(command_name)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| SystemdError::CommandFailed {
+            command: command_name.to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SystemdError::CommandExitedWithError {
+            command: command_name.to_string(),
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
+    }
+
+    println!("depmod completed successfully.");
+    Ok(())
 }
 
 /// Run a systemd command with proper error handling
@@ -211,7 +324,7 @@ fn handle_systemd_output(operation: &str, output: &str) -> Result<(), SystemdErr
     // Try to parse as JSON
     match serde_json::from_str::<Value>(output) {
         Ok(json) => {
-            println!("{operation}: {}", json);
+            println!("{operation}: {json}");
             Ok(())
         }
         Err(_) => {
@@ -315,11 +428,57 @@ mod tests {
 
         // Check that all subcommands exist
         let subcommands: Vec<_> = cmd.get_subcommands().collect();
-        assert_eq!(subcommands.len(), 3);
+        assert_eq!(subcommands.len(), 4);
 
         let subcommand_names: Vec<&str> = subcommands.iter().map(|cmd| cmd.get_name()).collect();
         assert!(subcommand_names.contains(&"list"));
         assert!(subcommand_names.contains(&"merge"));
         assert!(subcommand_names.contains(&"unmerge"));
+        assert!(subcommand_names.contains(&"refresh"));
+    }
+
+    #[test]
+    fn test_check_avocado_on_merge_depmod() {
+        // Test case with AVOCADO_ON_MERGE=depmod
+        let content_with_depmod = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=depmod
+OTHER_KEY=value
+"#;
+        assert!(check_avocado_on_merge_depmod(content_with_depmod));
+
+        // Test case with AVOCADO_ON_MERGE=depmod with quotes
+        let content_with_quoted_depmod = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE="depmod"
+OTHER_KEY=value
+"#;
+        assert!(check_avocado_on_merge_depmod(content_with_quoted_depmod));
+
+        // Test case with different AVOCADO_ON_MERGE value
+        let content_with_other_value = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=something_else
+OTHER_KEY=value
+"#;
+        assert!(!check_avocado_on_merge_depmod(content_with_other_value));
+
+        // Test case without AVOCADO_ON_MERGE
+        let content_without_key = r#"
+VERSION_ID=1.0
+OTHER_KEY=value
+"#;
+        assert!(!check_avocado_on_merge_depmod(content_without_key));
+
+        // Test case with empty content
+        assert!(!check_avocado_on_merge_depmod(""));
+
+        // Test case with AVOCADO_ON_MERGE but empty value
+        let content_with_empty_value = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=
+OTHER_KEY=value
+"#;
+        assert!(!check_avocado_on_merge_depmod(content_with_empty_value));
     }
 }
