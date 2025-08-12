@@ -1,1 +1,30 @@
-/target
+# Rust build artifacts
+/target/
+Cargo.lock
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test temporary files
+/test_tmp/
+/tmp_test_*
+*.test_tmp
+test_extensions_*
+
+# Keep test fixtures
+!/tests/fixtures/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.bak
+*.orig
+
+# Logs
+*.log

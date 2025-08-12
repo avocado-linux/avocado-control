@@ -1,0 +1,8 @@
+# Example configuration file for avocadoctl
+# Default location: /etc/avocado/avocadoctl.conf
+# Override with: avocadoctl -c /path/to/config.toml <command>
+
+[avocado.ext]
+# Directory where Avocado extensions are stored
+# Can be overridden by AVOCADO_EXTENSIONS_PATH environment variable
+dir = "/var/lib/avocado/extensions"

@@ -3,7 +3,7 @@ name = "avocadoctl"
 version = "0.1.0"
 edition = "2021"
 description = "Avocado Linux control CLI tool"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Avocado"]
 license = "Apache-2.0"
 
 [[bin]]
@@ -12,3 +12,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.4", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+thiserror = "1.0"
+
+[dev-dependencies]
+tempfile = "3.8"
