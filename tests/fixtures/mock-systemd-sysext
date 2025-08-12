@@ -1,0 +1,52 @@
+#!/bin/bash
+# Mock systemd-sysext for testing
+
+# Parse arguments
+ACTION=""
+MUTABLE=""
+JSON=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        merge|unmerge)
+            ACTION="$1"
+            shift
+            ;;
+        --mutable=*)
+            MUTABLE="${1#*=}"
+            shift
+            ;;
+        --json=*)
+            JSON="${1#*=}"
+            shift
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# Simulate different behaviors based on action
+case "$ACTION" in
+    merge)
+        if [ "$JSON" = "short" ]; then
+            echo '{"action":"merge","type":"sysext","status":"success","extensions":["test-ext-1","test-ext-2"]}'
+        else
+            echo "Merged system extensions: test-ext-1, test-ext-2"
+        fi
+        ;;
+    unmerge)
+        if [ "$JSON" = "short" ]; then
+            echo '{"action":"unmerge","type":"sysext","status":"success","extensions":["test-ext-1","test-ext-2"]}'
+        else
+            echo "Unmerged system extensions: test-ext-1, test-ext-2"
+        fi
+        ;;
+    *)
+        echo "Invalid action: $ACTION" >&2
+        exit 1
+        ;;
+esac
+
+exit 0

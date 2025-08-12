@@ -30,22 +30,7 @@ fn run_avocadoctl(args: &[&str]) -> std::process::Output {
         .expect("Failed to execute avocadoctl")
 }
 
-/// Test ext subcommand help
-#[test]
-fn test_ext_help() {
-    let output = run_avocadoctl(&["ext", "--help"]);
-    assert!(output.status.success(), "Ext help command should succeed");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Extension management commands"),
-        "Ext help should contain description"
-    );
-    assert!(
-        stdout.contains("list"),
-        "Ext help should mention list subcommand"
-    );
-}
 
 /// Test ext list with non-existent directory
 #[test]
@@ -301,4 +286,105 @@ fn test_example_config_fixture() {
     // Test parsing the config (would fail if TOML is invalid)
     let _parsed: toml::Value =
         toml::from_str(&config_content).expect("Example config should be valid TOML");
+}
+
+/// Test ext merge command with mock systemd binaries
+#[test]
+fn test_ext_merge_with_mocks() {
+    // Setup mock environment
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    
+    // Add fixtures path to PATH so mock binaries can be found
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+    
+    let output = run_avocadoctl_with_env(
+        &["ext", "merge"],
+        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)]
+    );
+    
+    assert!(output.status.success(), "ext merge should succeed with mocks");
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Merging extensions"), "Should show merging message");
+    assert!(stdout.contains("Extensions merged successfully"), "Should show success message");
+    assert!(stdout.contains("systemd-sysext merge"), "Should show sysext operation");
+    assert!(stdout.contains("systemd-confext merge"), "Should show confext operation");
+}
+
+/// Test ext unmerge command with mock systemd binaries
+#[test]
+fn test_ext_unmerge_with_mocks() {
+    // Setup mock environment
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    
+    // Add fixtures path to PATH so mock binaries can be found
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+    
+    let output = run_avocadoctl_with_env(
+        &["ext", "unmerge"],
+        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)]
+    );
+    
+    assert!(output.status.success(), "ext unmerge should succeed with mocks");
+    
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Unmerging extensions"), "Should show unmerging message");
+    assert!(stdout.contains("Extensions unmerged successfully"), "Should show success message");
+    assert!(stdout.contains("systemd-sysext unmerge"), "Should show sysext operation");
+    assert!(stdout.contains("systemd-confext unmerge"), "Should show confext operation");
+}
+
+/// Test ext merge help
+#[test]
+fn test_ext_merge_help() {
+    let output = run_avocadoctl(&["ext", "merge", "--help"]);
+    assert!(output.status.success(), "Ext merge help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Merge extensions using systemd-sysext and systemd-confext"),
+        "Should contain merge description"
+    );
+}
+
+/// Test ext unmerge help
+#[test]
+fn test_ext_unmerge_help() {
+    let output = run_avocadoctl(&["ext", "unmerge", "--help"]);
+    assert!(output.status.success(), "Ext unmerge help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Unmerge extensions using systemd-sysext and systemd-confext"),
+        "Should contain unmerge description"
+    );
+}
+
+/// Test that ext help shows all subcommands
+#[test]
+fn test_ext_help_shows_all_commands() {
+    let output = run_avocadoctl(&["ext", "--help"]);
+    assert!(output.status.success(), "Ext help command should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extension management commands"),
+        "Ext help should contain description"
+    );
+    assert!(
+        stdout.contains("list"),
+        "Ext help should mention list subcommand"
+    );
+    assert!(
+        stdout.contains("merge"),
+        "Ext help should mention merge subcommand"
+    );
+    assert!(
+        stdout.contains("unmerge"),
+        "Ext help should mention unmerge subcommand"
+    );
 }
