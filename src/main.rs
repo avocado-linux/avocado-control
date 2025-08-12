@@ -2,7 +2,7 @@ mod commands;
 mod config;
 
 use clap::{Arg, Command};
-use commands::ext;
+use commands::{ext, hitl};
 use config::Config;
 
 fn main() {
@@ -18,7 +18,8 @@ fn main() {
                 .help("Sets a custom config file")
                 .global(true),
         )
-        .subcommand(ext::create_command());
+        .subcommand(ext::create_command())
+        .subcommand(hitl::create_command());
 
     let matches = app.get_matches();
 
@@ -35,6 +36,9 @@ fn main() {
     match matches.subcommand() {
         Some(("ext", ext_matches)) => {
             ext::handle_command(ext_matches, &config);
+        }
+        Some(("hitl", hitl_matches)) => {
+            hitl::handle_command(hitl_matches);
         }
         _ => {
             println!(

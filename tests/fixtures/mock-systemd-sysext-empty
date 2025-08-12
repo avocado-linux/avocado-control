@@ -1,0 +1,13 @@
+#!/bin/bash
+# Mock systemd-sysext for testing empty status
+
+case "$1" in
+    status)
+        # Return empty output to simulate no extensions
+        exit 0
+        ;;
+    *)
+        echo "Invalid action: $1" >&2
+        exit 1
+        ;;
+esac

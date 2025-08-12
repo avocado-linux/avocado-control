@@ -47,15 +47,26 @@ cargo test test_ext_list_with_mock_extensions
 - `test_ext_merge_help`: Tests `ext merge --help` command
 - `test_ext_unmerge_help`: Tests `ext unmerge --help` command
 - `test_ext_refresh_help`: Tests `ext refresh --help` command
+- `test_ext_status_help`: Tests `ext status --help` command
 - `test_ext_list_nonexistent_directory`: Tests error handling for missing directories
 - `test_ext_list_with_mock_extensions`: Tests extension listing with mock data
 - `test_ext_list_empty_directory`: Tests behavior with empty extensions directory
 - `test_ext_merge_with_mocks`: Tests merge command with mock systemd binaries
 - `test_ext_unmerge_with_mocks`: Tests unmerge command with mock systemd binaries
 - `test_ext_refresh_with_mocks`: Tests refresh command (unmerge + merge) with mock systemd binaries
+- `test_ext_status_with_mocks`: Tests status command with mock systemd binaries
 - `test_ext_merge_with_depmod_processing`: Tests merge command with post-merge depmod processing
 - `test_ext_merge_no_depmod_needed`: Tests merge command when no depmod is needed
 - `test_example_config_fixture`: Tests example config file validation
+
+### HITL Integration Tests (`tests/hitl_integration_tests.rs`)
+- `test_hitl_help`: Tests `hitl --help` command
+- `test_hitl_mount_help`: Tests `hitl mount --help` command
+- `test_hitl_mount_with_mocks`: Tests mount command with mock NFS mounting
+- `test_hitl_mount_short_options`: Tests mount command with short option flags
+- `test_hitl_mount_default_port`: Tests mount command with default port
+- `test_hitl_mount_missing_args`: Tests error handling for missing required arguments
+- `test_main_help_shows_hitl`: Tests that main help shows hitl command
 
 ## Configuration Testing
 
@@ -89,6 +100,7 @@ The `tests/fixtures/` directory contains example files used for testing:
 - `mock-systemd-sysext`: Mock systemd-sysext binary for testing merge/unmerge operations
 - `mock-systemd-confext`: Mock systemd-confext binary for testing merge/unmerge operations
 - `mock-depmod`: Mock depmod binary for testing post-merge processing
+- `mock-mount`: Mock mount binary for testing HITL NFS mounting
 - `extension-release.d/`: Directory containing sample extension release files for testing post-merge processing
 
 #### Mock Binaries
@@ -96,6 +108,7 @@ The `tests/fixtures/` directory contains example files used for testing:
 The mock binaries simulate the behavior of real system tools:
 - `mock-systemd-sysext` and `mock-systemd-confext`: Support `merge` and `unmerge` actions with `--json=short` output format
 - `mock-depmod`: Simulates kernel module dependency updates
+- `mock-mount`: Simulates NFS mounting operations for HITL testing
 - All mock binaries are activated when `AVOCADO_TEST_MODE` environment variable is set
 - Return appropriate output for testing assertions
 
@@ -107,6 +120,14 @@ The `tests/fixtures/extension-release.d/` directory contains sample extension re
 - `extension-release.utils`: Contains `AVOCADO_ON_MERGE=other_command` to test non-depmod values
 
 Use the `AVOCADO_EXTENSION_RELEASE_DIR` environment variable to override the default `/usr/lib/extension-release.d` path for testing.
+
+#### HITL Testing
+
+The HITL (Hardware-in-the-loop) testing functionality allows mounting remote NFS extensions:
+- Uses `mock-mount` binary in test mode to simulate NFS mounting
+- Creates directories in the extensions path (configurable via `AVOCADO_EXTENSIONS_PATH`)
+- Supports multiple extensions with customizable server IP and port
+- Tests verify proper directory creation and mount command execution
 
 #### depmod Behavior
 

@@ -21,6 +21,7 @@ pub fn create_command() -> Command {
         .subcommand(
             Command::new("refresh").about("Unmerge and then merge extensions (refresh extensions)"),
         )
+        .subcommand(Command::new("status").about("Show status of merged extensions"))
 }
 
 /// Handle ext command and its subcommands
@@ -37,6 +38,9 @@ pub fn handle_command(matches: &ArgMatches, config: &Config) {
         }
         Some(("refresh", _)) => {
             refresh_extensions();
+        }
+        Some(("status", _)) => {
+            status_extensions();
         }
         _ => {
             println!("Use 'avocadoctl ext --help' for available extension commands");
@@ -183,6 +187,83 @@ fn refresh_extensions() {
     println!("Extensions merged successfully.");
 
     println!("Extensions refreshed successfully.");
+}
+
+/// Show status of merged extensions
+fn status_extensions() {
+    println!("Extension Status");
+    println!("================");
+    println!();
+
+    // Get system extensions status
+    println!("System Extensions (/opt, /usr):");
+    println!("--------------------------------");
+    match run_systemd_command("systemd-sysext", &["status"]) {
+        Ok(output) => {
+            if output.trim().is_empty() {
+                println!("No system extensions currently merged.");
+            } else {
+                format_status_output(&output);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error getting system extensions status: {e}");
+        }
+    }
+
+    println!();
+
+    // Get configuration extensions status
+    println!("Configuration Extensions (/etc):");
+    println!("---------------------------------");
+    match run_systemd_command("systemd-confext", &["status"]) {
+        Ok(output) => {
+            if output.trim().is_empty() {
+                println!("No configuration extensions currently merged.");
+            } else {
+                format_status_output(&output);
+            }
+        }
+        Err(e) => {
+            eprintln!("Error getting configuration extensions status: {e}");
+        }
+    }
+}
+
+/// Format status output from systemd commands
+fn format_status_output(output: &str) {
+    let lines: Vec<&str> = output.lines().collect();
+
+    // Skip the header line if present and process the data
+    let data_lines: Vec<&str> = lines
+        .iter()
+        .skip_while(|line| line.starts_with("HIERARCHY") || line.trim().is_empty())
+        .copied()
+        .collect();
+
+    if data_lines.is_empty() {
+        println!("No extensions currently merged.");
+        return;
+    }
+
+    for line in data_lines {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Parse the line format: HIERARCHY EXTENSIONS SINCE
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 {
+            let hierarchy = parts[0];
+            let extensions = parts[1];
+            let since = parts[2..].join(" ");
+
+            println!("  {hierarchy} -> {extensions} (since {since})");
+        } else {
+            // Fallback: just print the line as-is
+            println!("  {line}");
+        }
+    }
 }
 
 /// Process post-merge tasks by checking extension release files
@@ -428,13 +509,14 @@ mod tests {
 
         // Check that all subcommands exist
         let subcommands: Vec<_> = cmd.get_subcommands().collect();
-        assert_eq!(subcommands.len(), 4);
+        assert_eq!(subcommands.len(), 5);
 
         let subcommand_names: Vec<&str> = subcommands.iter().map(|cmd| cmd.get_name()).collect();
         assert!(subcommand_names.contains(&"list"));
         assert!(subcommand_names.contains(&"merge"));
         assert!(subcommand_names.contains(&"unmerge"));
         assert!(subcommand_names.contains(&"refresh"));
+        assert!(subcommand_names.contains(&"status"));
     }
 
     #[test]

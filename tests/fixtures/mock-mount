@@ -1,0 +1,35 @@
+#!/bin/bash
+# Mock mount command for testing
+
+# Parse arguments to extract key information
+FSTYPE=""
+OPTIONS=""
+SOURCE=""
+TARGET=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -t)
+            FSTYPE="$2"
+            shift 2
+            ;;
+        -o)
+            OPTIONS="$2"
+            shift 2
+            ;;
+        *)
+            if [[ -z "$SOURCE" ]]; then
+                SOURCE="$1"
+            elif [[ -z "$TARGET" ]]; then
+                TARGET="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Simulate mount operation
+echo "Mock mount: $SOURCE -> $TARGET (type: $FSTYPE, options: $OPTIONS)"
+
+# Simulate success
+exit 0

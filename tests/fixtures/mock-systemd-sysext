@@ -8,7 +8,7 @@ JSON=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        merge|unmerge)
+        merge|unmerge|status)
             ACTION="$1"
             shift
             ;;
@@ -42,6 +42,12 @@ case "$ACTION" in
         else
             echo "Unmerged system extensions: test-ext-1, test-ext-2"
         fi
+        ;;
+    status)
+        # Mock status output similar to real systemd-sysext
+        echo "HIERARCHY EXTENSIONS  SINCE                      "
+        echo "/opt      test-ext-1  Tue 2025-01-14 15:30:00 UTC"
+        echo "/usr      test-ext-2  Tue 2025-01-14 15:30:05 UTC"
         ;;
     *)
         echo "Invalid action: $ACTION" >&2

@@ -520,6 +520,10 @@ fn test_ext_help_shows_all_commands() {
         stdout.contains("refresh"),
         "Ext help should mention refresh subcommand"
     );
+    assert!(
+        stdout.contains("status"),
+        "Ext help should mention status subcommand"
+    );
 }
 
 /// Test ext merge with depmod post-processing
@@ -596,5 +600,70 @@ fn test_ext_merge_no_depmod_needed() {
     assert!(
         stdout.contains("Extensions merged successfully"),
         "Should show merge success"
+    );
+}
+
+/// Test ext status command with mock systemd binaries
+#[test]
+fn test_ext_status_with_mocks() {
+    // Setup mock environment
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+
+    // Add fixtures path to PATH so mock binaries can be found
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    let output = run_avocadoctl_with_env(
+        &["ext", "status"],
+        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext status should succeed with mocks"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extension Status"),
+        "Should show extension status header"
+    );
+    assert!(
+        stdout.contains("System Extensions (/opt, /usr):"),
+        "Should show system extensions header"
+    );
+    assert!(
+        stdout.contains("Configuration Extensions (/etc):"),
+        "Should show configuration extensions header"
+    );
+    assert!(
+        stdout.contains("/opt -> test-ext-1"),
+        "Should show system extension status"
+    );
+    assert!(
+        stdout.contains("/usr -> test-ext-2"),
+        "Should show system extension status"
+    );
+    assert!(
+        stdout.contains("/etc -> config-ext-1"),
+        "Should show configuration extension status"
+    );
+    assert!(
+        stdout.contains("since"),
+        "Should show timestamps for extensions"
+    );
+}
+
+/// Test ext status help
+#[test]
+fn test_ext_status_help() {
+    let output = run_avocadoctl(&["ext", "status", "--help"]);
+    assert!(output.status.success(), "Ext status help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Show status of merged extensions"),
+        "Should contain status description"
     );
 }

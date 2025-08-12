@@ -8,7 +8,7 @@ JSON=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
-        merge|unmerge)
+        merge|unmerge|status)
             ACTION="$1"
             shift
             ;;
@@ -42,6 +42,11 @@ case "$ACTION" in
         else
             echo "Unmerged configuration extensions: config-ext-1"
         fi
+        ;;
+    status)
+        # Mock status output similar to real systemd-confext
+        echo "HIERARCHY EXTENSIONS  SINCE                      "
+        echo "/etc      config-ext-1 Tue 2025-01-14 15:30:10 UTC"
         ;;
     *)
         echo "Invalid action: $ACTION" >&2
