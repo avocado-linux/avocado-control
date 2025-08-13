@@ -916,13 +916,8 @@ fn create_sysext_symlink_with_verbosity(
         "/run/extensions".to_string()
     };
 
-    // Use the original filename for .raw files, extension name for directories
-    let symlink_name = if extension.is_directory {
-        extension.name.clone()
-    } else {
-        // For .raw files, use the original filename with extension
-        format!("{}.raw", extension.name)
-    };
+    // Always use just the extension name for symlinks
+    let symlink_name = extension.name.clone();
 
     let target_path = format!("{sysext_dir}/{symlink_name}");
 
@@ -970,13 +965,8 @@ fn create_confext_symlink_with_verbosity(
         "/run/confexts".to_string()
     };
 
-    // Use the original filename for .raw files, extension name for directories
-    let symlink_name = if extension.is_directory {
-        extension.name.clone()
-    } else {
-        // For .raw files, use the original filename with extension
-        format!("{}.raw", extension.name)
-    };
+    // Always use just the extension name for symlinks
+    let symlink_name = extension.name.clone();
 
     let target_path = format!("{confext_dir}/{symlink_name}");
 
@@ -1605,30 +1595,21 @@ mod tests {
             is_directory: true,
         };
 
-        // Test raw file extension symlink naming
+        // Test loop-mounted raw file extension symlink naming
         let raw_extension = Extension {
             name: "test_ext".to_string(),
-            path: PathBuf::from("/test/test_ext.raw"),
+            path: PathBuf::from("/run/avocado/extensions/test_ext"), // Points to mounted directory
             is_sysext: true,
             is_confext: false,
-            is_directory: false,
+            is_directory: false, // Still false to track origin, but path points to mounted dir
         };
 
-        // For directories, symlink name should be just the extension name
-        let dir_symlink_name = if dir_extension.is_directory {
-            dir_extension.name.clone()
-        } else {
-            format!("{}.raw", dir_extension.name)
-        };
+        // Both directory and loop-mounted raw extensions should use just the extension name
+        let dir_symlink_name = dir_extension.name.clone();
         assert_eq!(dir_symlink_name, "test_ext");
 
-        // For .raw files, symlink name should include .raw extension
-        let raw_symlink_name = if raw_extension.is_directory {
-            raw_extension.name.clone()
-        } else {
-            format!("{}.raw", raw_extension.name)
-        };
-        assert_eq!(raw_symlink_name, "test_ext.raw");
+        let raw_symlink_name = raw_extension.name.clone();
+        assert_eq!(raw_symlink_name, "test_ext");
     }
 
     #[test]
