@@ -414,3 +414,63 @@ fn test_hitl_help_shows_both_subcommands() {
         "Should mention unmount subcommand"
     );
 }
+
+/// Test that failed HITL mount operations clean up directories
+#[test]
+fn test_hitl_mount_failure_cleanup() {
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+
+    // Create a temporary directory
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let temp_extensions_dir = temp_dir.path().join("avocado/hitl");
+
+    // Create a failing mock-mount script in a temp directory
+    let temp_bin_dir = temp_dir.path().join("bin");
+    std::fs::create_dir_all(&temp_bin_dir).expect("Failed to create temp bin directory");
+
+    let mock_mount_fail_path = temp_bin_dir.join("mock-mount");
+    std::fs::write(&mock_mount_fail_path, r#"#!/bin/bash
+# Mock mount command that fails
+echo "mount.nfs4: mounting 10.0.2.2:/test-extension failed, reason given by server: No such file or directory" >&2
+exit 1
+"#).expect("Failed to write failing mock-mount");
+
+    // Make it executable
+    use std::os::unix::fs::PermissionsExt;
+    let mut perms = std::fs::metadata(&mock_mount_fail_path).unwrap().permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&mock_mount_fail_path, perms).unwrap();
+
+    // Add temp bin path to PATH (before fixtures so our failing mock takes precedence)
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}:{}", temp_bin_dir.to_string_lossy(), fixtures_path.to_string_lossy(), original_path);
+
+    let output = run_avocadoctl_with_env(
+        &["hitl", "mount", "-s", "10.0.2.2", "-e", "test-extension"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            ("TMPDIR", &temp_dir.path().to_string_lossy()),
+        ],
+    );
+
+    // The mount should fail
+    assert!(
+        !output.status.success(),
+        "Hitl mount should fail with mock failure"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Failed to mount extension test-extension"),
+        "Should show mount failure message"
+    );
+
+    // Verify the directory was cleaned up - it should not exist
+    let extension_dir = temp_extensions_dir.join("test-extension");
+    assert!(
+        !extension_dir.exists(),
+        "Extension directory should be cleaned up after mount failure"
+    );
+}

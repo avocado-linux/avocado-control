@@ -114,6 +114,15 @@ fn mount_extensions(matches: &ArgMatches, output: &OutputManager) {
                 "HITL Mount",
                 &format!("Failed to mount extension {extension}: {e}"),
             );
+
+            // Clean up the directory that was created since the mount failed
+            if let Err(cleanup_err) = cleanup_extension_directory(&extension_dir, output) {
+                output.error(
+                    "HITL Mount",
+                    &format!("Failed to cleanup directory for {extension}: {cleanup_err}"),
+                );
+            }
+
             success = false;
             continue;
         }
