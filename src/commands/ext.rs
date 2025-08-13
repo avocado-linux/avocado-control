@@ -347,6 +347,8 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
     }
 
     let lines: Vec<&str> = output.lines().collect();
+    let mut current_hierarchy = String::new();
+    let mut current_since = String::new();
 
     // Skip header and process data lines
     for line in lines
@@ -357,19 +359,39 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
             continue;
         }
 
-        // Parse format: HIERARCHY EXTENSIONS SINCE
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 3 {
-            let hierarchy = parts[0].to_string();
-            let extensions = parts[1];
-            let since = parts[2..].join(" ");
 
-            // Split multiple extensions (comma-separated)
-            for ext_name in extensions.split(',') {
+        if parts.is_empty() {
+            continue;
+        }
+
+        // Check if this line starts with a hierarchy path (doesn't start with whitespace)
+        if !line.starts_with(' ') && !line.starts_with('\t') {
+            // Parse format: HIERARCHY EXTENSIONS SINCE
+            if parts.len() >= 3 {
+                current_hierarchy = parts[0].to_string();
+                let extensions = parts[1];
+                current_since = parts[2..].join(" ");
+
+                // Split multiple extensions (comma-separated)
+                for ext_name in extensions.split(',') {
+                    mounted.push(MountedExtension {
+                        name: ext_name.trim().to_string(),
+                        since: current_since.clone(),
+                        hierarchy: current_hierarchy.clone(),
+                    });
+                }
+            }
+        } else {
+            // This line starts with whitespace - it's an extension for the current hierarchy
+            let extension_name = parts[0];
+
+            // Only add if we have a current hierarchy set
+            if !current_hierarchy.is_empty() {
                 mounted.push(MountedExtension {
-                    name: ext_name.trim().to_string(),
-                    since: since.clone(),
-                    hierarchy: hierarchy.clone(),
+                    name: extension_name.trim().to_string(),
+                    since: current_since.clone(),
+                    hierarchy: current_hierarchy.clone(),
                 });
             }
         }

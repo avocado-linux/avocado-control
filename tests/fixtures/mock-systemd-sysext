@@ -47,7 +47,9 @@ case "$ACTION" in
         # Mock status output similar to real systemd-sysext
         echo "HIERARCHY EXTENSIONS  SINCE                      "
         echo "/opt      test-ext-1  Tue 2025-01-14 15:30:00 UTC"
-        echo "/usr      test-ext-2  Tue 2025-01-14 15:30:05 UTC"
+        echo "          test-ext-2    "
+        echo "/usr      test-ext-1  Tue 2025-01-14 15:30:05 UTC"
+        echo "          test-ext-2    "
         ;;
     *)
         echo "Invalid action: $ACTION" >&2
