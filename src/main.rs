@@ -32,6 +32,25 @@ fn main() {
         .subcommand(hitl::create_command())
         .subcommand(
             Command::new("status").about("Show overall system status including extensions"),
+        )
+        // Top-level aliases for common ext commands
+        .subcommand(
+            Command::new("merge")
+                .about("Merge extensions using systemd-sysext and systemd-confext (alias for 'ext merge')"),
+        )
+        .subcommand(
+            Command::new("unmerge")
+                .about("Unmerge extensions using systemd-sysext and systemd-confext (alias for 'ext unmerge')")
+                .arg(
+                    Arg::new("unmount")
+                        .long("unmount")
+                        .help("Also unmount all persistent loops for .raw extensions")
+                        .action(clap::ArgAction::SetTrue),
+                ),
+        )
+        .subcommand(
+            Command::new("refresh")
+                .about("Unmerge and then merge extensions (alias for 'ext refresh')"),
         );
 
     let matches = app.get_matches();
@@ -62,6 +81,17 @@ fn main() {
         }
         Some(("status", _)) => {
             show_system_status(&output);
+        }
+        // Top-level command aliases
+        Some(("merge", _)) => {
+            ext::merge_extensions_direct(&output);
+        }
+        Some(("unmerge", unmerge_matches)) => {
+            let unmount = unmerge_matches.get_flag("unmount");
+            ext::unmerge_extensions_direct(unmount, &output);
+        }
+        Some(("refresh", _)) => {
+            ext::refresh_extensions_direct(&output);
         }
         _ => {
             println!(

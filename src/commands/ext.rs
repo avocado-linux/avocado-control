@@ -213,6 +213,23 @@ fn unmerge_extensions_internal_with_depmod(
     Ok(())
 }
 
+/// Direct access functions for top-level command aliases
+
+/// Merge extensions - direct access for top-level alias
+pub fn merge_extensions_direct(output: &OutputManager) {
+    merge_extensions(output);
+}
+
+/// Unmerge extensions - direct access for top-level alias
+pub fn unmerge_extensions_direct(unmount: bool, output: &OutputManager) {
+    unmerge_extensions(unmount, output);
+}
+
+/// Refresh extensions - direct access for top-level alias
+pub fn refresh_extensions_direct(output: &OutputManager) {
+    refresh_extensions(output);
+}
+
 /// Refresh extensions (unmerge then merge)
 pub fn refresh_extensions(output: &OutputManager) {
     output.info("Extension Refresh", "Starting extension refresh process");
