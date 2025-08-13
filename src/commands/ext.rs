@@ -183,7 +183,7 @@ fn unmerge_extensions_internal_with_depmod(call_depmod: bool) -> Result<(), Syst
 }
 
 /// Refresh extensions (unmerge then merge)
-fn refresh_extensions() {
+pub fn refresh_extensions() {
     println!("Refreshing extensions (unmerge then merge)...");
 
     // First unmerge (skip depmod since we'll call it after merge)
@@ -204,7 +204,7 @@ fn refresh_extensions() {
 }
 
 /// Show status of merged extensions
-fn status_extensions() {
+pub fn status_extensions() {
     println!("Extension Status");
     println!("================");
     println!();

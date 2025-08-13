@@ -20,6 +20,18 @@ fn run_avocadoctl(args: &[&str]) -> std::process::Output {
         .expect("Failed to execute avocadoctl")
 }
 
+/// Helper function to run avocadoctl with environment variables
+fn run_avocadoctl_with_env(args: &[&str], env_vars: &[(&str, &str)]) -> std::process::Output {
+    let mut cmd = Command::new(get_binary_path());
+    cmd.args(args);
+
+    for (key, value) in env_vars {
+        cmd.env(key, value);
+    }
+
+    cmd.output().expect("Failed to execute avocadoctl")
+}
+
 /// Test that the binary exists and can be executed
 #[test]
 fn test_binary_exists() {
@@ -60,6 +72,7 @@ fn test_help_command() {
         "Help should contain description"
     );
     assert!(stdout.contains("ext"), "Help should mention ext subcommand");
+    assert!(stdout.contains("status"), "Help should mention status subcommand");
     assert!(
         stdout.contains("-c, --config"),
         "Help should mention config flag"
@@ -98,6 +111,56 @@ fn test_invalid_command() {
     assert!(
         stderr.contains("error") || stderr.contains("unrecognized"),
         "Should show error for invalid command"
+    );
+}
+
+/// Test status command
+#[test]
+fn test_status_command() {
+    let output = run_avocadoctl(&["status", "--help"]);
+    assert!(output.status.success(), "Status help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Show overall system status including extensions"),
+        "Should show status description"
+    );
+}
+
+/// Test status command with mocks
+#[test]
+fn test_status_with_mocks() {
+    // Setup mock environment
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+
+    // Add fixtures path to PATH so mock binaries can be found
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    let output = run_avocadoctl_with_env(
+        &["status"],
+        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
+    );
+
+    assert!(output.status.success(), "Status should succeed with mocks");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Avocado System Status"),
+        "Should show system status header"
+    );
+    assert!(
+        stdout.contains("Extension Status"),
+        "Should show extension status section"
+    );
+    assert!(
+        stdout.contains("System Extensions"),
+        "Should show system extensions"
+    );
+    assert!(
+        stdout.contains("Configuration Extensions"),
+        "Should show configuration extensions"
     );
 }
 

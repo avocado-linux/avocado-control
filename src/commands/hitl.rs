@@ -1,3 +1,4 @@
+use crate::commands::ext;
 use clap::{Arg, ArgMatches, Command};
 use std::fs;
 use std::path::Path;
@@ -92,6 +93,10 @@ fn mount_extensions(matches: &ArgMatches) {
 
     if success {
         println!("All extensions mounted successfully.");
+
+        // Refresh extensions to apply the newly mounted extensions
+        println!("Refreshing extensions to apply mounted changes...");
+        ext::refresh_extensions();
     } else {
         eprintln!("Some extensions failed to mount.");
         std::process::exit(1);

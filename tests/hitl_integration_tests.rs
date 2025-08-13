@@ -131,6 +131,18 @@ fn test_hitl_mount_with_mocks() {
         stdout.contains("All extensions mounted successfully"),
         "Should show success message"
     );
+    assert!(
+        stdout.contains("Refreshing extensions to apply mounted changes"),
+        "Should show extension refresh message"
+    );
+    assert!(
+        stdout.contains("Refreshing extensions (unmerge then merge)"),
+        "Should call ext refresh"
+    );
+    assert!(
+        stdout.contains("Extensions refreshed successfully"),
+        "Should complete extension refresh"
+    );
 }
 
 /// Test hitl mount with short options

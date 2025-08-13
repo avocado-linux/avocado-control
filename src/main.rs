@@ -19,7 +19,11 @@ fn main() {
                 .global(true),
         )
         .subcommand(ext::create_command())
-        .subcommand(hitl::create_command());
+        .subcommand(hitl::create_command())
+        .subcommand(
+            Command::new("status")
+                .about("Show overall system status including extensions")
+        );
 
     let matches = app.get_matches();
 
@@ -40,6 +44,9 @@ fn main() {
         Some(("hitl", hitl_matches)) => {
             hitl::handle_command(hitl_matches);
         }
+        Some(("status", _)) => {
+            show_system_status();
+        }
         _ => {
             println!(
                 "{} - {}",
@@ -49,4 +56,15 @@ fn main() {
             println!("Use --help for more information or --version for version details");
         }
     }
+}
+
+/// Show overall system status including extensions
+fn show_system_status() {
+    println!("Avocado System Status");
+    println!("====================");
+    println!();
+
+    // For now, just show extension status
+    // In the future, this could include other system components
+    ext::status_extensions();
 }
