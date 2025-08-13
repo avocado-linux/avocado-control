@@ -35,6 +35,13 @@ pub fn create_command() -> Command {
                         .help("Extension name to mount (can be specified multiple times)")
                         .action(clap::ArgAction::Append)
                         .required(true),
+                )
+                .arg(
+                    Arg::new("verbose")
+                        .short('v')
+                        .long("verbose")
+                        .help("Show detailed output during mount operation")
+                        .action(clap::ArgAction::SetTrue),
                 ),
         )
 }
@@ -43,7 +50,8 @@ pub fn create_command() -> Command {
 pub fn handle_command(matches: &ArgMatches) {
     match matches.subcommand() {
         Some(("mount", mount_matches)) => {
-            mount_extensions(mount_matches);
+            let verbose = mount_matches.get_flag("verbose");
+            mount_extensions_with_verbosity(mount_matches, verbose);
         }
         _ => {
             println!("Use 'avocadoctl hitl --help' for available HITL commands");
@@ -51,8 +59,13 @@ pub fn handle_command(matches: &ArgMatches) {
     }
 }
 
-/// Mount NFS extensions from a remote server
+/// Mount NFS extensions from a remote server (legacy)
 fn mount_extensions(matches: &ArgMatches) {
+    mount_extensions_with_verbosity(matches, false);
+}
+
+/// Mount NFS extensions from a remote server with verbosity control
+fn mount_extensions_with_verbosity(matches: &ArgMatches, verbose: bool) {
     let server_ip = matches
         .get_one::<String>("server-ip")
         .expect("server-ip is required");
@@ -64,67 +77,102 @@ fn mount_extensions(matches: &ArgMatches) {
         .expect("at least one extension is required")
         .collect();
 
-    println!("Mounting HITL extensions from {server_ip}:{server_port}");
+    if verbose {
+        println!("Mounting HITL extensions from {server_ip}:{server_port}");
+    } else {
+        println!("Mounting HITL extensions...");
+    }
 
-    let extensions_base_dir = std::env::var("AVOCADO_EXTENSIONS_PATH")
-        .unwrap_or_else(|_| "/var/lib/avocado/extensions".to_string());
+    let extensions_base_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/hitl")
+    } else {
+        "/run/avocado/hitl".to_string()
+    };
     let mut success = true;
 
     for extension in &extensions {
-        println!("Setting up extension: {extension}");
+        if verbose {
+            println!("Setting up extension: {extension}");
+        }
 
         // Create extension directory
         let extension_dir = format!("{extensions_base_dir}/{extension}");
-        if let Err(e) = create_extension_directory(&extension_dir) {
+        if let Err(e) = create_extension_directory_with_verbosity(&extension_dir, verbose) {
             eprintln!("Failed to create directory {extension_dir}: {e}");
             success = false;
             continue;
         }
 
         // Mount NFS share
-        if let Err(e) = mount_nfs_extension(server_ip, server_port, extension, &extension_dir) {
+        if let Err(e) = mount_nfs_extension_with_verbosity(server_ip, server_port, extension, &extension_dir, verbose) {
             eprintln!("Failed to mount extension {extension}: {e}");
             success = false;
             continue;
         }
 
-        println!("Successfully mounted extension: {extension}");
+        if verbose {
+            println!("Successfully mounted extension: {extension}");
+        }
     }
 
     if success {
-        println!("All extensions mounted successfully.");
-
-        // Refresh extensions to apply the newly mounted extensions
-        println!("Refreshing extensions to apply mounted changes...");
-        ext::refresh_extensions();
+        if verbose {
+            println!("All extensions mounted successfully.");
+            println!("Refreshing extensions to apply mounted changes...");
+            ext::refresh_extensions_verbose();
+        } else {
+            println!("Extensions mounted.");
+            ext::refresh_extensions();
+        }
     } else {
         eprintln!("Some extensions failed to mount.");
         std::process::exit(1);
     }
 }
 
-/// Create extension directory with proper error handling
+/// Create extension directory with proper error handling (legacy)
 fn create_extension_directory(dir_path: &str) -> Result<(), std::io::Error> {
+    create_extension_directory_with_verbosity(dir_path, true)
+}
+
+/// Create extension directory with proper error handling and verbosity control
+fn create_extension_directory_with_verbosity(dir_path: &str, verbose: bool) -> Result<(), std::io::Error> {
     if !Path::new(dir_path).exists() {
         fs::create_dir_all(dir_path)?;
-        println!("Created directory: {dir_path}");
-    } else {
+        if verbose {
+            println!("Created directory: {dir_path}");
+        }
+    } else if verbose {
         println!("Directory already exists: {dir_path}");
     }
     Ok(())
 }
 
-/// Mount NFS extension with proper error handling
+/// Mount NFS extension with proper error handling (legacy)
 fn mount_nfs_extension(
     server_ip: &str,
     server_port: &str,
     extension: &str,
     mount_point: &str,
 ) -> Result<(), HitlError> {
+    mount_nfs_extension_with_verbosity(server_ip, server_port, extension, mount_point, true)
+}
+
+/// Mount NFS extension with proper error handling and verbosity control
+fn mount_nfs_extension_with_verbosity(
+    server_ip: &str,
+    server_port: &str,
+    extension: &str,
+    mount_point: &str,
+    verbose: bool,
+) -> Result<(), HitlError> {
     let nfs_source = format!("{server_ip}:/{extension}");
     let mount_options = format!("port={server_port},vers=4,hard,timeo=600,retrans=2,acregmin=0,acregmax=1,acdirmin=0,acdirmax=1,lookupcache=none");
 
-    println!("Mounting {nfs_source} to {mount_point} with options: {mount_options}");
+    if verbose {
+        println!("Mounting {nfs_source} to {mount_point} with options: {mount_options}");
+    }
 
     // Check if we're in test mode and should use mock commands
     let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {

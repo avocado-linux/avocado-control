@@ -21,8 +21,7 @@ fn main() {
         .subcommand(ext::create_command())
         .subcommand(hitl::create_command())
         .subcommand(
-            Command::new("status")
-                .about("Show overall system status including extensions")
+            Command::new("status").about("Show overall system status including extensions"),
         );
 
     let matches = app.get_matches();

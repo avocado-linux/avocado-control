@@ -97,6 +97,7 @@ fn test_hitl_mount_with_mocks() {
             "foo",
             "--extension",
             "avocado-dev",
+            "--verbose",
         ],
         &[
             ("AVOCADO_TEST_MODE", "1"),
@@ -143,6 +144,10 @@ fn test_hitl_mount_with_mocks() {
         stdout.contains("Extensions refreshed successfully"),
         "Should complete extension refresh"
     );
+    assert!(
+        stdout.contains("Scanning HITL extensions"),
+        "Should scan HITL extensions during refresh"
+    );
 }
 
 /// Test hitl mount with short options
@@ -168,6 +173,7 @@ fn test_hitl_mount_short_options() {
             "2049",
             "-e",
             "test-ext",
+            "-v",
         ],
         &[
             ("AVOCADO_TEST_MODE", "1"),
@@ -232,6 +238,7 @@ fn test_hitl_mount_default_port() {
             "192.168.1.30",
             "--extension",
             "default-port-test",
+            "--verbose",
         ],
         &[
             ("AVOCADO_TEST_MODE", "1"),

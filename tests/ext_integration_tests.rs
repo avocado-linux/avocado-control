@@ -298,7 +298,7 @@ fn test_ext_merge_with_mocks() {
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
 
     let output = run_avocadoctl_with_env(
-        &["ext", "merge"],
+        &["ext", "merge", "--verbose"],
         &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
     );
 
@@ -338,7 +338,7 @@ fn test_ext_unmerge_with_mocks() {
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
 
     let output = run_avocadoctl_with_env(
-        &["ext", "unmerge"],
+        &["ext", "unmerge", "--verbose"],
         &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
     );
 
@@ -420,11 +420,11 @@ fn test_environment_preparation_with_mock_extensions() {
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
 
     let output = run_avocadoctl_with_env(
-        &["ext", "merge"],
+        &["ext", "merge", "--verbose"],
         &[
             ("AVOCADO_TEST_MODE", "1"),
             ("PATH", &new_path),
-            ("AVOCADO_EXTENSIONS_PATH", extensions_path.to_str().unwrap())
+            ("AVOCADO_EXTENSIONS_PATH", extensions_path.to_str().unwrap()),
         ],
     );
 
@@ -441,9 +441,12 @@ fn test_environment_preparation_with_mock_extensions() {
         stdout.contains("Preparing extension environment"),
         "Should show environment preparation message"
     );
+    // The output should now include scanning from different sources
     assert!(
-        stdout.contains("Analyzing raw extension with persistent loop: test-ext"),
-        "Should analyze the raw extension with persistent loop"
+        stdout.contains("Scanning HITL extensions")
+            && stdout.contains("Scanning directory extensions")
+            && stdout.contains("Scanning raw file extensions"),
+        "Should scan all extension sources in priority order"
     );
     assert!(
         stdout.contains("Created sysext symlink:") || stdout.contains("Created confext symlink:"),
@@ -481,7 +484,7 @@ fn test_ext_refresh_with_mocks() {
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
 
     let output = run_avocadoctl_with_env(
-        &["ext", "refresh"],
+        &["ext", "refresh", "--verbose"],
         &[
             ("AVOCADO_TEST_MODE", "1"),
             ("PATH", &new_path),
@@ -608,7 +611,7 @@ fn test_ext_merge_with_depmod_processing() {
 
     // Set environment variables to use test release directory and mocks
     let output = run_avocadoctl_with_env(
-        &["ext", "merge"],
+        &["ext", "merge", "--verbose"],
         &[
             ("AVOCADO_TEST_MODE", "1"),
             ("PATH", &new_path),
@@ -655,7 +658,7 @@ fn test_ext_merge_no_depmod_needed() {
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
 
     let output = run_avocadoctl_with_env(
-        &["ext", "merge"],
+        &["ext", "merge", "--verbose"],
         &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
     );
 
@@ -694,32 +697,29 @@ fn test_ext_status_with_mocks() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Extension Status"),
-        "Should show extension status header"
+        stdout.contains("Avocado Extension Status"),
+        "Should show enhanced extension status header"
     );
     assert!(
-        stdout.contains("System Extensions (/opt, /usr):"),
-        "Should show system extensions header"
+        stdout.contains("Extension") && stdout.contains("Status") && stdout.contains("Origin"),
+        "Should show enhanced status table headers"
+    );
+    assert!(stdout.contains("Summary:"), "Should show status summary");
+    assert!(
+        stdout.contains("test-ext-1") && stdout.contains("SYSEXT"),
+        "Should show system extension in table"
     );
     assert!(
-        stdout.contains("Configuration Extensions (/etc):"),
-        "Should show configuration extensions header"
+        stdout.contains("test-ext-2") && stdout.contains("SYSEXT"),
+        "Should show system extension in table"
     );
     assert!(
-        stdout.contains("/opt -> test-ext-1"),
-        "Should show system extension status"
+        stdout.contains("config-ext-1") && stdout.contains("CONFEXT"),
+        "Should show configuration extension in table"
     );
     assert!(
-        stdout.contains("/usr -> test-ext-2"),
-        "Should show system extension status"
-    );
-    assert!(
-        stdout.contains("/etc -> config-ext-1"),
-        "Should show configuration extension status"
-    );
-    assert!(
-        stdout.contains("since"),
-        "Should show timestamps for extensions"
+        stdout.contains("Mount Info"),
+        "Should show mount information for extensions"
     );
 }
 

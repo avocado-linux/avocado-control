@@ -72,7 +72,10 @@ fn test_help_command() {
         "Help should contain description"
     );
     assert!(stdout.contains("ext"), "Help should mention ext subcommand");
-    assert!(stdout.contains("status"), "Help should mention status subcommand");
+    assert!(
+        stdout.contains("status"),
+        "Help should mention status subcommand"
+    );
     assert!(
         stdout.contains("-c, --config"),
         "Help should mention config flag"
@@ -151,16 +154,13 @@ fn test_status_with_mocks() {
         "Should show system status header"
     );
     assert!(
-        stdout.contains("Extension Status"),
-        "Should show extension status section"
+        stdout.contains("Avocado Extension Status"),
+        "Should show enhanced extension status section"
     );
+    assert!(stdout.contains("Summary:"), "Should show status summary");
     assert!(
-        stdout.contains("System Extensions"),
-        "Should show system extensions"
-    );
-    assert!(
-        stdout.contains("Configuration Extensions"),
-        "Should show configuration extensions"
+        stdout.contains("config-ext-1"),
+        "Should show configuration extension in output"
     );
 }
 
