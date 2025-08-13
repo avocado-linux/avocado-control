@@ -150,12 +150,8 @@ fn test_status_with_mocks() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Avocado System Status"),
-        "Should show system status header"
-    );
-    assert!(
         stdout.contains("Avocado Extension Status"),
-        "Should show enhanced extension status section"
+        "Should show extension status header"
     );
     assert!(stdout.contains("Summary:"), "Should show status summary");
     assert!(

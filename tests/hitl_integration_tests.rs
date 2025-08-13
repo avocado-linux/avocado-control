@@ -117,7 +117,7 @@ fn test_hitl_mount_with_mocks() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Mounting HITL extensions from 192.168.1.10:12049"),
+        stdout.contains("Mounting extensions from 192.168.1.10:12049"),
         "Should show mounting message"
     );
     assert!(
@@ -137,7 +137,7 @@ fn test_hitl_mount_with_mocks() {
         "Should show extension refresh message"
     );
     assert!(
-        stdout.contains("Refreshing extensions (unmerge then merge)"),
+        stdout.contains("Starting extension refresh process"),
         "Should call ext refresh"
     );
     assert!(
@@ -192,7 +192,7 @@ fn test_hitl_mount_short_options() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Mounting HITL extensions from 192.168.1.20:2049"),
+        stdout.contains("Mounting extensions from 192.168.1.20:2049"),
         "Should show correct server and port"
     );
     assert!(
@@ -257,7 +257,7 @@ fn test_hitl_mount_default_port() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Mounting HITL extensions from 192.168.1.30:12049"),
+        stdout.contains("Mounting extensions from 192.168.1.30:12049"),
         "Should use default port 12049"
     );
 }

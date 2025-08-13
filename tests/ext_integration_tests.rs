@@ -194,7 +194,7 @@ fn test_invalid_config_file() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Error loading configuration"),
+        stderr.contains("Configuration Error"),
         "Should show config error"
     );
 }
@@ -309,7 +309,7 @@ fn test_ext_merge_with_mocks() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Merging extensions"),
+        stdout.contains("Starting extension merge process"),
         "Should show merging message"
     );
     assert!(
@@ -349,7 +349,7 @@ fn test_ext_unmerge_with_mocks() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Unmerging extensions"),
+        stdout.contains("Starting extension unmerge process"),
         "Should show unmerging message"
     );
     assert!(
@@ -502,7 +502,7 @@ fn test_ext_refresh_with_mocks() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Refreshing extensions"),
+        stdout.contains("Starting extension refresh process"),
         "Should show refreshing message"
     );
     assert!(
@@ -527,11 +527,11 @@ fn test_ext_refresh_with_mocks() {
         "Should show confext merge operation"
     );
     assert!(
-        stdout.contains("Extensions unmerged successfully"),
+        stdout.contains("Extensions unmerged"),
         "Should show unmerge success"
     );
     assert!(
-        stdout.contains("Extensions merged successfully"),
+        stdout.contains("Extensions merged"),
         "Should show merge success"
     );
 
@@ -630,7 +630,7 @@ fn test_ext_merge_with_depmod_processing() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Merging extensions"),
+        stdout.contains("Starting extension merge process"),
         "Should show merging message"
     );
     assert!(

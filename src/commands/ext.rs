@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::output::OutputManager;
 use clap::{Arg, ArgMatches, Command};
 use serde_json::Value;
 use std::fs;
@@ -23,14 +24,7 @@ pub fn create_command() -> Command {
         .subcommand(Command::new("list").about("List all available extensions"))
         .subcommand(
             Command::new("merge")
-                .about("Merge extensions using systemd-sysext and systemd-confext")
-                .arg(
-                    Arg::new("verbose")
-                        .short('v')
-                        .long("verbose")
-                        .help("Show detailed output during merge operation")
-                        .action(clap::ArgAction::SetTrue),
-                ),
+                .about("Merge extensions using systemd-sysext and systemd-confext"),
         )
         .subcommand(
             Command::new("unmerge")
@@ -40,50 +34,32 @@ pub fn create_command() -> Command {
                         .long("unmount")
                         .help("Also unmount all persistent loops for .raw extensions")
                         .action(clap::ArgAction::SetTrue),
-                )
-                .arg(
-                    Arg::new("verbose")
-                        .short('v')
-                        .long("verbose")
-                        .help("Show detailed output during unmerge operation")
-                        .action(clap::ArgAction::SetTrue),
                 ),
         )
         .subcommand(
-            Command::new("refresh")
-                .about("Unmerge and then merge extensions (refresh extensions)")
-                .arg(
-                    Arg::new("verbose")
-                        .short('v')
-                        .long("verbose")
-                        .help("Show detailed output during refresh operation")
-                        .action(clap::ArgAction::SetTrue),
-                ),
+            Command::new("refresh").about("Unmerge and then merge extensions (refresh extensions)"),
         )
         .subcommand(Command::new("status").about("Show status of merged extensions"))
 }
 
 /// Handle ext command and its subcommands
-pub fn handle_command(matches: &ArgMatches, config: &Config) {
+pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputManager) {
     match matches.subcommand() {
         Some(("list", _)) => {
-            list_extensions(config);
+            list_extensions(config, output);
         }
-        Some(("merge", merge_matches)) => {
-            let verbose = merge_matches.get_flag("verbose");
-            merge_extensions_with_verbosity(verbose);
+        Some(("merge", _)) => {
+            merge_extensions(output);
         }
         Some(("unmerge", unmerge_matches)) => {
             let unmount = unmerge_matches.get_flag("unmount");
-            let verbose = unmerge_matches.get_flag("verbose");
-            unmerge_extensions_with_verbosity(unmount, verbose);
+            unmerge_extensions(unmount, output);
         }
-        Some(("refresh", refresh_matches)) => {
-            let verbose = refresh_matches.get_flag("verbose");
-            refresh_extensions_with_verbosity(verbose);
+        Some(("refresh", _)) => {
+            refresh_extensions(output);
         }
         Some(("status", _)) => {
-            status_extensions();
+            status_extensions(output);
         }
         _ => {
             println!("Use 'avocadoctl ext --help' for available extension commands");
@@ -92,7 +68,8 @@ pub fn handle_command(matches: &ArgMatches, config: &Config) {
 }
 
 /// List all extensions from the extensions directory
-fn list_extensions(config: &Config) {
+fn list_extensions(config: &Config, output: &OutputManager) {
+    output.info("Extension List", "Listing available extensions");
     let extensions_path = config.get_extensions_dir();
 
     match fs::read_dir(&extensions_path) {
@@ -140,63 +117,42 @@ fn list_extensions(config: &Config) {
     }
 }
 
-/// Merge extensions using systemd-sysext and systemd-confext (public API)
-fn merge_extensions() {
-    merge_extensions_with_verbosity(false);
-}
-
-/// Merge extensions with verbose option
-fn merge_extensions_with_verbosity(verbose: bool) {
-    match merge_extensions_internal_with_verbosity(verbose) {
+/// Merge extensions using systemd-sysext and systemd-confext
+fn merge_extensions(output: &OutputManager) {
+    match merge_extensions_internal(output) {
         Ok(_) => {
-            if verbose {
-                println!("Extensions merged successfully.");
-            } else {
-                println!("Extensions merged.");
-            }
+            output.success("Extension Merge", "Extensions merged successfully");
         }
         Err(e) => {
-            eprintln!("Failed to merge extensions: {e}");
+            output.error(
+                "Extension Merge",
+                &format!("Failed to merge extensions: {e}"),
+            );
             std::process::exit(1);
         }
     }
 }
 
-/// Internal merge function that returns a Result for use in remerge
-fn merge_extensions_internal() -> Result<(), SystemdError> {
-    merge_extensions_internal_with_verbosity(false)
-}
-
-/// Internal merge function with verbosity control
-fn merge_extensions_internal_with_verbosity(verbose: bool) -> Result<(), SystemdError> {
-    if verbose {
-        println!("Merging extensions...");
-    }
+/// Internal merge function that returns a Result
+fn merge_extensions_internal(output: &OutputManager) -> Result<(), SystemdError> {
+    output.info("Extension Merge", "Starting extension merge process");
 
     // Prepare the environment by setting up symlinks
-    prepare_extension_environment_with_verbosity(verbose)?;
+    prepare_extension_environment_with_output(output)?;
 
     // Merge system extensions
-    let output = run_systemd_command(
+    let sysext_result = run_systemd_command(
         "systemd-sysext",
         &["merge", "--mutable=ephemeral", "--json=short"],
     )?;
-    if verbose {
-        handle_systemd_output("systemd-sysext merge", &output)?;
-    } else {
-        handle_systemd_output_quietly("systemd-sysext merge", &output)?;
-    }
+    handle_systemd_output("systemd-sysext merge", &sysext_result, output)?;
 
     // Merge configuration extensions
-    let output = run_systemd_command(
+    let confext_result = run_systemd_command(
         "systemd-confext",
         &["merge", "--mutable=ephemeral", "--json=short"],
     )?;
-    if verbose {
-        handle_systemd_output("systemd-confext merge", &output)?;
-    } else {
-        handle_systemd_output_quietly("systemd-confext merge", &output)?;
-    }
+    handle_systemd_output("systemd-confext merge", &confext_result, output)?;
 
     // Process post-merge tasks
     process_post_merge_tasks()?;
@@ -204,71 +160,42 @@ fn merge_extensions_internal_with_verbosity(verbose: bool) -> Result<(), Systemd
     Ok(())
 }
 
-/// Unmerge extensions using systemd-sysext and systemd-confext (public API)
-fn unmerge_extensions(unmount: bool) {
-    unmerge_extensions_with_verbosity(unmount, false);
-}
-
-/// Unmerge extensions with verbose option
-fn unmerge_extensions_with_verbosity(unmount: bool, verbose: bool) {
-    match unmerge_extensions_internal_with_verbosity(unmount, verbose) {
+/// Unmerge extensions using systemd-sysext and systemd-confext
+fn unmerge_extensions(unmount: bool, output: &OutputManager) {
+    match unmerge_extensions_internal(unmount, output) {
         Ok(_) => {
-            if verbose {
-                println!("Extensions unmerged successfully.");
-            } else {
-                println!("Extensions unmerged.");
-            }
+            output.success("Extension Unmerge", "Extensions unmerged successfully");
         }
         Err(e) => {
-            eprintln!("Failed to unmerge extensions: {e}");
+            output.error(
+                "Extension Unmerge",
+                &format!("Failed to unmerge extensions: {e}"),
+            );
             std::process::exit(1);
         }
     }
 }
 
 /// Internal unmerge function that returns a Result for use in refresh
-fn unmerge_extensions_internal(unmount: bool) -> Result<(), SystemdError> {
-    unmerge_extensions_internal_with_verbosity(unmount, false)
+fn unmerge_extensions_internal(unmount: bool, output: &OutputManager) -> Result<(), SystemdError> {
+    unmerge_extensions_internal_with_depmod(true, unmount, output)
 }
 
-/// Internal unmerge function with verbosity control
-fn unmerge_extensions_internal_with_verbosity(unmount: bool, verbose: bool) -> Result<(), SystemdError> {
-    unmerge_extensions_internal_with_depmod_and_verbosity(true, unmount, verbose)
-}
-
-/// Internal unmerge function with optional depmod control (legacy)
+/// Internal unmerge function with optional depmod control
 fn unmerge_extensions_internal_with_depmod(
     call_depmod: bool,
     unmount: bool,
+    output: &OutputManager,
 ) -> Result<(), SystemdError> {
-    unmerge_extensions_internal_with_depmod_and_verbosity(call_depmod, unmount, false)
-}
-
-/// Internal unmerge function with optional depmod control and verbosity
-fn unmerge_extensions_internal_with_depmod_and_verbosity(
-    call_depmod: bool,
-    unmount: bool,
-    verbose: bool,
-) -> Result<(), SystemdError> {
-    if verbose {
-        println!("Unmerging extensions...");
-    }
+    output.info("Extension Unmerge", "Starting extension unmerge process");
 
     // Unmerge system extensions
-    let output = run_systemd_command("systemd-sysext", &["unmerge", "--json=short"])?;
-    if verbose {
-        handle_systemd_output("systemd-sysext unmerge", &output)?;
-    } else {
-        handle_systemd_output_quietly("systemd-sysext unmerge", &output)?;
-    }
+    let sysext_result = run_systemd_command("systemd-sysext", &["unmerge", "--json=short"])?;
+    handle_systemd_output("systemd-sysext unmerge", &sysext_result, output)?;
 
     // Unmerge configuration extensions
-    let output = run_systemd_command("systemd-confext", &["unmerge", "--json=short"])?;
-    if verbose {
-        handle_systemd_output("systemd-confext unmerge", &output)?;
-    } else {
-        handle_systemd_output_quietly("systemd-confext unmerge", &output)?;
-    }
+    let confext_result = run_systemd_command("systemd-confext", &["unmerge", "--json=short"])?;
+    handle_systemd_output("systemd-confext unmerge", &confext_result, output)?;
 
     // Run depmod after unmerge if requested
     if call_depmod {
@@ -283,64 +210,48 @@ fn unmerge_extensions_internal_with_depmod_and_verbosity(
     Ok(())
 }
 
-/// Refresh extensions (unmerge then merge) - public API
-pub fn refresh_extensions() {
-    refresh_extensions_with_verbosity(false);
-}
-
-/// Refresh extensions with verbosity - public API for HITL
-pub fn refresh_extensions_verbose() {
-    refresh_extensions_with_verbosity(true);
-}
-
-/// Refresh extensions with verbose option
-fn refresh_extensions_with_verbosity(verbose: bool) {
-    if verbose {
-        println!("Refreshing extensions (unmerge then merge)...");
-    }
+/// Refresh extensions (unmerge then merge)
+pub fn refresh_extensions(output: &OutputManager) {
+    output.info("Extension Refresh", "Starting extension refresh process");
 
     // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
-    if let Err(e) = unmerge_extensions_internal_with_depmod_and_verbosity(false, false, verbose) {
-        eprintln!("Failed to unmerge extensions: {e}");
+    if let Err(e) = unmerge_extensions_internal_with_depmod(false, false, output) {
+        output.error(
+            "Extension Refresh",
+            &format!("Failed to unmerge extensions: {e}"),
+        );
         std::process::exit(1);
     }
-    if verbose {
-        println!("Extensions unmerged successfully.");
-    }
+    output.step("Refresh", "Extensions unmerged");
 
     // Then merge (this will call depmod via post-merge processing)
-    if let Err(e) = merge_extensions_internal_with_verbosity(verbose) {
-        eprintln!("Failed to merge extensions: {e}");
+    if let Err(e) = merge_extensions_internal(output) {
+        output.error(
+            "Extension Refresh",
+            &format!("Failed to merge extensions: {e}"),
+        );
         std::process::exit(1);
     }
-    if verbose {
-        println!("Extensions merged successfully.");
-    }
+    output.step("Refresh", "Extensions merged");
 
-    if verbose {
-        println!("Extensions refreshed successfully.");
-    } else {
-        println!("Extensions refreshed.");
-    }
+    output.success("Extension Refresh", "Extensions refreshed successfully");
 }
 
 /// Show status of merged extensions
-pub fn status_extensions() {
-    match show_enhanced_status() {
+pub fn status_extensions(output: &OutputManager) {
+    match show_enhanced_status(output) {
         Ok(_) => {}
         Err(e) => {
-            eprintln!("Error showing enhanced status: {e}");
+            output.error("Extension Status", &format!("Failed to show status: {e}"));
             // Fall back to legacy status display
-            show_legacy_status();
+            show_legacy_status(output);
         }
     }
 }
 
 /// Show enhanced status with extension origins and HITL information
-fn show_enhanced_status() -> Result<(), SystemdError> {
-    println!("Avocado Extension Status");
-    println!("========================");
-    println!();
+fn show_enhanced_status(output: &OutputManager) -> Result<(), SystemdError> {
+    output.status_header("Avocado Extension Status");
 
     // Get our view of available extensions
     let available_extensions = scan_extensions_from_all_sources()?;
@@ -356,7 +267,8 @@ fn show_enhanced_status() -> Result<(), SystemdError> {
 }
 
 /// Legacy status display for fallback
-fn show_legacy_status() {
+fn show_legacy_status(output: &OutputManager) {
+    output.status("Legacy status display not yet implemented");
     println!("Extension Status");
     println!("================");
     println!();
@@ -663,24 +575,15 @@ fn format_status_output(output: &str) {
     }
 }
 
-/// Prepare the extension environment by setting up symlinks (legacy)
-fn prepare_extension_environment() -> Result<(), SystemdError> {
-    prepare_extension_environment_with_verbosity(true)
-}
-
-/// Prepare the extension environment by setting up symlinks with verbosity control
-fn prepare_extension_environment_with_verbosity(verbose: bool) -> Result<(), SystemdError> {
-    if verbose {
-        println!("Preparing extension environment...");
-    }
+/// Prepare the extension environment by setting up symlinks with output manager
+fn prepare_extension_environment_with_output(output: &OutputManager) -> Result<(), SystemdError> {
+    output.step("Environment", "Preparing extension environment");
 
     // Scan for available extensions from multiple sources
-    let extensions = scan_extensions_from_all_sources_with_verbosity(verbose)?;
+    let extensions = scan_extensions_from_all_sources_with_verbosity(output.is_verbose())?;
 
     if extensions.is_empty() {
-        if verbose {
-            println!("No extensions found in any source location");
-        }
+        output.progress("No extensions found in any source location");
         return Ok(());
     }
 
@@ -690,16 +593,14 @@ fn prepare_extension_environment_with_verbosity(verbose: bool) -> Result<(), Sys
     // Create symlinks for sysext and confext extensions
     for extension in &extensions {
         if extension.is_sysext {
-            create_sysext_symlink_with_verbosity(extension, verbose)?;
+            create_sysext_symlink_with_verbosity(extension, output.is_verbose())?;
         }
         if extension.is_confext {
-            create_confext_symlink_with_verbosity(extension, verbose)?;
+            create_confext_symlink_with_verbosity(extension, output.is_verbose())?;
         }
     }
 
-    if verbose {
-        println!("Extension environment prepared successfully.");
-    }
+    output.progress("Extension environment prepared successfully");
     Ok(())
 }
 
@@ -709,7 +610,9 @@ fn scan_extensions_from_all_sources() -> Result<Vec<Extension>, SystemdError> {
 }
 
 /// Scan all extension sources in priority order with verbosity control
-fn scan_extensions_from_all_sources_with_verbosity(verbose: bool) -> Result<Vec<Extension>, SystemdError> {
+fn scan_extensions_from_all_sources_with_verbosity(
+    verbose: bool,
+) -> Result<Vec<Extension>, SystemdError> {
     let mut extensions = Vec::new();
     let mut extension_map = std::collections::HashMap::new();
 
@@ -995,13 +898,11 @@ fn create_target_directories() -> Result<(), SystemdError> {
     Ok(())
 }
 
-/// Create a symlink for a sysext extension (legacy)
-fn create_sysext_symlink(extension: &Extension) -> Result<(), SystemdError> {
-    create_sysext_symlink_with_verbosity(extension, true)
-}
-
 /// Create a symlink for a sysext extension with verbosity control
-fn create_sysext_symlink_with_verbosity(extension: &Extension, verbose: bool) -> Result<(), SystemdError> {
+fn create_sysext_symlink_with_verbosity(
+    extension: &Extension,
+    verbose: bool,
+) -> Result<(), SystemdError> {
     let sysext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/test_extensions")
@@ -1051,13 +952,11 @@ fn create_sysext_symlink_with_verbosity(extension: &Extension, verbose: bool) ->
     Ok(())
 }
 
-/// Create a symlink for a confext extension (legacy)
-fn create_confext_symlink(extension: &Extension) -> Result<(), SystemdError> {
-    create_confext_symlink_with_verbosity(extension, true)
-}
-
 /// Create a symlink for a confext extension with verbosity control
-fn create_confext_symlink_with_verbosity(extension: &Extension, verbose: bool) -> Result<(), SystemdError> {
+fn create_confext_symlink_with_verbosity(
+    extension: &Extension,
+    verbose: bool,
+) -> Result<(), SystemdError> {
     let confext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/test_confexts")
@@ -1388,42 +1287,28 @@ fn run_systemd_command(command: &str, args: &[&str]) -> Result<String, SystemdEr
     Ok(stdout.to_string())
 }
 
-/// Handle and parse systemd command output
-fn handle_systemd_output(operation: &str, output: &str) -> Result<(), SystemdError> {
-    if output.trim().is_empty() {
-        println!("{operation}: No output (operation may have completed with no changes)");
+/// Handle and parse systemd command output with proper formatting
+fn handle_systemd_output(
+    operation: &str,
+    output_str: &str,
+    output: &OutputManager,
+) -> Result<(), SystemdError> {
+    if output_str.trim().is_empty() {
+        output.progress(&format!(
+            "{operation}: No output (operation may have completed with no changes)"
+        ));
         return Ok(());
     }
 
-    // Try to parse as JSON
-    match serde_json::from_str::<Value>(output) {
+    // Try to parse as JSON for better formatting
+    match serde_json::from_str::<Value>(output_str) {
         Ok(json) => {
-            println!("{operation}: {json}");
+            output.raw(&format!("{operation}: {json}"));
             Ok(())
         }
         Err(_) => {
             // If not JSON, just print the raw output
-            println!("{operation}: {output}");
-            Ok(())
-        }
-    }
-}
-
-/// Handle and parse systemd command output quietly (only errors)
-fn handle_systemd_output_quietly(operation: &str, output: &str) -> Result<(), SystemdError> {
-    if output.trim().is_empty() {
-        return Ok(());
-    }
-
-    // Try to parse as JSON to validate the operation worked
-    match serde_json::from_str::<Value>(output) {
-        Ok(_) => {
-            // Success but don't print
-            Ok(())
-        }
-        Err(_) => {
-            // If not JSON, it might be an error, print it
-            println!("{operation}: {output}");
+            output.raw(&format!("{operation}: {output_str}"));
             Ok(())
         }
     }

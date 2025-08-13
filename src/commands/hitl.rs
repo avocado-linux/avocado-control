@@ -1,4 +1,5 @@
 use crate::commands::ext;
+use crate::output::OutputManager;
 use clap::{Arg, ArgMatches, Command};
 use std::fs;
 use std::path::Path;
@@ -35,23 +36,15 @@ pub fn create_command() -> Command {
                         .help("Extension name to mount (can be specified multiple times)")
                         .action(clap::ArgAction::Append)
                         .required(true),
-                )
-                .arg(
-                    Arg::new("verbose")
-                        .short('v')
-                        .long("verbose")
-                        .help("Show detailed output during mount operation")
-                        .action(clap::ArgAction::SetTrue),
                 ),
         )
 }
 
 /// Handle hitl command and its subcommands
-pub fn handle_command(matches: &ArgMatches) {
+pub fn handle_command(matches: &ArgMatches, output: &OutputManager) {
     match matches.subcommand() {
         Some(("mount", mount_matches)) => {
-            let verbose = mount_matches.get_flag("verbose");
-            mount_extensions_with_verbosity(mount_matches, verbose);
+            mount_extensions(mount_matches, output);
         }
         _ => {
             println!("Use 'avocadoctl hitl --help' for available HITL commands");
@@ -59,13 +52,8 @@ pub fn handle_command(matches: &ArgMatches) {
     }
 }
 
-/// Mount NFS extensions from a remote server (legacy)
-fn mount_extensions(matches: &ArgMatches) {
-    mount_extensions_with_verbosity(matches, false);
-}
-
-/// Mount NFS extensions from a remote server with verbosity control
-fn mount_extensions_with_verbosity(matches: &ArgMatches, verbose: bool) {
+/// Mount NFS extensions from a remote server
+fn mount_extensions(matches: &ArgMatches, output: &OutputManager) {
     let server_ip = matches
         .get_one::<String>("server-ip")
         .expect("server-ip is required");
@@ -77,11 +65,10 @@ fn mount_extensions_with_verbosity(matches: &ArgMatches, verbose: bool) {
         .expect("at least one extension is required")
         .collect();
 
-    if verbose {
-        println!("Mounting HITL extensions from {server_ip}:{server_port}");
-    } else {
-        println!("Mounting HITL extensions...");
-    }
+    output.info(
+        "HITL Mount",
+        &format!("Mounting extensions from {server_ip}:{server_port}"),
+    );
 
     let extensions_base_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
@@ -92,87 +79,76 @@ fn mount_extensions_with_verbosity(matches: &ArgMatches, verbose: bool) {
     let mut success = true;
 
     for extension in &extensions {
-        if verbose {
-            println!("Setting up extension: {extension}");
-        }
+        output.step("HITL Mount", &format!("Setting up extension: {extension}"));
 
         // Create extension directory
         let extension_dir = format!("{extensions_base_dir}/{extension}");
-        if let Err(e) = create_extension_directory_with_verbosity(&extension_dir, verbose) {
-            eprintln!("Failed to create directory {extension_dir}: {e}");
+        if let Err(e) = create_extension_directory(&extension_dir, output) {
+            output.error(
+                "HITL Mount",
+                &format!("Failed to create directory {extension_dir}: {e}"),
+            );
             success = false;
             continue;
         }
 
         // Mount NFS share
-        if let Err(e) = mount_nfs_extension_with_verbosity(server_ip, server_port, extension, &extension_dir, verbose) {
-            eprintln!("Failed to mount extension {extension}: {e}");
+        if let Err(e) =
+            mount_nfs_extension(server_ip, server_port, extension, &extension_dir, output)
+        {
+            output.error(
+                "HITL Mount",
+                &format!("Failed to mount extension {extension}: {e}"),
+            );
             success = false;
             continue;
         }
 
-        if verbose {
-            println!("Successfully mounted extension: {extension}");
-        }
+        output.progress(&format!("Successfully mounted extension: {extension}"));
     }
 
     if success {
-        if verbose {
-            println!("All extensions mounted successfully.");
-            println!("Refreshing extensions to apply mounted changes...");
-            ext::refresh_extensions_verbose();
-        } else {
-            println!("Extensions mounted.");
-            ext::refresh_extensions();
-        }
+        output.success("HITL Mount", "All extensions mounted successfully");
+        output.info(
+            "HITL Mount",
+            "Refreshing extensions to apply mounted changes",
+        );
+        ext::refresh_extensions(output);
     } else {
-        eprintln!("Some extensions failed to mount.");
+        output.error("HITL Mount", "Some extensions failed to mount");
         std::process::exit(1);
     }
 }
 
-/// Create extension directory with proper error handling (legacy)
-fn create_extension_directory(dir_path: &str) -> Result<(), std::io::Error> {
-    create_extension_directory_with_verbosity(dir_path, true)
-}
-
-/// Create extension directory with proper error handling and verbosity control
-fn create_extension_directory_with_verbosity(dir_path: &str, verbose: bool) -> Result<(), std::io::Error> {
+/// Create extension directory with proper error handling
+fn create_extension_directory(
+    dir_path: &str,
+    output: &OutputManager,
+) -> Result<(), std::io::Error> {
     if !Path::new(dir_path).exists() {
         fs::create_dir_all(dir_path)?;
-        if verbose {
-            println!("Created directory: {dir_path}");
-        }
-    } else if verbose {
-        println!("Directory already exists: {dir_path}");
+        output.progress(&format!("Created directory: {dir_path}"));
+    } else {
+        output.progress(&format!("Directory already exists: {dir_path}"));
     }
     Ok(())
 }
 
-/// Mount NFS extension with proper error handling (legacy)
+/// Mount NFS extension with proper error handling
 fn mount_nfs_extension(
     server_ip: &str,
     server_port: &str,
     extension: &str,
     mount_point: &str,
-) -> Result<(), HitlError> {
-    mount_nfs_extension_with_verbosity(server_ip, server_port, extension, mount_point, true)
-}
-
-/// Mount NFS extension with proper error handling and verbosity control
-fn mount_nfs_extension_with_verbosity(
-    server_ip: &str,
-    server_port: &str,
-    extension: &str,
-    mount_point: &str,
-    verbose: bool,
+    output: &OutputManager,
 ) -> Result<(), HitlError> {
     let nfs_source = format!("{server_ip}:/{extension}");
     let mount_options = format!("port={server_port},vers=4,hard,timeo=600,retrans=2,acregmin=0,acregmax=1,acdirmin=0,acdirmax=1,lookupcache=none");
 
-    if verbose {
-        println!("Mounting {nfs_source} to {mount_point} with options: {mount_options}");
-    }
+    output.step(
+        "NFS Mount",
+        &format!("Mounting {nfs_source} to {mount_point}"),
+    );
 
     // Check if we're in test mode and should use mock commands
     let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {

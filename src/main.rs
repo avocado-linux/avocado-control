@@ -1,9 +1,11 @@
 mod commands;
 mod config;
+mod output;
 
 use clap::{Arg, Command};
 use commands::{ext, hitl};
 use config::Config;
+use output::OutputManager;
 
 fn main() {
     let app = Command::new(env!("CARGO_PKG_NAME"))
@@ -18,6 +20,14 @@ fn main() {
                 .help("Sets a custom config file")
                 .global(true),
         )
+        .arg(
+            Arg::new("verbose")
+                .short('v')
+                .long("verbose")
+                .help("Enable verbose output")
+                .action(clap::ArgAction::SetTrue)
+                .global(true),
+        )
         .subcommand(ext::create_command())
         .subcommand(hitl::create_command())
         .subcommand(
@@ -26,25 +36,32 @@ fn main() {
 
     let matches = app.get_matches();
 
+    // Initialize output manager with global verbose setting
+    let verbose = matches.get_flag("verbose");
+    let output = OutputManager::new(verbose);
+
     // Load configuration
     let config_path = matches.get_one::<String>("config").map(|s| s.as_str());
     let config = match Config::load_with_override(config_path) {
         Ok(config) => config,
         Err(e) => {
-            eprintln!("Error loading configuration: {e}");
+            output.error(
+                "Configuration Error",
+                &format!("Failed to load configuration: {e}"),
+            );
             std::process::exit(1);
         }
     };
 
     match matches.subcommand() {
         Some(("ext", ext_matches)) => {
-            ext::handle_command(ext_matches, &config);
+            ext::handle_command(ext_matches, &config, &output);
         }
         Some(("hitl", hitl_matches)) => {
-            hitl::handle_command(hitl_matches);
+            hitl::handle_command(hitl_matches, &output);
         }
         Some(("status", _)) => {
-            show_system_status();
+            show_system_status(&output);
         }
         _ => {
             println!(
@@ -58,12 +75,7 @@ fn main() {
 }
 
 /// Show overall system status including extensions
-fn show_system_status() {
-    println!("Avocado System Status");
-    println!("====================");
-    println!();
-
-    // For now, just show extension status
-    // In the future, this could include other system components
-    ext::status_extensions();
+fn show_system_status(output: &OutputManager) {
+    output.info("System Status", "Checking overall system status");
+    ext::status_extensions(output);
 }
