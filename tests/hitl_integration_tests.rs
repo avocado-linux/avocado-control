@@ -438,13 +438,20 @@ exit 1
 
     // Make it executable
     use std::os::unix::fs::PermissionsExt;
-    let mut perms = std::fs::metadata(&mock_mount_fail_path).unwrap().permissions();
+    let mut perms = std::fs::metadata(&mock_mount_fail_path)
+        .unwrap()
+        .permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&mock_mount_fail_path, perms).unwrap();
 
     // Add temp bin path to PATH (before fixtures so our failing mock takes precedence)
     let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}:{}", temp_bin_dir.to_string_lossy(), fixtures_path.to_string_lossy(), original_path);
+    let new_path = format!(
+        "{}:{}:{}",
+        temp_bin_dir.to_string_lossy(),
+        fixtures_path.to_string_lossy(),
+        original_path
+    );
 
     let output = run_avocadoctl_with_env(
         &["hitl", "mount", "-s", "10.0.2.2", "-e", "test-extension"],
