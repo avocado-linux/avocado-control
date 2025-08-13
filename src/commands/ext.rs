@@ -1,5 +1,5 @@
 use crate::config::Config;
-use clap::{ArgMatches, Command};
+use clap::{Arg, ArgMatches, Command};
 use serde_json::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,13 @@ pub fn create_command() -> Command {
         )
         .subcommand(
             Command::new("unmerge")
-                .about("Unmerge extensions using systemd-sysext and systemd-confext"),
+                .about("Unmerge extensions using systemd-sysext and systemd-confext")
+                .arg(
+                    Arg::new("unmount")
+                        .long("unmount")
+                        .help("Also unmount all persistent loops for .raw extensions")
+                        .action(clap::ArgAction::SetTrue),
+                ),
         )
         .subcommand(
             Command::new("refresh").about("Unmerge and then merge extensions (refresh extensions)"),
@@ -44,8 +50,9 @@ pub fn handle_command(matches: &ArgMatches, config: &Config) {
         Some(("merge", _)) => {
             merge_extensions();
         }
-        Some(("unmerge", _)) => {
-            unmerge_extensions();
+        Some(("unmerge", unmerge_matches)) => {
+            let unmount = unmerge_matches.get_flag("unmount");
+            unmerge_extensions(unmount);
         }
         Some(("refresh", _)) => {
             refresh_extensions();
@@ -147,8 +154,8 @@ fn merge_extensions_internal() -> Result<(), SystemdError> {
 }
 
 /// Unmerge extensions using systemd-sysext and systemd-confext
-fn unmerge_extensions() {
-    match unmerge_extensions_internal() {
+fn unmerge_extensions(unmount: bool) {
+    match unmerge_extensions_internal(unmount) {
         Ok(_) => println!("Extensions unmerged successfully."),
         Err(e) => {
             eprintln!("Failed to unmerge extensions: {e}");
@@ -158,12 +165,12 @@ fn unmerge_extensions() {
 }
 
 /// Internal unmerge function that returns a Result for use in refresh
-fn unmerge_extensions_internal() -> Result<(), SystemdError> {
-    unmerge_extensions_internal_with_depmod(true)
+fn unmerge_extensions_internal(unmount: bool) -> Result<(), SystemdError> {
+    unmerge_extensions_internal_with_depmod(true, unmount)
 }
 
 /// Internal unmerge function with optional depmod control
-fn unmerge_extensions_internal_with_depmod(call_depmod: bool) -> Result<(), SystemdError> {
+fn unmerge_extensions_internal_with_depmod(call_depmod: bool, unmount: bool) -> Result<(), SystemdError> {
     println!("Unmerging extensions...");
 
     // Unmerge system extensions
@@ -179,6 +186,11 @@ fn unmerge_extensions_internal_with_depmod(call_depmod: bool) -> Result<(), Syst
         run_depmod()?;
     }
 
+    // Unmount persistent loops if requested
+    if unmount {
+        unmount_all_persistent_loops()?;
+    }
+
     Ok(())
 }
 
@@ -186,8 +198,8 @@ fn unmerge_extensions_internal_with_depmod(call_depmod: bool) -> Result<(), Syst
 pub fn refresh_extensions() {
     println!("Refreshing extensions (unmerge then merge)...");
 
-    // First unmerge (skip depmod since we'll call it after merge)
-    if let Err(e) = unmerge_extensions_internal_with_depmod(false) {
+    // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
+    if let Err(e) = unmerge_extensions_internal_with_depmod(false, false) {
         eprintln!("Failed to unmerge extensions: {e}");
         std::process::exit(1);
     }
@@ -317,13 +329,14 @@ fn prepare_extension_environment() -> Result<(), SystemdError> {
 fn scan_extensions(extensions_dir: &str) -> Result<Vec<Extension>, SystemdError> {
     let mut extensions = Vec::new();
     let mut extension_map = std::collections::HashMap::new();
+    let mut raw_files = Vec::new();
 
     // Check if extensions directory exists
     if !Path::new(extensions_dir).exists() {
         return Ok(extensions);
     }
 
-    // Read all entries in the extensions directory
+    // First pass: collect all available extensions
     let entries = fs::read_dir(extensions_dir).map_err(|e| SystemdError::CommandFailed {
         command: "scan_extensions".to_string(),
         source: e,
@@ -349,12 +362,22 @@ fn scan_extensions(extensions_dir: &str) -> Result<Vec<Extension>, SystemdError>
 
                     // Only add if we don't already have a directory with the same name
                     if !extension_map.contains_key(ext_name) {
-                        let extension = analyze_raw_extension(ext_name, &path)?;
-                        extension_map.insert(ext_name.to_string(), extension);
+                        raw_files.push((ext_name.to_string(), path));
                     }
                 }
             }
         }
+    }
+
+    // Cleanup stale loops before processing new ones
+    let mut available_extension_names: Vec<String> = extension_map.keys().cloned().collect();
+    available_extension_names.extend(raw_files.iter().map(|(name, _)| name.clone()));
+    cleanup_stale_loops(&available_extension_names)?;
+
+    // Process .raw files with persistent loops
+    for (ext_name, path) in raw_files {
+        let extension = analyze_raw_extension_with_loop(&ext_name, &path)?;
+        extension_map.insert(ext_name, extension);
     }
 
     // Convert map to vector
@@ -394,58 +417,53 @@ fn analyze_directory_extension(name: &str, path: &PathBuf) -> Result<Extension, 
     })
 }
 
-/// Analyze a .raw file extension using systemd-dissect
-fn analyze_raw_extension(name: &str, path: &PathBuf) -> Result<Extension, SystemdError> {
-    println!("Analyzing raw extension: {}", name);
+/// Analyze a .raw file extension using persistent loops
+fn analyze_raw_extension_with_loop(name: &str, path: &PathBuf) -> Result<Extension, SystemdError> {
+    println!("Analyzing raw extension with persistent loop: {}", name);
 
-    // Check if we're in test mode and should use mock commands
-    let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        "mock-systemd-dissect"
+    // Check if we already have a persistent loop for this extension
+    let mount_point = if check_existing_loop_ref(name) {
+        println!("Using existing persistent loop for {}", name);
+        if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+            let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+            format!("{}/avocado/extensions/{}", temp_base, name)
+        } else {
+            format!("/run/avocado/extensions/{}", name)
+        }
     } else {
-        "systemd-dissect"
+        // Create new persistent loop
+        mount_raw_file_with_loop(name, path)?.to_string_lossy().to_string()
     };
 
-    let output = ProcessCommand::new(command_name)
-        .args(&["--json=short", path.to_str().unwrap_or("")])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .map_err(|e| SystemdError::CommandFailed {
-            command: command_name.to_string(),
-            source: e,
-        })?;
+    // Now analyze as a directory by looking at release files
+    let mount_path = PathBuf::from(&mount_point);
+    let mut is_sysext = false;
+    let mut is_confext = false;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(SystemdError::CommandExitedWithError {
-            command: command_name.to_string(),
-            exit_code: output.status.code(),
-            stderr: stderr.to_string(),
-        });
+    // Check for sysext release file
+    let sysext_release_path = mount_path.join("usr/lib/extension-release.d").join(format!("extension-release.{}", name));
+    if sysext_release_path.exists() {
+        is_sysext = true;
     }
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Check for confext release file
+    let confext_release_path = mount_path.join("etc/extension-release.d").join(format!("extension-release.{}", name));
+    if confext_release_path.exists() {
+        is_confext = true;
+    }
 
-    // Parse JSON output
-    let json: Value = serde_json::from_str(&stdout).map_err(|e| SystemdError::CommandFailed {
-        command: "parse_json".to_string(),
-        source: std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
-    })?;
-
-    let is_sysext = json.get("useSystemExtension")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-
-    let is_confext = json.get("useConfigurationExtension")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // If no release files found, default to both types (same as directory behavior)
+    if !is_sysext && !is_confext {
+        is_sysext = true;
+        is_confext = true;
+    }
 
     Ok(Extension {
         name: name.to_string(),
-        path: path.clone(),
+        path: mount_path, // Use the mounted path instead of the raw file path
         is_sysext,
         is_confext,
-        is_directory: false,
+        is_directory: false, // Still track that this originated from a .raw file
     })
 }
 
@@ -571,6 +589,155 @@ fn create_confext_symlink(extension: &Extension) -> Result<(), SystemdError> {
     })?;
 
     println!("Created confext symlink: {} -> {}", target_path, extension.path.display());
+    Ok(())
+}
+
+/// Mount a .raw file using systemd-dissect with persistent loop
+fn mount_raw_file_with_loop(extension_name: &str, raw_path: &PathBuf) -> Result<PathBuf, SystemdError> {
+    let mount_point = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/avocado/extensions/{}", temp_base, extension_name)
+    } else {
+        format!("/run/avocado/extensions/{}", extension_name)
+    };
+
+    // Create mount point directory
+    if let Some(parent) = Path::new(&mount_point).parent() {
+        fs::create_dir_all(parent).map_err(|e| SystemdError::CommandFailed {
+            command: "create_dir_all".to_string(),
+            source: e,
+        })?;
+    }
+
+    println!("Mounting raw file {} with persistent loop...", extension_name);
+
+    // Check if we're in test mode and should use mock commands
+    let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        "mock-systemd-dissect"
+    } else {
+        "systemd-dissect"
+    };
+
+    let output = ProcessCommand::new(command_name)
+        .args(&[
+            format!("--loop-ref={}", extension_name).as_str(),
+            "--mkdir",
+            "-r",
+            "-M",
+            raw_path.to_str().unwrap_or(""),
+            &mount_point,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| SystemdError::CommandFailed {
+            command: command_name.to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SystemdError::CommandExitedWithError {
+            command: command_name.to_string(),
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
+    }
+
+    println!("Mounted {} to {}", extension_name, mount_point);
+    Ok(PathBuf::from(mount_point))
+}
+
+/// Check if a loop ref already exists for an extension
+fn check_existing_loop_ref(extension_name: &str) -> bool {
+    let loop_ref_path = format!("/dev/disk/by-loop-ref/{}", extension_name);
+    Path::new(&loop_ref_path).exists()
+}
+
+/// Cleanup stale loop refs for extensions that no longer exist
+fn cleanup_stale_loops(available_extensions: &[String]) -> Result<(), SystemdError> {
+    let loop_ref_dir = "/dev/disk/by-loop-ref";
+    if !Path::new(loop_ref_dir).exists() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(loop_ref_dir).map_err(|e| SystemdError::CommandFailed {
+        command: "read_dir".to_string(),
+        source: e,
+    })?;
+
+    for entry in entries.flatten() {
+        if let Some(loop_name) = entry.file_name().to_str() {
+            if !available_extensions.contains(&loop_name.to_string()) {
+                println!("Cleaning up stale loop for: {}", loop_name);
+                unmount_loop_ref(loop_name)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Unmount a specific loop ref
+fn unmount_loop_ref(extension_name: &str) -> Result<(), SystemdError> {
+    let mount_point = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{}/avocado/extensions/{}", temp_base, extension_name)
+    } else {
+        format!("/run/avocado/extensions/{}", extension_name)
+    };
+
+    let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        "mock-systemd-dissect"
+    } else {
+        "systemd-dissect"
+    };
+
+    let output = ProcessCommand::new(command_name)
+        .args(&["-U", "--rmdir", &mount_point])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| SystemdError::CommandFailed {
+            command: command_name.to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SystemdError::CommandExitedWithError {
+            command: command_name.to_string(),
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
+    }
+
+    println!("Unmounted loop for {}", extension_name);
+    Ok(())
+}
+
+/// Unmount all persistent loops
+fn unmount_all_persistent_loops() -> Result<(), SystemdError> {
+    println!("Unmounting all persistent loops...");
+
+    let loop_ref_dir = "/dev/disk/by-loop-ref";
+    if !Path::new(loop_ref_dir).exists() {
+        println!("No persistent loops found.");
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(loop_ref_dir).map_err(|e| SystemdError::CommandFailed {
+        command: "read_dir".to_string(),
+        source: e,
+    })?;
+
+    for entry in entries.flatten() {
+        if let Some(loop_name) = entry.file_name().to_str() {
+            unmount_loop_ref(loop_name)?;
+        }
+    }
+
+    println!("All persistent loops unmounted.");
     Ok(())
 }
 

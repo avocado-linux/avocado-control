@@ -4,6 +4,13 @@
 # Parse arguments
 JSON=""
 EXTENSION_FILE=""
+LOOP_REF=""
+MKDIR=""
+READONLY=""
+MOUNT=""
+UNMOUNT=""
+RMDIR=""
+MOUNT_POINT=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -11,15 +18,67 @@ while [[ $# -gt 0 ]]; do
             JSON="${1#*=}"
             shift
             ;;
-        *)
+        --loop-ref=*)
+            LOOP_REF="${1#*=}"
+            shift
+            ;;
+        --mkdir)
+            MKDIR="1"
+            shift
+            ;;
+        -r)
+            READONLY="1"
+            shift
+            ;;
+        -M)
+            MOUNT="1"
+            shift
+            ;;
+        -U)
+            UNMOUNT="1"
+            shift
+            ;;
+        --rmdir)
+            RMDIR="1"
+            shift
+            ;;
+        *.raw)
             EXTENSION_FILE="$1"
+            shift
+            ;;
+        *)
+            MOUNT_POINT="$1"
             shift
             ;;
     esac
 done
 
-# Mock JSON output based on the extension file name
-if [ "$JSON" = "short" ]; then
+# Handle different operations
+if [ "$UNMOUNT" = "1" ] && [ "$RMDIR" = "1" ] && [ -n "$MOUNT_POINT" ]; then
+    # Unmount operation: systemd-dissect -U --rmdir PATH
+    echo "Mock unmounting $MOUNT_POINT"
+    # Remove the mount point directory if it exists
+    if [ -d "$MOUNT_POINT" ]; then
+        rmdir "$MOUNT_POINT" 2>/dev/null || true
+    fi
+    exit 0
+elif [ -n "$LOOP_REF" ] && [ "$MKDIR" = "1" ] && [ "$READONLY" = "1" ] && [ "$MOUNT" = "1" ]; then
+    # Mount operation: systemd-dissect --loop-ref=name --mkdir -r -M file.raw /mount/point
+    echo "Mock mounting $EXTENSION_FILE to $MOUNT_POINT with loop-ref $LOOP_REF"
+    # Create the mount point directory
+    mkdir -p "$MOUNT_POINT"
+    
+    # Create mock directory structure for testing
+    if [[ "$LOOP_REF" == *"test-ext"* ]] || [[ "$LOOP_REF" == *"avocado-dev"* ]]; then
+        # Create mock sysext and confext release files
+        mkdir -p "$MOUNT_POINT/usr/lib/extension-release.d"
+        mkdir -p "$MOUNT_POINT/etc/extension-release.d"
+        echo "ID=_any" > "$MOUNT_POINT/usr/lib/extension-release.d/extension-release.$LOOP_REF"
+        echo "ID=_any" > "$MOUNT_POINT/etc/extension-release.d/extension-release.$LOOP_REF"
+    fi
+    exit 0
+elif [ "$JSON" = "short" ]; then
+    # Legacy JSON output for compatibility
     if [[ "$EXTENSION_FILE" == *"sysext-only"* ]]; then
         echo '{"name":"sysext-only.raw","useSystemExtension":true,"useConfigurationExtension":false}'
     elif [[ "$EXTENSION_FILE" == *"confext-only"* ]]; then
@@ -29,7 +88,7 @@ if [ "$JSON" = "short" ]; then
         echo '{"name":"avocado-dev.raw","sectorSize":512,"sysextRelease":["ID=_any","EXTENSION_RELOAD_MANAGER=1","SYSEXT_SCOPE=system","AVOCADO_ON_MERGE=depmod"],"confextRelease":["ID=_any","EXTENSION_RELOAD_MANAGER=1","CONFEXT_SCOPE=system"],"useBootableUefi":false,"useBootableContainer":false,"useInitrd":false,"usePortableService":false,"useSystemExtension":true,"useInitRDSystemExtension":false,"usePortableSystemExtension":false,"useConfigurationExtension":true,"useInitRDConfigurationExtension":false,"usePortableConfigurationExtension":false,"mounts":[{"rw":"ro","designator":"root","partition_uuid":null,"partition_label":null,"fstype":"squashfs","architecture":null,"verity":null,"growfs":false,"node":"/mnt/src/jschneck/avocado-linux/avocado-os/extensions/dev/_avocado/qemux86-64/output/extensions/avocado-dev.raw","partno":null}]}'
     fi
 else
-    echo "Mock systemd-dissect: JSON format not supported" >&2
+    echo "Mock systemd-dissect: unsupported operation" >&2
     exit 1
 fi
 

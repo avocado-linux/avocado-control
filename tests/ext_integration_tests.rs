@@ -442,8 +442,8 @@ fn test_environment_preparation_with_mock_extensions() {
         "Should show environment preparation message"
     );
     assert!(
-        stdout.contains("Analyzing raw extension: test-ext"),
-        "Should analyze the raw extension"
+        stdout.contains("Analyzing raw extension with persistent loop: test-ext"),
+        "Should analyze the raw extension with persistent loop"
     );
     assert!(
         stdout.contains("Created sysext symlink:") || stdout.contains("Created confext symlink:"),
