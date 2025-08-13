@@ -1,0 +1,36 @@
+#!/bin/bash
+# Mock systemd-dissect for testing
+
+# Parse arguments
+JSON=""
+EXTENSION_FILE=""
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --json=*)
+            JSON="${1#*=}"
+            shift
+            ;;
+        *)
+            EXTENSION_FILE="$1"
+            shift
+            ;;
+    esac
+done
+
+# Mock JSON output based on the extension file name
+if [ "$JSON" = "short" ]; then
+    if [[ "$EXTENSION_FILE" == *"sysext-only"* ]]; then
+        echo '{"name":"sysext-only.raw","useSystemExtension":true,"useConfigurationExtension":false}'
+    elif [[ "$EXTENSION_FILE" == *"confext-only"* ]]; then
+        echo '{"name":"confext-only.raw","useSystemExtension":false,"useConfigurationExtension":true}'
+    else
+        # Default case - both sysext and confext
+        echo '{"name":"avocado-dev.raw","sectorSize":512,"sysextRelease":["ID=_any","EXTENSION_RELOAD_MANAGER=1","SYSEXT_SCOPE=system","AVOCADO_ON_MERGE=depmod"],"confextRelease":["ID=_any","EXTENSION_RELOAD_MANAGER=1","CONFEXT_SCOPE=system"],"useBootableUefi":false,"useBootableContainer":false,"useInitrd":false,"usePortableService":false,"useSystemExtension":true,"useInitRDSystemExtension":false,"usePortableSystemExtension":false,"useConfigurationExtension":true,"useInitRDConfigurationExtension":false,"usePortableConfigurationExtension":false,"mounts":[{"rw":"ro","designator":"root","partition_uuid":null,"partition_label":null,"fstype":"squashfs","architecture":null,"verity":null,"growfs":false,"node":"/mnt/src/jschneck/avocado-linux/avocado-os/extensions/dev/_avocado/qemux86-64/output/extensions/avocado-dev.raw","partno":null}]}'
+    fi
+else
+    echo "Mock systemd-dissect: JSON format not supported" >&2
+    exit 1
+fi
+
+exit 0

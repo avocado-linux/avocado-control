@@ -387,6 +387,74 @@ fn test_ext_merge_help() {
     );
 }
 
+/// Test that environment preparation works with mock extensions
+#[test]
+fn test_environment_preparation_with_mock_extensions() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    // Clean up any previous test directories
+    let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+    let _ = fs::remove_dir_all(format!("{}/test_extensions", temp_base));
+    let _ = fs::remove_dir_all(format!("{}/test_confexts", temp_base));
+
+    // Create a temporary directory for extensions
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let extensions_path = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_path).expect("Failed to create extensions dir");
+
+    // Create a mock .raw extension file
+    let raw_file = extensions_path.join("test-ext.raw");
+    fs::write(&raw_file, b"mock raw extension").expect("Failed to create raw file");
+
+    // Create a mock directory extension
+    let dir_ext = extensions_path.join("dir-ext");
+    fs::create_dir_all(&dir_ext).expect("Failed to create dir extension");
+
+    // Setup mock environment
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+
+    // Add fixtures path to PATH so mock binaries can be found
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    let output = run_avocadoctl_with_env(
+        &["ext", "merge"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            ("AVOCADO_EXTENSIONS_PATH", extensions_path.to_str().unwrap())
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        println!("STDOUT: {}", stdout);
+        println!("STDERR: {}", stderr);
+        panic!("ext merge should succeed with mock extensions");
+    }
+
+    assert!(
+        stdout.contains("Preparing extension environment"),
+        "Should show environment preparation message"
+    );
+    assert!(
+        stdout.contains("Analyzing raw extension: test-ext"),
+        "Should analyze the raw extension"
+    );
+    assert!(
+        stdout.contains("Created sysext symlink:") || stdout.contains("Created confext symlink:"),
+        "Should create symlinks for extensions"
+    );
+
+    // Clean up test directories
+    let _ = fs::remove_dir_all(format!("{}/test_extensions", temp_base));
+    let _ = fs::remove_dir_all(format!("{}/test_confexts", temp_base));
+}
+
 /// Test ext unmerge help
 #[test]
 fn test_ext_unmerge_help() {
