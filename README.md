@@ -44,17 +44,6 @@ avocadoctl --verbose <command>
 avocadoctl --config /path/to/config.toml <command>
 ```
 
-### Legacy Commands
-
-The original `ext` subcommand syntax is still supported:
-
-```bash
-avocadoctl ext merge    # Same as: avocadoctl merge
-avocadoctl ext unmerge  # Same as: avocadoctl unmerge
-avocadoctl ext refresh  # Same as: avocadoctl refresh
-avocadoctl ext status   # Same as: avocadoctl status
-```
-
 ## Environment
 
 This tool is designed for Avocado Linux and requires:
