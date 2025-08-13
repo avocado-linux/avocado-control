@@ -1,0 +1,6 @@
+#!/bin/bash
+# Mock umount command for testing
+
+# In test mode, just simulate successful unmount
+echo "Mock umount: $*" >&2
+exit 0

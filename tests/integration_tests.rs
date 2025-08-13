@@ -38,8 +38,7 @@ fn test_binary_exists() {
     let binary_path = get_binary_path();
     assert!(
         binary_path.exists(),
-        "Binary should exist at {:?}",
-        binary_path
+        "Binary should exist at {binary_path:?}"
     );
 }
 
@@ -187,21 +186,24 @@ fn test_top_level_aliases() {
     // Test help shows the aliases
     let help_output = run_avocadoctl(&["--help"]);
     assert!(help_output.status.success(), "Help should succeed");
-    
+
     let stdout = String::from_utf8_lossy(&help_output.stdout);
     assert!(stdout.contains("merge"), "Should contain merge alias");
     assert!(stdout.contains("unmerge"), "Should contain unmerge alias");
     assert!(stdout.contains("refresh"), "Should contain refresh alias");
-    assert!(stdout.contains("alias for 'ext merge'"), "Should indicate merge is an alias");
-    
+    assert!(
+        stdout.contains("alias for 'ext merge'"),
+        "Should indicate merge is an alias"
+    );
+
     // Test merge help works
     let merge_help = run_avocadoctl(&["merge", "--help"]);
     assert!(merge_help.status.success(), "Merge help should succeed");
-    
+
     // Test unmerge help works
     let unmerge_help = run_avocadoctl(&["unmerge", "--help"]);
     assert!(unmerge_help.status.success(), "Unmerge help should succeed");
-    
+
     // Test refresh help works
     let refresh_help = run_avocadoctl(&["refresh", "--help"]);
     assert!(refresh_help.status.success(), "Refresh help should succeed");

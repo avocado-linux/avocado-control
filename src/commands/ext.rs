@@ -118,7 +118,7 @@ fn list_extensions(config: &Config, output: &OutputManager) {
 }
 
 /// Merge extensions using systemd-sysext and systemd-confext
-fn merge_extensions(output: &OutputManager) {
+pub fn merge_extensions(output: &OutputManager) {
     match merge_extensions_internal(output) {
         Ok(_) => {
             output.success("Extension Merge", "Extensions merged successfully");
@@ -161,7 +161,7 @@ fn merge_extensions_internal(output: &OutputManager) -> Result<(), SystemdError>
 }
 
 /// Unmerge extensions using systemd-sysext and systemd-confext
-fn unmerge_extensions(unmount: bool, output: &OutputManager) {
+pub fn unmerge_extensions(unmount: bool, output: &OutputManager) {
     match unmerge_extensions_internal(unmount, output) {
         Ok(_) => {
             output.success("Extension Unmerge", "Extensions unmerged successfully");
@@ -214,7 +214,7 @@ fn unmerge_extensions_internal_with_depmod(
 }
 
 /// Direct access functions for top-level command aliases
-
+///
 /// Merge extensions - direct access for top-level alias
 pub fn merge_extensions_direct(output: &OutputManager) {
     merge_extensions(output);

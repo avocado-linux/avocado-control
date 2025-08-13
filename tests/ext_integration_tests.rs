@@ -395,8 +395,8 @@ fn test_environment_preparation_with_mock_extensions() {
 
     // Clean up any previous test directories
     let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-    let _ = fs::remove_dir_all(format!("{}/test_extensions", temp_base));
-    let _ = fs::remove_dir_all(format!("{}/test_confexts", temp_base));
+    let _ = fs::remove_dir_all(format!("{temp_base}/test_extensions"));
+    let _ = fs::remove_dir_all(format!("{temp_base}/test_confexts"));
 
     // Create a temporary directory for extensions
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -432,8 +432,8 @@ fn test_environment_preparation_with_mock_extensions() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     if !output.status.success() {
-        println!("STDOUT: {}", stdout);
-        println!("STDERR: {}", stderr);
+        println!("STDOUT: {stdout}");
+        println!("STDERR: {stderr}");
         panic!("ext merge should succeed with mock extensions");
     }
 
@@ -454,8 +454,8 @@ fn test_environment_preparation_with_mock_extensions() {
     );
 
     // Clean up test directories
-    let _ = fs::remove_dir_all(format!("{}/test_extensions", temp_base));
-    let _ = fs::remove_dir_all(format!("{}/test_confexts", temp_base));
+    let _ = fs::remove_dir_all(format!("{temp_base}/test_extensions"));
+    let _ = fs::remove_dir_all(format!("{temp_base}/test_confexts"));
 }
 
 /// Test ext unmerge help

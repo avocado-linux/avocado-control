@@ -29,6 +29,9 @@ avocadoctl status
 ```bash
 # Mount extensions from NFS server for testing
 avocadoctl hitl mount -s <server-ip> -e <extension-name>
+
+# Unmount extensions and clean up
+avocadoctl hitl unmount -e <extension-name>
 ```
 
 ### Global Options

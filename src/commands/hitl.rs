@@ -38,6 +38,17 @@ pub fn create_command() -> Command {
                         .required(true),
                 ),
         )
+        .subcommand(
+            Command::new("unmount").about("Unmount NFS extensions").arg(
+                Arg::new("extension")
+                    .short('e')
+                    .long("extension")
+                    .value_name("NAME")
+                    .help("Extension name to unmount (can be specified multiple times)")
+                    .action(clap::ArgAction::Append)
+                    .required(true),
+            ),
+        )
 }
 
 /// Handle hitl command and its subcommands
@@ -45,6 +56,9 @@ pub fn handle_command(matches: &ArgMatches, output: &OutputManager) {
     match matches.subcommand() {
         Some(("mount", mount_matches)) => {
             mount_extensions(mount_matches, output);
+        }
+        Some(("unmount", unmount_matches)) => {
+            unmount_extensions(unmount_matches, output);
         }
         _ => {
             println!("Use 'avocadoctl hitl --help' for available HITL commands");
@@ -162,14 +176,14 @@ fn mount_nfs_extension(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .map_err(|e| HitlError::CommandFailed {
+        .map_err(|e| HitlError::Command {
             command: command_name.to_string(),
             source: e,
         })?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(HitlError::MountFailed {
+        return Err(HitlError::Mount {
             extension: extension.to_string(),
             mount_point: mount_point.to_string(),
             error: stderr.to_string(),
@@ -179,21 +193,144 @@ fn mount_nfs_extension(
     Ok(())
 }
 
+/// Unmount NFS extensions
+fn unmount_extensions(matches: &ArgMatches, output: &OutputManager) {
+    let extensions: Vec<&String> = matches
+        .get_many::<String>("extension")
+        .expect("at least one extension is required")
+        .collect();
+
+    output.info(
+        "HITL Unmount",
+        &format!("Unmounting {} extension(s)", extensions.len()),
+    );
+
+    // Step 1: Unmerge extensions first
+    output.step("HITL Unmount", "Unmerging extensions");
+    ext::unmerge_extensions(false, output);
+
+    let extensions_base_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/hitl")
+    } else {
+        "/run/avocado/hitl".to_string()
+    };
+
+    let mut success = true;
+
+    // Step 2: Unmount NFS shares and clean up directories
+    for extension in &extensions {
+        output.step(
+            "HITL Unmount",
+            &format!("Unmounting extension: {extension}"),
+        );
+
+        let extension_dir = format!("{extensions_base_dir}/{extension}");
+
+        // Unmount NFS share
+        if let Err(e) = unmount_nfs_extension(&extension_dir, output) {
+            output.error(
+                "HITL Unmount",
+                &format!("Failed to unmount extension {extension}: {e}"),
+            );
+            success = false;
+            continue;
+        }
+
+        // Remove the directory
+        if let Err(e) = cleanup_extension_directory(&extension_dir, output) {
+            output.error(
+                "HITL Unmount",
+                &format!("Failed to cleanup directory for {extension}: {e}"),
+            );
+            success = false;
+            continue;
+        }
+
+        output.progress(&format!("Successfully unmounted extension: {extension}"));
+    }
+
+    if success {
+        output.success("HITL Unmount", "All extensions unmounted successfully");
+        output.info("HITL Unmount", "Refreshing extensions to apply changes");
+        // Step 3: Merge remaining extensions
+        ext::merge_extensions(output);
+    } else {
+        output.error("HITL Unmount", "Some extensions failed to unmount");
+        std::process::exit(1);
+    }
+}
+
+/// Unmount NFS extension with proper error handling
+fn unmount_nfs_extension(mount_point: &str, output: &OutputManager) -> Result<(), HitlError> {
+    // Check if the directory is actually mounted
+    if !Path::new(mount_point).exists() {
+        output.progress(&format!("Directory doesn't exist: {mount_point}"));
+        return Ok(());
+    }
+
+    output.step("NFS Unmount", &format!("Unmounting {mount_point}"));
+
+    // Check if we're in test mode and should use mock commands
+    let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        "mock-umount"
+    } else {
+        "umount"
+    };
+
+    let output = ProcessCommand::new(command_name)
+        .args([mount_point])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| HitlError::Command {
+            command: command_name.to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(HitlError::Unmount {
+            mount_point: mount_point.to_string(),
+            error: stderr.to_string(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Clean up extension directory after unmounting
+fn cleanup_extension_directory(
+    dir_path: &str,
+    output: &OutputManager,
+) -> Result<(), std::io::Error> {
+    if Path::new(dir_path).exists() {
+        fs::remove_dir_all(dir_path)?;
+        output.progress(&format!("Removed directory: {dir_path}"));
+    } else {
+        output.progress(&format!("Directory already removed: {dir_path}"));
+    }
+    Ok(())
+}
+
 /// Errors related to HITL operations
 #[derive(Debug, thiserror::Error)]
 pub enum HitlError {
     #[error("Failed to run command '{command}': {source}")]
-    CommandFailed {
+    Command {
         command: String,
         source: std::io::Error,
     },
 
     #[error("Failed to mount extension '{extension}' to '{mount_point}': {error}")]
-    MountFailed {
+    Mount {
         extension: String,
         mount_point: String,
         error: String,
     },
+
+    #[error("Failed to unmount '{mount_point}': {error}")]
+    Unmount { mount_point: String, error: String },
 }
 
 #[cfg(test)]
@@ -205,12 +342,13 @@ mod tests {
         let cmd = create_command();
         assert_eq!(cmd.get_name(), "hitl");
 
-        // Check that mount subcommand exists
+        // Check that both mount and unmount subcommands exist
         let subcommands: Vec<_> = cmd.get_subcommands().collect();
-        assert_eq!(subcommands.len(), 1);
+        assert_eq!(subcommands.len(), 2);
 
         let subcommand_names: Vec<&str> = subcommands.iter().map(|cmd| cmd.get_name()).collect();
         assert!(subcommand_names.contains(&"mount"));
+        assert!(subcommand_names.contains(&"unmount"));
     }
 
     #[test]
@@ -227,6 +365,21 @@ mod tests {
 
         assert!(arg_names.contains(&"server-ip"));
         assert!(arg_names.contains(&"server-port"));
+        assert!(arg_names.contains(&"extension"));
+    }
+
+    #[test]
+    fn test_unmount_command_args() {
+        let cmd = create_command();
+        let unmount_cmd = cmd
+            .get_subcommands()
+            .find(|subcmd| subcmd.get_name() == "unmount")
+            .expect("unmount subcommand should exist");
+
+        // Check required arguments
+        let args: Vec<_> = unmount_cmd.get_arguments().collect();
+        let arg_names: Vec<&str> = args.iter().map(|arg| arg.get_id().as_str()).collect();
+
         assert!(arg_names.contains(&"extension"));
     }
 }
