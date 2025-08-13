@@ -197,6 +197,9 @@ fn unmerge_extensions_internal_with_depmod(
     let confext_result = run_systemd_command("systemd-confext", &["unmerge", "--json=short"])?;
     handle_systemd_output("systemd-confext unmerge", &confext_result, output)?;
 
+    // Clean up all symlinks to ensure fresh state for next merge
+    cleanup_extension_symlinks(output)?;
+
     // Run depmod after unmerge if requested
     if call_depmod {
         run_depmod()?;
@@ -578,6 +581,9 @@ fn format_status_output(output: &str) {
 /// Prepare the extension environment by setting up symlinks with output manager
 fn prepare_extension_environment_with_output(output: &OutputManager) -> Result<(), SystemdError> {
     output.step("Environment", "Preparing extension environment");
+
+    // Verify clean state by ensuring no stale symlinks exist
+    verify_clean_extension_environment(output)?;
 
     // Scan for available extensions from multiple sources
     let extensions = scan_extensions_from_all_sources_with_verbosity(output.is_verbose())?;
@@ -1156,6 +1162,133 @@ fn unmount_all_persistent_loops() -> Result<(), SystemdError> {
 
     println!("All persistent loops unmounted.");
     Ok(())
+}
+
+/// Clean up all extension symlinks to ensure fresh state for merge
+fn cleanup_extension_symlinks(output: &OutputManager) -> Result<(), SystemdError> {
+    output.step("Cleanup", "Removing old extension symlinks");
+
+    // Clean up sysext symlinks
+    let sysext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/test_extensions")
+    } else {
+        "/run/extensions".to_string()
+    };
+
+    cleanup_symlinks_in_directory(&sysext_dir, output)?;
+
+    // Clean up confext symlinks
+    let confext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/test_confexts")
+    } else {
+        "/run/confexts".to_string()
+    };
+
+    cleanup_symlinks_in_directory(&confext_dir, output)?;
+
+    output.progress("Extension symlinks cleaned up");
+    Ok(())
+}
+
+/// Clean up all symlinks in a specific directory
+fn cleanup_symlinks_in_directory(
+    directory: &str,
+    output: &OutputManager,
+) -> Result<(), SystemdError> {
+    if !Path::new(directory).exists() {
+        return Ok(());
+    }
+
+    let entries = fs::read_dir(directory).map_err(|e| SystemdError::CommandFailed {
+        command: "read_dir".to_string(),
+        source: e,
+    })?;
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_symlink() {
+            if let Err(e) = fs::remove_file(&path) {
+                output.progress(&format!(
+                    "Warning: Failed to remove symlink {}: {}",
+                    path.display(),
+                    e
+                ));
+            } else {
+                output.progress(&format!("Removed symlink: {}", path.display()));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Verify that extension directories are clean before merge
+fn verify_clean_extension_environment(output: &OutputManager) -> Result<(), SystemdError> {
+    let sysext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/test_extensions")
+    } else {
+        "/run/extensions".to_string()
+    };
+
+    let confext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/test_confexts")
+    } else {
+        "/run/confexts".to_string()
+    };
+
+    // Check for stale symlinks in sysext directory
+    if let Some(stale_symlinks) = check_for_stale_symlinks(&sysext_dir)? {
+        output.progress(&format!(
+            "Warning: Found {} stale symlinks in {}, cleaning up",
+            stale_symlinks.len(),
+            sysext_dir
+        ));
+        cleanup_symlinks_in_directory(&sysext_dir, output)?;
+    }
+
+    // Check for stale symlinks in confext directory
+    if let Some(stale_symlinks) = check_for_stale_symlinks(&confext_dir)? {
+        output.progress(&format!(
+            "Warning: Found {} stale symlinks in {}, cleaning up",
+            stale_symlinks.len(),
+            confext_dir
+        ));
+        cleanup_symlinks_in_directory(&confext_dir, output)?;
+    }
+
+    Ok(())
+}
+
+/// Check for stale symlinks in a directory
+fn check_for_stale_symlinks(directory: &str) -> Result<Option<Vec<String>>, SystemdError> {
+    if !Path::new(directory).exists() {
+        return Ok(None);
+    }
+
+    let entries = fs::read_dir(directory).map_err(|e| SystemdError::CommandFailed {
+        command: "read_dir".to_string(),
+        source: e,
+    })?;
+
+    let mut stale_symlinks = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_symlink() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                stale_symlinks.push(name.to_string());
+            }
+        }
+    }
+
+    if stale_symlinks.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(stale_symlinks))
+    }
 }
 
 /// Process post-merge tasks by checking extension release files
