@@ -1,0 +1,6 @@
+#!/bin/bash
+# Mock touch for testing AVOCADO_ON_MERGE commands
+
+echo "[TEST] mock-touch called with args: $@"
+echo "[SUCCESS] touch operation completed successfully"
+exit 0

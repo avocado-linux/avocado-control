@@ -1,0 +1,6 @@
+#!/bin/bash
+# Mock prometheus for testing AVOCADO_ON_MERGE commands
+
+echo "[TEST] mock-prometheus called with args: $@"
+echo "[SUCCESS] prometheus operation completed successfully"
+exit 0

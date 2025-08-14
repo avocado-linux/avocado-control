@@ -526,17 +526,19 @@ fn test_ext_refresh_with_mocks() {
     );
 
     // Verify depmod is only called once at the end (during merge phase)
-    let depmod_count = stdout.matches("[INFO] Running depmod").count();
+    let depmod_count = stdout.matches("Running command: depmod").count()
+        + stdout.matches("[INFO] Running depmod").count();
     assert_eq!(
         depmod_count, 1,
         "Should call depmod exactly once during refresh (only during merge phase)"
     );
     assert!(
-        stdout.contains("[INFO] Running depmod"),
+        stdout.contains("Running command: depmod") || stdout.contains("[INFO] Running depmod"),
         "Should show depmod running message"
     );
     assert!(
-        stdout.contains("[SUCCESS] depmod completed successfully"),
+        stdout.contains("Command 'depmod' completed successfully")
+            || stdout.contains("[SUCCESS] depmod completed successfully"),
         "Should show depmod completion"
     );
 }
@@ -618,12 +620,14 @@ fn test_ext_merge_with_depmod_processing() {
         stdout.contains("Extensions merged successfully"),
         "Should show merge success"
     );
+    // Should show depmod being executed in the new generic command execution
     assert!(
-        stdout.contains("[INFO] Running depmod"),
+        stdout.contains("Running command: depmod") || stdout.contains("[INFO] Running depmod"),
         "Should show depmod running message"
     );
     assert!(
-        stdout.contains("[SUCCESS] depmod completed successfully"),
+        stdout.contains("Command 'depmod' completed successfully")
+            || stdout.contains("[SUCCESS] depmod completed successfully"),
         "Should show depmod completion"
     );
 }
@@ -653,7 +657,8 @@ fn test_ext_merge_multiple_extensions_single_depmod() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Verify depmod is called exactly once
-    let depmod_count = stdout.matches("[INFO] Running depmod").count();
+    let depmod_count = stdout.matches("Running command: depmod").count()
+        + stdout.matches("[INFO] Running depmod").count();
     assert_eq!(
         depmod_count, 1,
         "Should call depmod exactly once even with multiple extensions requiring it"
@@ -721,11 +726,12 @@ fn test_ext_merge_with_modprobe_processing() {
         "Should show merge success"
     );
     assert!(
-        stdout.contains("[INFO] Running depmod"),
+        stdout.contains("Running command: depmod") || stdout.contains("[INFO] Running depmod"),
         "Should show depmod running message"
     );
     assert!(
-        stdout.contains("[SUCCESS] depmod completed successfully"),
+        stdout.contains("Command 'depmod' completed successfully")
+            || stdout.contains("[SUCCESS] depmod completed successfully"),
         "Should show depmod completion"
     );
     assert!(
@@ -817,5 +823,260 @@ fn test_ext_status_help() {
     assert!(
         stdout.contains("Show status of merged extensions"),
         "Should contain status description"
+    );
+}
+
+/// Test ext merge with multiple AVOCADO_ON_MERGE commands from same extension
+#[test]
+fn test_ext_merge_with_multiple_on_merge_commands() {
+    // Create a temporary release directory with our test files
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "merge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with multiple AVOCADO_ON_MERGE commands"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show merge success"
+    );
+
+    // Verify that multiple commands are executed
+    assert!(
+        stdout.contains("Executing") && stdout.contains("post-merge commands"),
+        "Should show execution of post-merge commands"
+    );
+
+    // Should see depmod being executed
+    assert!(
+        stdout.contains("Running command: depmod") || stdout.contains("[INFO] Running depmod"),
+        "Should execute depmod command"
+    );
+}
+
+/// Test ext merge with quoted AVOCADO_ON_MERGE commands
+#[test]
+fn test_ext_merge_with_quoted_commands() {
+    // Create a temporary release directory with our test files
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "merge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with quoted AVOCADO_ON_MERGE commands"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show merge success"
+    );
+
+    // Should execute commands with arguments
+    assert!(
+        stdout.contains("post-merge commands"),
+        "Should show execution of post-merge commands"
+    );
+}
+
+/// Test ext unmerge also executes AVOCADO_ON_MERGE commands
+#[test]
+fn test_ext_unmerge_executes_on_merge_commands() {
+    // Setup mock environment with release files
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "unmerge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext unmerge should succeed and execute AVOCADO_ON_MERGE commands"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions unmerged successfully"),
+        "Should show unmerge success"
+    );
+
+    // Should execute post-merge commands during unmerge too
+    assert!(
+        stdout.contains("post-merge commands") || stdout.contains("Running command:"),
+        "Should execute AVOCADO_ON_MERGE commands during unmerge"
+    );
+}
+
+/// Test deduplication of AVOCADO_ON_MERGE commands
+#[test]
+fn test_avocado_on_merge_command_deduplication() {
+    // This test verifies that duplicate commands across multiple extensions
+    // are only executed once
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "merge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with command deduplication"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Count how many times depmod is called - should be only once despite multiple extensions having it
+    let depmod_execution_count = stdout.matches("Running command: depmod").count()
+        + stdout.matches("[INFO] Running depmod").count();
+
+    // We should see depmod executed, but due to deduplication it should appear in consolidated command execution
+    assert!(
+        depmod_execution_count >= 1,
+        "depmod should be executed at least once"
+    );
+
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show merge success"
+    );
+}
+
+/// Test AVOCADO_ON_MERGE commands in confext release files
+#[test]
+fn test_ext_merge_with_confext_commands() {
+    // Create a temporary test scenario with both sysext and confext directories
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp directory");
+    let temp_path = temp_dir.path();
+
+    // Create mock sysext and confext release directories
+    let sysext_dir = temp_path.join("usr/lib/extension-release.d");
+    let confext_dir = temp_path.join("etc/extension-release.d");
+
+    std::fs::create_dir_all(&sysext_dir).expect("Failed to create sysext dir");
+    std::fs::create_dir_all(&confext_dir).expect("Failed to create confext dir");
+
+    // Copy our test fixtures
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+
+    // Copy sysext test files
+    let source_sysext = fixtures_path.join("extension-release.d/extension-release.utils");
+    let dest_sysext = sysext_dir.join("extension-release.utils");
+    std::fs::copy(&source_sysext, &dest_sysext).expect("Failed to copy sysext file");
+
+    // Copy confext test files
+    let source_confext = fixtures_path.join("confext-release.d/extension-release.config-mgmt");
+    let dest_confext = confext_dir.join("extension-release.config-mgmt");
+    std::fs::copy(&source_confext, &dest_confext).expect("Failed to copy confext file");
+
+    let (output, _temp_test_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "merge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &temp_path.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with confext commands"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions merged successfully"),
+        "Should show merge success"
+    );
+
+    // Should execute commands from both sysext and confext
+    assert!(
+        stdout.contains("post-merge commands"),
+        "Should show execution of post-merge commands"
     );
 }

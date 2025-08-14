@@ -1,0 +1,5 @@
+ID=extension-release.config-mgmt
+VERSION_ID=1.0
+DESCRIPTION="Configuration Management Extension"
+AVOCADO_ON_MERGE="systemctl reload nginx"
+AVOCADO_ON_MERGE="touch /var/log/config-applied"

@@ -1,0 +1,6 @@
+#!/bin/bash
+# Mock echo for testing AVOCADO_ON_MERGE commands
+
+echo "[TEST] mock-echo called with args: $@"
+echo "$@"
+exit 0

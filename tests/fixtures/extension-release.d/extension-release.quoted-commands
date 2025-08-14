@@ -1,0 +1,5 @@
+ID=extension-release.quoted-commands
+VERSION_ID=1.0
+DESCRIPTION="Extension with Quoted Command Arguments"
+AVOCADO_ON_MERGE="echo 'Hello World'"
+AVOCADO_ON_MERGE="ls -la /tmp"

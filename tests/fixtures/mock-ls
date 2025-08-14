@@ -1,0 +1,8 @@
+#!/bin/bash
+# Mock ls for testing AVOCADO_ON_MERGE commands
+
+echo "[TEST] mock-ls called with args: $@"
+echo "total 0"
+echo "drwxr-xr-x 2 test test 60 Jan 1 00:00 ."
+echo "drwxr-xr-x 3 test test 60 Jan 1 00:00 .."
+exit 0

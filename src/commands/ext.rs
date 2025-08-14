@@ -237,7 +237,22 @@ fn unmerge_extensions_internal_with_depmod(
     unmount: bool,
     output: &OutputManager,
 ) -> Result<(), SystemdError> {
+    unmerge_extensions_internal_with_options(call_depmod, true, unmount, output)
+}
+
+/// Internal unmerge function with all options
+fn unmerge_extensions_internal_with_options(
+    call_depmod: bool,
+    call_on_merge_commands: bool,
+    unmount: bool,
+    output: &OutputManager,
+) -> Result<(), SystemdError> {
     output.info("Extension Unmerge", "Starting extension unmerge process");
+
+    // Process post-unmerge tasks before actual unmerge to have access to release files
+    if call_on_merge_commands {
+        process_post_unmerge_tasks()?;
+    }
 
     // Unmerge system extensions
     let sysext_result = run_systemd_command("systemd-sysext", &["unmerge", "--json=short"])?;
@@ -284,8 +299,8 @@ pub fn refresh_extensions_direct(output: &OutputManager) {
 pub fn refresh_extensions(output: &OutputManager) {
     output.info("Extension Refresh", "Starting extension refresh process");
 
-    // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
-    if let Err(e) = unmerge_extensions_internal_with_depmod(false, false, output) {
+    // First unmerge (skip depmod and AVOCADO_ON_MERGE commands since we'll call them after merge, don't unmount loops)
+    if let Err(e) = unmerge_extensions_internal_with_options(false, false, false, output) {
         output.error(
             "Extension Refresh",
             &format!("Failed to unmerge extensions: {e}"),
@@ -1370,51 +1385,100 @@ fn check_for_stale_symlinks(directory: &str) -> Result<Option<Vec<String>>, Syst
     }
 }
 
-/// Process post-merge tasks by checking extension release files
-fn process_post_merge_tasks() -> Result<(), SystemdError> {
-    let release_dir = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR")
-        .unwrap_or_else(|_| "/usr/lib/extension-release.d".to_string());
-
-    // Check if the release directory exists
-    if !Path::new(&release_dir).exists() {
-        // This is not an error - just means no extensions are merged or old systemd version
-        return Ok(());
-    }
-
-    let mut depmod_needed = false;
+/// Scan release files from both sysext and confext directories
+fn scan_release_files_for_commands() -> Result<(Vec<String>, Vec<String>), SystemdError> {
+    let mut on_merge_commands = Vec::new();
     let mut modprobe_modules = Vec::new();
 
-    // Read all files in the extension release directory
-    match fs::read_dir(&release_dir) {
-        Ok(entries) => {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if check_avocado_on_merge_depmod(&content) {
-                            depmod_needed = true;
-                        }
+    // Define release directories to scan
+    let release_dirs = if let Ok(custom_dir) = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR") {
+        // If custom directory is set (usually for testing), check both subdirectories under it
+        // This supports test scenarios where we set up a base directory with both sysext and confext subdirs
+        let custom_path = Path::new(&custom_dir);
+        let mut dirs = Vec::new();
 
-                        // Parse AVOCADO_MODPROBE modules
-                        let mut modules = parse_avocado_modprobe(&content);
-                        modprobe_modules.append(&mut modules);
+        // Check if it's a single directory with release files (legacy behavior)
+        if custom_path.join("extension-release.d").exists() {
+            dirs.push(custom_dir.clone());
+        } else {
+            // Look for sysext and confext subdirectories
+            let sysext_dir = custom_path.join("usr/lib/extension-release.d");
+            let confext_dir = custom_path.join("etc/extension-release.d");
+
+            if sysext_dir.exists() {
+                dirs.push(sysext_dir.to_string_lossy().to_string());
+            }
+            if confext_dir.exists() {
+                dirs.push(confext_dir.to_string_lossy().to_string());
+            }
+
+            // If neither subdirectory structure exists, use the custom dir directly
+            if dirs.is_empty() {
+                dirs.push(custom_dir);
+            }
+        }
+        dirs
+    } else {
+        // Check both sysext and confext release directories
+        vec![
+            "/usr/lib/extension-release.d".to_string(), // sysext
+            "/etc/extension-release.d".to_string(),     // confext
+        ]
+    };
+
+    for release_dir in release_dirs {
+        // Check if the release directory exists
+        if !Path::new(&release_dir).exists() {
+            continue; // Skip non-existent directories
+        }
+
+        // Read all files in the extension release directory
+        match fs::read_dir(&release_dir) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Ok(content) = fs::read_to_string(&path) {
+                            // Parse AVOCADO_ON_MERGE commands
+                            let mut commands = parse_avocado_on_merge_commands(&content);
+                            on_merge_commands.append(&mut commands);
+
+                            // Parse AVOCADO_MODPROBE modules
+                            let mut modules = parse_avocado_modprobe(&content);
+                            modprobe_modules.append(&mut modules);
+                        }
                     }
                 }
             }
-        }
-        Err(e) => {
-            // Log the error but don't fail the entire operation
-            eprintln!("Warning: Could not read extension release directory {release_dir}: {e}");
-            return Ok(());
+            Err(e) => {
+                // Log the error but don't fail the entire operation
+                eprintln!("Warning: Could not read extension release directory {release_dir}: {e}");
+                continue;
+            }
         }
     }
 
-    // Call depmod if needed
-    if depmod_needed {
-        run_depmod()?;
+    Ok((on_merge_commands, modprobe_modules))
+}
+
+/// Process post-merge tasks by checking extension release files
+fn process_post_merge_tasks() -> Result<(), SystemdError> {
+    let (on_merge_commands, modprobe_modules) = scan_release_files_for_commands()?;
+
+    // Remove duplicates while preserving order
+    let mut unique_commands = Vec::new();
+    for command in on_merge_commands {
+        if !unique_commands.contains(&command) {
+            unique_commands.push(command);
+        }
     }
 
-    // Call modprobe for each module after depmod completes
+    // Execute accumulated AVOCADO_ON_MERGE commands
+    if !unique_commands.is_empty() {
+        run_avocado_on_merge_commands(&unique_commands)?;
+    }
+
+    // Call modprobe for each module after commands complete
     if !modprobe_modules.is_empty() {
         run_modprobe(&modprobe_modules)?;
     }
@@ -1422,8 +1486,31 @@ fn process_post_merge_tasks() -> Result<(), SystemdError> {
     Ok(())
 }
 
-/// Check if a release file content contains AVOCADO_ON_MERGE=depmod
-fn check_avocado_on_merge_depmod(content: &str) -> bool {
+/// Process post-unmerge tasks by checking extension release files
+/// This is called before the actual unmerge to have access to release files
+fn process_post_unmerge_tasks() -> Result<(), SystemdError> {
+    let (on_merge_commands, _modprobe_modules) = scan_release_files_for_commands()?;
+
+    // Remove duplicates while preserving order
+    let mut unique_commands = Vec::new();
+    for command in on_merge_commands {
+        if !unique_commands.contains(&command) {
+            unique_commands.push(command);
+        }
+    }
+
+    // Execute accumulated AVOCADO_ON_MERGE commands during unmerge
+    if !unique_commands.is_empty() {
+        run_avocado_on_merge_commands(&unique_commands)?;
+    }
+
+    Ok(())
+}
+
+/// Parse all AVOCADO_ON_MERGE commands from release file content
+fn parse_avocado_on_merge_commands(content: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+
     for line in content.lines() {
         let line = line.trim();
         if line.starts_with("AVOCADO_ON_MERGE=") {
@@ -1433,12 +1520,22 @@ fn check_avocado_on_merge_depmod(content: &str) -> bool {
                 .unwrap_or("")
                 .trim_matches('"')
                 .trim();
-            if value == "depmod" {
-                return true;
+
+            if !value.is_empty() {
+                commands.push(value.to_string());
             }
         }
     }
-    false
+
+    commands
+}
+
+/// Check if a release file content contains AVOCADO_ON_MERGE=depmod
+/// (Kept for backward compatibility with existing tests)
+#[allow(dead_code)]
+fn check_avocado_on_merge_depmod(content: &str) -> bool {
+    let commands = parse_avocado_on_merge_commands(content);
+    commands.contains(&"depmod".to_string())
 }
 
 /// Parse AVOCADO_MODPROBE modules from release file content
@@ -1538,6 +1635,79 @@ fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
     }
 
     print_colored_success("Module loading completed.");
+    Ok(())
+}
+
+/// Run accumulated AVOCADO_ON_MERGE commands
+fn run_avocado_on_merge_commands(commands: &[String]) -> Result<(), SystemdError> {
+    if commands.is_empty() {
+        return Ok(());
+    }
+
+    print_colored_info(&format!("Executing {} post-merge commands", commands.len()));
+
+    for command_str in commands {
+        print_colored_info(&format!("Running command: {command_str}"));
+
+        // Parse the command string to handle commands with arguments
+        // Commands may be quoted or contain spaces
+        let parts: Vec<&str> = if command_str.starts_with('"') && command_str.ends_with('"') {
+            // Handle quoted commands
+            let unquoted = &command_str[1..command_str.len() - 1];
+            unquoted.split_whitespace().collect()
+        } else {
+            // Handle unquoted commands
+            command_str.split_whitespace().collect()
+        };
+
+        if parts.is_empty() {
+            eprintln!("Warning: Empty command in AVOCADO_ON_MERGE, skipping");
+            continue;
+        }
+
+        let (command_name, args) = parts.split_first().unwrap();
+
+        // Check if we're in test mode and should use mock commands
+        let mock_command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+            match *command_name {
+                "depmod" => "mock-depmod".to_string(),
+                "modprobe" => "mock-modprobe".to_string(),
+                _ => {
+                    // For other commands in test mode, prefix with mock- if not already
+                    if command_name.starts_with("mock-") {
+                        command_name.to_string()
+                    } else {
+                        format!("mock-{command_name}")
+                    }
+                }
+            }
+        } else {
+            command_name.to_string()
+        };
+
+        let actual_command = &mock_command_name;
+
+        let output = ProcessCommand::new(actual_command)
+            .args(args)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| SystemdError::CommandFailed {
+                command: command_str.clone(),
+                source: e,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("Warning: Command '{command_str}' failed: {stderr}");
+            // Log warning but don't fail the entire operation
+            // This matches the behavior of modprobe failures
+        } else {
+            print_colored_success(&format!("Command '{command_str}' completed successfully"));
+        }
+    }
+
+    print_colored_success("Post-merge command execution completed.");
     Ok(())
 }
 

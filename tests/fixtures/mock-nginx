@@ -1,0 +1,6 @@
+#!/bin/bash
+# Mock nginx for testing AVOCADO_ON_MERGE commands
+
+echo "[TEST] mock-nginx called with args: $@"
+echo "[SUCCESS] nginx operation completed successfully"
+exit 0

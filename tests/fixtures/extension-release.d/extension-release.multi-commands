@@ -1,0 +1,6 @@
+ID=extension-release.multi-commands
+VERSION_ID=1.0
+DESCRIPTION="Extension with Multiple AVOCADO_ON_MERGE commands"
+AVOCADO_ON_MERGE=depmod
+AVOCADO_ON_MERGE="systemctl restart some-service"
+AVOCADO_ON_MERGE=update-initramfs -u
