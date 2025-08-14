@@ -365,11 +365,11 @@ fn test_ext_unmerge_with_mocks() {
         "Should show confext operation"
     );
     assert!(
-        stdout.contains("Running depmod"),
+        stdout.contains("[INFO] Running depmod"),
         "Should show depmod running message"
     );
     assert!(
-        stdout.contains("depmod completed successfully"),
+        stdout.contains("[SUCCESS] depmod completed successfully"),
         "Should show depmod completion"
     );
 }
@@ -536,17 +536,17 @@ fn test_ext_refresh_with_mocks() {
     );
 
     // Verify depmod is only called once at the end (during merge phase)
-    let depmod_count = stdout.matches("Running depmod").count();
+    let depmod_count = stdout.matches("[INFO] Running depmod").count();
     assert_eq!(
         depmod_count, 1,
         "Should call depmod exactly once during refresh (only during merge phase)"
     );
     assert!(
-        stdout.contains("Running depmod"),
+        stdout.contains("[INFO] Running depmod"),
         "Should show depmod running message"
     );
     assert!(
-        stdout.contains("depmod completed successfully"),
+        stdout.contains("[SUCCESS] depmod completed successfully"),
         "Should show depmod completion"
     );
 }
@@ -638,11 +638,11 @@ fn test_ext_merge_with_depmod_processing() {
         "Should show merge success"
     );
     assert!(
-        stdout.contains("Running depmod"),
+        stdout.contains("[INFO] Running depmod"),
         "Should show depmod running message"
     );
     assert!(
-        stdout.contains("depmod completed successfully"),
+        stdout.contains("[SUCCESS] depmod completed successfully"),
         "Should show depmod completion"
     );
 }
@@ -677,37 +677,37 @@ fn test_ext_merge_multiple_extensions_single_depmod() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    
+
     // Verify depmod is called exactly once
-    let depmod_count = stdout.matches("Running depmod").count();
+    let depmod_count = stdout.matches("[INFO] Running depmod").count();
     assert_eq!(
         depmod_count, 1,
         "Should call depmod exactly once even with multiple extensions requiring it"
     );
-    
+
     // Verify all modules from all extensions are loaded
     assert!(
-        stdout.contains("Loading kernel modules:"),
+        stdout.contains("[INFO] Loading kernel modules:"),
         "Should show module loading message"
     );
-    
+
     // Check that modules from multiple extensions are included
     // From network-driver: e1000e igb ixgbe
-    // From storage-driver: ahci nvme  
+    // From storage-driver: ahci nvme
     // From gpu-driver: nvidia i915 radeon
     // From sound-driver: snd_hda_intel
     let has_network_modules = stdout.contains("e1000e") || stdout.contains("igb") || stdout.contains("ixgbe");
     let has_storage_modules = stdout.contains("ahci") || stdout.contains("nvme");
     let has_gpu_modules = stdout.contains("nvidia") || stdout.contains("i915") || stdout.contains("radeon");
     let has_sound_modules = stdout.contains("snd_hda_intel");
-    
+
     assert!(
         has_network_modules || has_storage_modules || has_gpu_modules || has_sound_modules,
         "Should load modules from multiple extensions. Stdout: {}", stdout
     );
-    
+
     assert!(
-        stdout.contains("Module loading completed"),
+        stdout.contains("[SUCCESS] Module loading completed"),
         "Should show module loading completion"
     );
 }
@@ -752,19 +752,19 @@ fn test_ext_merge_with_modprobe_processing() {
         "Should show merge success"
     );
     assert!(
-        stdout.contains("Running depmod"),
+        stdout.contains("[INFO] Running depmod"),
         "Should show depmod running message"
     );
     assert!(
-        stdout.contains("depmod completed successfully"),
+        stdout.contains("[SUCCESS] depmod completed successfully"),
         "Should show depmod completion"
     );
     assert!(
-        stdout.contains("Loading kernel modules:"),
+        stdout.contains("[INFO] Loading kernel modules:"),
         "Should show module loading message"
     );
     assert!(
-        stdout.contains("Module loading completed"),
+        stdout.contains("[SUCCESS] Module loading completed"),
         "Should show module loading completion"
     );
 
@@ -782,12 +782,19 @@ fn test_ext_merge_no_depmod_needed() {
     let current_dir = std::env::current_dir().expect("Failed to get current directory");
     let fixtures_path = current_dir.join("tests/fixtures");
 
+    // Use a non-existent release directory to ensure no post-merge tasks run
+    let empty_release_dir = "/tmp/nonexistent_release_dir";
+
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
 
     let output = run_avocadoctl_with_env(
         &["ext", "merge", "--verbose"],
-        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            ("AVOCADO_EXTENSION_RELEASE_DIR", empty_release_dir),
+        ],
     );
 
     assert!(

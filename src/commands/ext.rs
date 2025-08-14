@@ -3,9 +3,11 @@ use crate::output::OutputManager;
 use clap::{Arg, ArgMatches, Command};
 use serde_json::Value;
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Stdio};
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 /// Represents an extension and its type(s)
 #[derive(Debug, Clone)]
@@ -15,6 +17,52 @@ struct Extension {
     is_sysext: bool,
     is_confext: bool,
     is_directory: bool, // true for directories, false for .raw files
+}
+
+/// Print a colored success message
+fn print_colored_success(message: &str) {
+    // Use auto-detection but fallback gracefully
+    let color_choice = if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        ColorChoice::Never
+    } else {
+        ColorChoice::Auto
+    };
+
+    let mut stdout = StandardStream::stdout(color_choice);
+    let mut color_spec = ColorSpec::new();
+    color_spec.set_fg(Some(Color::Green)).set_bold(true);
+
+    if stdout.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
+        let _ = write!(&mut stdout, "[SUCCESS]");
+        let _ = stdout.reset();
+        println!(" {}", message);
+    } else {
+        // Fallback for environments without color support
+        println!("[SUCCESS] {}", message);
+    }
+}
+
+/// Print a colored info message
+fn print_colored_info(message: &str) {
+    // Use auto-detection but fallback gracefully
+    let color_choice = if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        ColorChoice::Never
+    } else {
+        ColorChoice::Auto
+    };
+
+    let mut stdout = StandardStream::stdout(color_choice);
+    let mut color_spec = ColorSpec::new();
+    color_spec.set_fg(Some(Color::Blue)).set_bold(true);
+
+    if stdout.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
+        let _ = write!(&mut stdout, "[INFO]");
+        let _ = stdout.reset();
+        println!(" {}", message);
+    } else {
+        // Fallback for environments without color support
+        println!("[INFO] {}", message);
+    }
 }
 
 /// Create the ext subcommand definition
@@ -577,7 +625,7 @@ fn display_status_summary(
     println!("    - Configuration extensions: {}", mounted_confext.len());
 
     if hitl_count > 0 {
-        println!("  📡 HITL extensions are active - development mode");
+        print_colored_info("HITL extensions are active - development mode");
     }
 }
 
@@ -1420,7 +1468,7 @@ fn parse_avocado_modprobe(content: &str) -> Vec<String> {
 
 /// Run the depmod command
 fn run_depmod() -> Result<(), SystemdError> {
-    println!("Running depmod to update kernel module dependencies...");
+    print_colored_info("Running depmod to update kernel module dependencies...");
 
     // Check if we're in test mode and should use mock commands
     let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
@@ -1447,7 +1495,7 @@ fn run_depmod() -> Result<(), SystemdError> {
         });
     }
 
-    println!("depmod completed successfully.");
+    print_colored_success("depmod completed successfully.");
     Ok(())
 }
 
@@ -1457,7 +1505,7 @@ fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
         return Ok(());
     }
 
-    println!("Loading kernel modules: {}", modules.join(", "));
+    print_colored_info(&format!("Loading kernel modules: {}", modules.join(", ")));
 
     for module in modules {
         // Check if we're in test mode and should use mock commands
@@ -1483,11 +1531,11 @@ fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
             // Don't fail the entire operation for individual module failures
             // Just log the warning and continue with other modules
         } else {
-            println!("Module {} loaded successfully.", module);
+            print_colored_success(&format!("Module {} loaded successfully.", module));
         }
     }
 
-    println!("Module loading completed.");
+    print_colored_success("Module loading completed.");
     Ok(())
 }
 
