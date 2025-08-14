@@ -1385,80 +1385,134 @@ fn check_for_stale_symlinks(directory: &str) -> Result<Option<Vec<String>>, Syst
     }
 }
 
-/// Scan release files from both sysext and confext directories
+/// Scan release files from trusted, read-only mounted extension loops
 fn scan_release_files_for_commands() -> Result<(Vec<String>, Vec<String>), SystemdError> {
     let mut on_merge_commands = Vec::new();
     let mut modprobe_modules = Vec::new();
 
-    // Define release directories to scan
-    let release_dirs = if let Ok(custom_dir) = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR") {
-        // If custom directory is set (usually for testing), check both subdirectories under it
-        // This supports test scenarios where we set up a base directory with both sysext and confext subdirs
-        let custom_path = Path::new(&custom_dir);
-        let mut dirs = Vec::new();
+    // Handle test mode with custom release directory (for backwards compatibility)
+    if let Ok(custom_dir) = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR") {
+        return scan_custom_release_directory(&custom_dir);
+    }
 
-        // Check if it's a single directory with release files (legacy behavior)
-        if custom_path.join("extension-release.d").exists() {
-            dirs.push(custom_dir.clone());
-        } else {
-            // Look for sysext and confext subdirectories
-            let sysext_dir = custom_path.join("usr/lib/extension-release.d");
-            let confext_dir = custom_path.join("etc/extension-release.d");
+    // Get all available extensions from trusted sources only
+    let extensions = scan_extensions_from_all_sources()?;
 
-            if sysext_dir.exists() {
-                dirs.push(sysext_dir.to_string_lossy().to_string());
-            }
-            if confext_dir.exists() {
-                dirs.push(confext_dir.to_string_lossy().to_string());
-            }
-
-            // If neither subdirectory structure exists, use the custom dir directly
-            if dirs.is_empty() {
-                dirs.push(custom_dir);
-            }
-        }
-        dirs
-    } else {
-        // Check both sysext and confext release directories
-        vec![
-            "/usr/lib/extension-release.d".to_string(), // sysext
-            "/etc/extension-release.d".to_string(),     // confext
-        ]
-    };
-
-    for release_dir in release_dirs {
-        // Check if the release directory exists
-        if !Path::new(&release_dir).exists() {
-            continue; // Skip non-existent directories
-        }
-
-        // Read all files in the extension release directory
-        match fs::read_dir(&release_dir) {
-            Ok(entries) => {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        if let Ok(content) = fs::read_to_string(&path) {
-                            // Parse AVOCADO_ON_MERGE commands
-                            let mut commands = parse_avocado_on_merge_commands(&content);
-                            on_merge_commands.append(&mut commands);
-
-                            // Parse AVOCADO_MODPROBE modules
-                            let mut modules = parse_avocado_modprobe(&content);
-                            modprobe_modules.append(&mut modules);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                // Log the error but don't fail the entire operation
-                eprintln!("Warning: Could not read extension release directory {release_dir}: {e}");
-                continue;
-            }
-        }
+    for extension in extensions {
+        // Scan release files from each trusted extension mount point
+        scan_extension_release_files(&extension, &mut on_merge_commands, &mut modprobe_modules)?;
     }
 
     Ok((on_merge_commands, modprobe_modules))
+}
+
+/// Scan release files from a custom directory (test mode)
+fn scan_custom_release_directory(
+    custom_dir: &str,
+) -> Result<(Vec<String>, Vec<String>), SystemdError> {
+    let mut on_merge_commands = Vec::new();
+    let mut modprobe_modules = Vec::new();
+
+    let custom_path = Path::new(custom_dir);
+    let mut dirs = Vec::new();
+
+    // Check if it's a single directory with release files (legacy behavior)
+    if custom_path.join("extension-release.d").exists() {
+        dirs.push(custom_dir.to_string());
+    } else {
+        // Look for sysext and confext subdirectories
+        let sysext_dir = custom_path.join("usr/lib/extension-release.d");
+        let confext_dir = custom_path.join("etc/extension-release.d");
+
+        if sysext_dir.exists() {
+            dirs.push(sysext_dir.to_string_lossy().to_string());
+        }
+        if confext_dir.exists() {
+            dirs.push(confext_dir.to_string_lossy().to_string());
+        }
+
+        // If neither subdirectory structure exists, use the custom dir directly
+        if dirs.is_empty() {
+            dirs.push(custom_dir.to_string());
+        }
+    }
+
+    for release_dir in dirs {
+        scan_directory_for_release_files(
+            &release_dir,
+            &mut on_merge_commands,
+            &mut modprobe_modules,
+        );
+    }
+
+    Ok((on_merge_commands, modprobe_modules))
+}
+
+/// Scan release files from a specific extension's trusted mount point
+fn scan_extension_release_files(
+    extension: &Extension,
+    on_merge_commands: &mut Vec<String>,
+    modprobe_modules: &mut Vec<String>,
+) -> Result<(), SystemdError> {
+    // Check for sysext release file
+    let sysext_release_path = extension
+        .path
+        .join("usr/lib/extension-release.d")
+        .join(format!("extension-release.{}", extension.name));
+
+    if sysext_release_path.exists() {
+        if let Ok(content) = fs::read_to_string(&sysext_release_path) {
+            let mut commands = parse_avocado_on_merge_commands(&content);
+            on_merge_commands.append(&mut commands);
+
+            let mut modules = parse_avocado_modprobe(&content);
+            modprobe_modules.append(&mut modules);
+        }
+    }
+
+    // Check for confext release file
+    let confext_release_path = extension
+        .path
+        .join("etc/extension-release.d")
+        .join(format!("extension-release.{}", extension.name));
+
+    if confext_release_path.exists() {
+        if let Ok(content) = fs::read_to_string(&confext_release_path) {
+            let mut commands = parse_avocado_on_merge_commands(&content);
+            on_merge_commands.append(&mut commands);
+
+            let mut modules = parse_avocado_modprobe(&content);
+            modprobe_modules.append(&mut modules);
+        }
+    }
+
+    Ok(())
+}
+
+/// Scan a directory for release files (used in test mode)
+fn scan_directory_for_release_files(
+    release_dir: &str,
+    on_merge_commands: &mut Vec<String>,
+    modprobe_modules: &mut Vec<String>,
+) {
+    if !Path::new(release_dir).exists() {
+        return;
+    }
+
+    if let Ok(entries) = fs::read_dir(release_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let mut commands = parse_avocado_on_merge_commands(&content);
+                    on_merge_commands.append(&mut commands);
+
+                    let mut modules = parse_avocado_modprobe(&content);
+                    modprobe_modules.append(&mut modules);
+                }
+            }
+        }
+    }
 }
 
 /// Process post-merge tasks by checking extension release files
