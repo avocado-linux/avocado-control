@@ -56,6 +56,7 @@ cargo test test_ext_list_with_mock_extensions
 - `test_ext_refresh_with_mocks`: Tests refresh command (unmerge + merge) with mock systemd binaries
 - `test_ext_status_with_mocks`: Tests status command with mock systemd binaries
 - `test_ext_merge_with_depmod_processing`: Tests merge command with post-merge depmod processing
+- `test_ext_merge_with_modprobe_processing`: Tests merge command with both depmod and modprobe processing
 - `test_ext_merge_no_depmod_needed`: Tests merge command when no depmod is needed
 - `test_example_config_fixture`: Tests example config file validation
 
@@ -100,6 +101,7 @@ The `tests/fixtures/` directory contains example files used for testing:
 - `mock-systemd-sysext`: Mock systemd-sysext binary for testing merge/unmerge operations
 - `mock-systemd-confext`: Mock systemd-confext binary for testing merge/unmerge operations
 - `mock-depmod`: Mock depmod binary for testing post-merge processing
+- `mock-modprobe`: Mock modprobe binary for testing module loading
 - `mock-mount`: Mock mount binary for testing HITL NFS mounting
 - `extension-release.d/`: Directory containing sample extension release files for testing post-merge processing
 
@@ -108,6 +110,7 @@ The `tests/fixtures/` directory contains example files used for testing:
 The mock binaries simulate the behavior of real system tools:
 - `mock-systemd-sysext` and `mock-systemd-confext`: Support `merge` and `unmerge` actions with `--json=short` output format
 - `mock-depmod`: Simulates kernel module dependency updates
+- `mock-modprobe`: Simulates loading of kernel modules
 - `mock-mount`: Simulates NFS mounting operations for HITL testing
 - All mock binaries are activated when `AVOCADO_TEST_MODE` environment variable is set
 - Return appropriate output for testing assertions
@@ -118,6 +121,8 @@ The `tests/fixtures/extension-release.d/` directory contains sample extension re
 - `extension-release.nvidia-driver`: Contains `AVOCADO_ON_MERGE=depmod` to test depmod triggering
 - `extension-release.app-bundle`: Contains no post-merge directives
 - `extension-release.utils`: Contains `AVOCADO_ON_MERGE=other_command` to test non-depmod values
+- `extension-release.gpu-driver`: Contains both `AVOCADO_ON_MERGE=depmod` and `AVOCADO_MODPROBE="nvidia i915 radeon"` to test combined functionality
+- `extension-release.sound-driver`: Contains `AVOCADO_MODPROBE=snd_hda_intel` to test single module loading
 
 Use the `AVOCADO_EXTENSION_RELEASE_DIR` environment variable to override the default `/usr/lib/extension-release.d` path for testing.
 
@@ -135,6 +140,14 @@ The extension system automatically calls `depmod` to rebuild the kernel module d
 - **After `ext merge`**: Always calls `depmod` if any extension release file contains `AVOCADO_ON_MERGE=depmod`
 - **After `ext unmerge`**: Always calls `depmod` to clean up module dependencies
 - **During `ext refresh`**: Calls `depmod` only once at the end (after merge), not after the unmerge phase
+
+#### Module Loading (modprobe) Behavior
+
+The extension system also supports automatic module loading via `modprobe`:
+- **After `ext merge`**: Calls `modprobe` for each module listed in `AVOCADO_MODPROBE` from extension release files
+- **Module loading order**: Modules are loaded **after** `depmod` completes successfully
+- **Format**: `AVOCADO_MODPROBE="module1 module2 module3"` (space-separated list, with or without quotes)
+- **Error handling**: Individual module loading failures are logged as warnings but don't fail the entire merge operation
 
 The tests verify that:
 - Only valid extensions are listed

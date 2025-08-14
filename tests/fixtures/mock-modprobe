@@ -1,0 +1,4 @@
+#!/bin/bash
+# Mock modprobe command for testing
+echo "Mock modprobe: loading module $1"
+echo "Mock modprobe: module $1 loaded successfully"

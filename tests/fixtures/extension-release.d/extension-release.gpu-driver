@@ -1,0 +1,5 @@
+ID=extension-release.gpu-driver
+VERSION_ID=2.0
+DESCRIPTION="GPU Driver Extension with Modules"
+AVOCADO_ON_MERGE=depmod
+AVOCADO_MODPROBE="nvidia i915 radeon"

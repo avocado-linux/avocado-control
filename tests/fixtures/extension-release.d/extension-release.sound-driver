@@ -1,0 +1,4 @@
+ID=extension-release.sound-driver
+VERSION_ID=1.5
+DESCRIPTION="Sound Driver Extension"
+AVOCADO_MODPROBE=snd_hda_intel

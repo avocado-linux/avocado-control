@@ -1332,6 +1332,7 @@ fn process_post_merge_tasks() -> Result<(), SystemdError> {
     }
 
     let mut depmod_needed = false;
+    let mut modprobe_modules = Vec::new();
 
     // Read all files in the extension release directory
     match fs::read_dir(&release_dir) {
@@ -1342,9 +1343,11 @@ fn process_post_merge_tasks() -> Result<(), SystemdError> {
                     if let Ok(content) = fs::read_to_string(&path) {
                         if check_avocado_on_merge_depmod(&content) {
                             depmod_needed = true;
-                            // We can break early since we only need to call depmod once
-                            break;
                         }
+
+                        // Parse AVOCADO_MODPROBE modules
+                        let mut modules = parse_avocado_modprobe(&content);
+                        modprobe_modules.append(&mut modules);
                     }
                 }
             }
@@ -1359,6 +1362,11 @@ fn process_post_merge_tasks() -> Result<(), SystemdError> {
     // Call depmod if needed
     if depmod_needed {
         run_depmod()?;
+    }
+
+    // Call modprobe for each module after depmod completes
+    if !modprobe_modules.is_empty() {
+        run_modprobe(&modprobe_modules)?;
     }
 
     Ok(())
@@ -1381,6 +1389,33 @@ fn check_avocado_on_merge_depmod(content: &str) -> bool {
         }
     }
     false
+}
+
+/// Parse AVOCADO_MODPROBE modules from release file content
+fn parse_avocado_modprobe(content: &str) -> Vec<String> {
+    let mut modules = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("AVOCADO_MODPROBE=") {
+            let value = line
+                .split('=')
+                .nth(1)
+                .unwrap_or("")
+                .trim_matches('"')
+                .trim();
+
+            // Parse space-separated list of modules
+            for module in value.split_whitespace() {
+                if !module.is_empty() {
+                    modules.push(module.to_string());
+                }
+            }
+            break; // Only process the first AVOCADO_MODPROBE line
+        }
+    }
+
+    modules
 }
 
 /// Run the depmod command
@@ -1413,6 +1448,46 @@ fn run_depmod() -> Result<(), SystemdError> {
     }
 
     println!("depmod completed successfully.");
+    Ok(())
+}
+
+/// Run modprobe for a list of modules
+fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
+    if modules.is_empty() {
+        return Ok(());
+    }
+
+    println!("Loading kernel modules: {}", modules.join(", "));
+
+    for module in modules {
+        // Check if we're in test mode and should use mock commands
+        let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+            "mock-modprobe"
+        } else {
+            "modprobe"
+        };
+
+        let output = ProcessCommand::new(command_name)
+            .arg(module)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .map_err(|e| SystemdError::CommandFailed {
+                command: format!("{} {}", command_name, module),
+                source: e,
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            eprintln!("Warning: Failed to load module {}: {}", module, stderr);
+            // Don't fail the entire operation for individual module failures
+            // Just log the warning and continue with other modules
+        } else {
+            println!("Module {} loaded successfully.", module);
+        }
+    }
+
+    println!("Module loading completed.");
     Ok(())
 }
 
@@ -1694,5 +1769,63 @@ AVOCADO_ON_MERGE=
 OTHER_KEY=value
 "#;
         assert!(!check_avocado_on_merge_depmod(content_with_empty_value));
+    }
+
+    #[test]
+    fn test_parse_avocado_modprobe() {
+        // Test case with multiple modules
+        let content_with_modules = r#"
+VERSION_ID=2.0
+AVOCADO_MODPROBE="nvidia i915 radeon"
+OTHER_KEY=value
+"#;
+        let modules = parse_avocado_modprobe(content_with_modules);
+        assert_eq!(modules, vec!["nvidia", "i915", "radeon"]);
+
+        // Test case with single module without quotes
+        let content_single_module = r#"
+VERSION_ID=1.5
+AVOCADO_MODPROBE=snd_hda_intel
+OTHER_KEY=value
+"#;
+        let modules = parse_avocado_modprobe(content_single_module);
+        assert_eq!(modules, vec!["snd_hda_intel"]);
+
+        // Test case with no AVOCADO_MODPROBE
+        let content_no_modprobe = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=depmod
+OTHER_KEY=value
+"#;
+        let modules = parse_avocado_modprobe(content_no_modprobe);
+        assert!(modules.is_empty());
+
+        // Test case with empty AVOCADO_MODPROBE
+        let content_empty_modprobe = r#"
+VERSION_ID=1.0
+AVOCADO_MODPROBE=""
+OTHER_KEY=value
+"#;
+        let modules = parse_avocado_modprobe(content_empty_modprobe);
+        assert!(modules.is_empty());
+
+        // Test case with extra whitespace
+        let content_with_whitespace = r#"
+VERSION_ID=1.0
+AVOCADO_MODPROBE="  nvidia   i915  radeon  "
+OTHER_KEY=value
+"#;
+        let modules = parse_avocado_modprobe(content_with_whitespace);
+        assert_eq!(modules, vec!["nvidia", "i915", "radeon"]);
+
+        // Test case with mixed quotes and no quotes in different lines (only first should be processed)
+        let content_multiple_lines = r#"
+VERSION_ID=1.0
+AVOCADO_MODPROBE="nvidia i915"
+AVOCADO_MODPROBE=should_be_ignored
+OTHER_KEY=value
+"#;
+        let modules = parse_avocado_modprobe(content_multiple_lines);
+        assert_eq!(modules, vec!["nvidia", "i915"]);
     }
 }
