@@ -19,45 +19,53 @@ impl OutputManager {
 
     /// Print a colored prefix with message
     fn print_colored_prefix(&self, prefix: &str, color: Color, message: &str) {
-        let color_choice = if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
-            ColorChoice::Never
-        } else {
-            ColorChoice::Auto
-        };
+        let color_choice =
+            if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
+                ColorChoice::Never
+            } else {
+                ColorChoice::Auto
+            };
 
         let mut stdout = StandardStream::stdout(color_choice);
         let mut color_spec = ColorSpec::new();
         color_spec.set_fg(Some(color)).set_bold(true);
 
         if stdout.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
-            let _ = write!(&mut stdout, "[{}]", prefix);
+            let _ = write!(&mut stdout, "[{prefix}]");
             let _ = stdout.reset();
-            println!(" {}", message);
+            println!(" {message}");
         } else {
             // Fallback for environments without color support
-            println!("[{}] {}", prefix, message);
+            println!("[{prefix}] {message}");
         }
     }
 
     /// Print a colored prefix with operation and message
-    fn print_colored_prefix_with_op(&self, prefix: &str, color: Color, operation: &str, message: &str) {
-        let color_choice = if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
-            ColorChoice::Never
-        } else {
-            ColorChoice::Auto
-        };
+    fn print_colored_prefix_with_op(
+        &self,
+        prefix: &str,
+        color: Color,
+        operation: &str,
+        message: &str,
+    ) {
+        let color_choice =
+            if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
+                ColorChoice::Never
+            } else {
+                ColorChoice::Auto
+            };
 
         let mut stdout = StandardStream::stdout(color_choice);
         let mut color_spec = ColorSpec::new();
         color_spec.set_fg(Some(color)).set_bold(true);
 
         if stdout.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
-            let _ = write!(&mut stdout, "[{}]", prefix);
+            let _ = write!(&mut stdout, "[{prefix}]");
             let _ = stdout.reset();
-            println!(" {}: {}", operation, message);
+            println!(" {operation}: {message}");
         } else {
             // Fallback for environments without color support
-            println!("[{}] {}: {}", prefix, operation, message);
+            println!("[{prefix}] {operation}: {message}");
         }
     }
 
@@ -75,11 +83,12 @@ impl OutputManager {
     /// Print an error message
     /// Always shows detailed error information for developers
     pub fn error(&self, operation: &str, message: &str) {
-        let color_choice = if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
-            ColorChoice::Never
-        } else {
-            ColorChoice::Auto
-        };
+        let color_choice =
+            if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
+                ColorChoice::Never
+            } else {
+                ColorChoice::Auto
+            };
 
         let mut stderr = StandardStream::stderr(color_choice);
         let mut color_spec = ColorSpec::new();
@@ -88,9 +97,9 @@ impl OutputManager {
         if stderr.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
             let _ = write!(&mut stderr, "[ERROR]");
             let _ = stderr.reset();
-            eprintln!(" {}: {}", operation, message);
+            eprintln!(" {operation}: {message}");
         } else {
-            eprintln!("[ERROR] {}: {}", operation, message);
+            eprintln!("[ERROR] {operation}: {message}");
         }
 
         if !self.verbose {

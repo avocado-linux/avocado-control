@@ -20,6 +20,35 @@ fn run_avocadoctl(args: &[&str]) -> std::process::Output {
         .expect("Failed to execute avocadoctl")
 }
 
+/// Helper function to run avocadoctl with an isolated test environment
+/// This creates unique temporary directories to avoid race conditions between parallel tests
+fn run_avocadoctl_with_isolated_env(
+    args: &[&str],
+    additional_env_vars: &[(&str, &str)],
+) -> (std::process::Output, TempDir) {
+    // Create a unique temporary directory for this test
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let temp_path = temp_dir.path().to_string_lossy();
+
+    // Set up isolated environment variables
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    let mut env_vars = vec![
+        ("AVOCADO_TEST_MODE", "1"),
+        ("PATH", new_path.as_str()),
+        ("TMPDIR", temp_path.as_ref()),
+    ];
+
+    // Add additional environment variables
+    env_vars.extend(additional_env_vars);
+
+    let output = run_avocadoctl_with_env(args, &env_vars);
+    (output, temp_dir)
+}
+
 /// Test hitl help command
 #[test]
 fn test_hitl_help() {
@@ -153,17 +182,11 @@ fn test_hitl_mount_with_mocks() {
 /// Test hitl mount with short options
 #[test]
 fn test_hitl_mount_short_options() {
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let fixtures_path = current_dir.join("tests/fixtures");
-
     // Create a temporary directory to simulate /var/lib/avocado/extensions
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let temp_extensions_dir = temp_dir.path();
 
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &[
             "hitl",
             "mount",
@@ -175,14 +198,10 @@ fn test_hitl_mount_short_options() {
             "test-ext",
             "-v",
         ],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            (
-                "AVOCADO_EXTENSIONS_PATH",
-                &temp_extensions_dir.to_string_lossy(),
-            ),
-        ],
+        &[(
+            "AVOCADO_EXTENSIONS_PATH",
+            &temp_extensions_dir.to_string_lossy(),
+        )],
     );
 
     assert!(

@@ -22,11 +22,12 @@ struct Extension {
 /// Print a colored success message
 fn print_colored_success(message: &str) {
     // Use auto-detection but fallback gracefully
-    let color_choice = if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        ColorChoice::Never
-    } else {
-        ColorChoice::Auto
-    };
+    let color_choice =
+        if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
+            ColorChoice::Never
+        } else {
+            ColorChoice::Auto
+        };
 
     let mut stdout = StandardStream::stdout(color_choice);
     let mut color_spec = ColorSpec::new();
@@ -35,21 +36,22 @@ fn print_colored_success(message: &str) {
     if stdout.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
         let _ = write!(&mut stdout, "[SUCCESS]");
         let _ = stdout.reset();
-        println!(" {}", message);
+        println!(" {message}");
     } else {
         // Fallback for environments without color support
-        println!("[SUCCESS] {}", message);
+        println!("[SUCCESS] {message}");
     }
 }
 
 /// Print a colored info message
 fn print_colored_info(message: &str) {
     // Use auto-detection but fallback gracefully
-    let color_choice = if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        ColorChoice::Never
-    } else {
-        ColorChoice::Auto
-    };
+    let color_choice =
+        if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
+            ColorChoice::Never
+        } else {
+            ColorChoice::Auto
+        };
 
     let mut stdout = StandardStream::stdout(color_choice);
     let mut color_spec = ColorSpec::new();
@@ -58,10 +60,10 @@ fn print_colored_info(message: &str) {
     if stdout.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
         let _ = write!(&mut stdout, "[INFO]");
         let _ = stdout.reset();
-        println!(" {}", message);
+        println!(" {message}");
     } else {
         // Fallback for environments without color support
-        println!("[INFO] {}", message);
+        println!("[INFO] {message}");
     }
 }
 
@@ -1521,17 +1523,17 @@ fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
             .stderr(Stdio::piped())
             .output()
             .map_err(|e| SystemdError::CommandFailed {
-                command: format!("{} {}", command_name, module),
+                command: format!("{command_name} {module}"),
                 source: e,
             })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("Warning: Failed to load module {}: {}", module, stderr);
+            eprintln!("Warning: Failed to load module {module}: {stderr}");
             // Don't fail the entire operation for individual module failures
             // Just log the warning and continue with other modules
         } else {
-            print_colored_success(&format!("Module {} loaded successfully.", module));
+            print_colored_success(&format!("Module {module} loaded successfully."));
         }
     }
 

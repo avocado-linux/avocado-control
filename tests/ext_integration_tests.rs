@@ -22,6 +22,35 @@ fn run_avocadoctl_with_env(args: &[&str], env_vars: &[(&str, &str)]) -> std::pro
     cmd.output().expect("Failed to execute avocadoctl")
 }
 
+/// Helper function to run avocadoctl with an isolated test environment
+/// This creates unique temporary directories to avoid race conditions between parallel tests
+fn run_avocadoctl_with_isolated_env(
+    args: &[&str],
+    additional_env_vars: &[(&str, &str)],
+) -> (std::process::Output, TempDir) {
+    // Create a unique temporary directory for this test
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let temp_path = temp_dir.path().to_string_lossy();
+
+    // Set up isolated environment variables
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    let mut env_vars = vec![
+        ("AVOCADO_TEST_MODE", "1"),
+        ("PATH", new_path.as_str()),
+        ("TMPDIR", temp_path.as_ref()),
+    ];
+
+    // Add additional environment variables
+    env_vars.extend(additional_env_vars);
+
+    let output = run_avocadoctl_with_env(args, &env_vars);
+    (output, temp_dir)
+}
+
 /// Helper function to run avocadoctl with arguments and return output
 fn run_avocadoctl(args: &[&str]) -> std::process::Output {
     Command::new(get_binary_path())
@@ -289,18 +318,8 @@ fn test_example_config_fixture() {
 /// Test ext merge command with mock systemd binaries
 #[test]
 fn test_ext_merge_with_mocks() {
-    // Setup mock environment
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let fixtures_path = current_dir.join("tests/fixtures");
-
-    // Add fixtures path to PATH so mock binaries can be found
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
-        &["ext", "merge", "--verbose"],
-        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
-    );
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(&["ext", "merge", "--verbose"], &[]);
 
     assert!(
         output.status.success(),
@@ -329,18 +348,9 @@ fn test_ext_merge_with_mocks() {
 /// Test ext unmerge command with mock systemd binaries
 #[test]
 fn test_ext_unmerge_with_mocks() {
-    // Setup mock environment
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let fixtures_path = current_dir.join("tests/fixtures");
-
-    // Add fixtures path to PATH so mock binaries can be found
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
-        &["ext", "unmerge", "--verbose"],
-        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
-    );
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) =
+        run_avocadoctl_with_isolated_env(&["ext", "unmerge", "--verbose"], &[]);
 
     assert!(
         output.status.success(),
@@ -411,21 +421,9 @@ fn test_environment_preparation_with_mock_extensions() {
     let dir_ext = extensions_path.join("dir-ext");
     fs::create_dir_all(&dir_ext).expect("Failed to create dir extension");
 
-    // Setup mock environment
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let fixtures_path = current_dir.join("tests/fixtures");
-
-    // Add fixtures path to PATH so mock binaries can be found
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &["ext", "merge", "--verbose"],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            ("AVOCADO_EXTENSIONS_PATH", extensions_path.to_str().unwrap()),
-        ],
+        &[("AVOCADO_EXTENSIONS_PATH", extensions_path.to_str().unwrap())],
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -479,20 +477,12 @@ fn test_ext_refresh_with_mocks() {
     let fixtures_path = current_dir.join("tests/fixtures");
     let release_dir = fixtures_path.join("extension-release.d");
 
-    // Add fixtures path to PATH so mock binaries can be found
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &["ext", "refresh", "--verbose"],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            (
-                "AVOCADO_EXTENSION_RELEASE_DIR",
-                &release_dir.to_string_lossy(),
-            ),
-        ],
+        &[(
+            "AVOCADO_EXTENSION_RELEASE_DIR",
+            &release_dir.to_string_lossy(),
+        )],
     );
 
     assert!(
@@ -605,22 +595,13 @@ fn test_ext_merge_with_depmod_processing() {
     let fixtures_path = current_dir.join("tests/fixtures");
     let release_dir = fixtures_path.join("extension-release.d");
 
-    // Add fixtures path to PATH so mock binaries can be found
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    // Set environment variables to use test release directory and mocks
-    let output = run_avocadoctl_with_env(
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &["ext", "merge", "--verbose"],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            // Override the release directory for testing (if implemented)
-            (
-                "AVOCADO_EXTENSION_RELEASE_DIR",
-                &release_dir.to_string_lossy(),
-            ),
-        ],
+        &[(
+            "AVOCADO_EXTENSION_RELEASE_DIR",
+            &release_dir.to_string_lossy(),
+        )],
     );
 
     assert!(
@@ -656,19 +637,12 @@ fn test_ext_merge_multiple_extensions_single_depmod() {
     let fixtures_path = current_dir.join("tests/fixtures");
     let release_dir = fixtures_path.join("extension-release.d");
 
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &["ext", "merge", "--verbose"],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            (
-                "AVOCADO_EXTENSION_RELEASE_DIR",
-                &release_dir.to_string_lossy(),
-            ),
-        ],
+        &[(
+            "AVOCADO_EXTENSION_RELEASE_DIR",
+            &release_dir.to_string_lossy(),
+        )],
     );
 
     assert!(
@@ -696,14 +670,17 @@ fn test_ext_merge_multiple_extensions_single_depmod() {
     // From storage-driver: ahci nvme
     // From gpu-driver: nvidia i915 radeon
     // From sound-driver: snd_hda_intel
-    let has_network_modules = stdout.contains("e1000e") || stdout.contains("igb") || stdout.contains("ixgbe");
+    let has_network_modules =
+        stdout.contains("e1000e") || stdout.contains("igb") || stdout.contains("ixgbe");
     let has_storage_modules = stdout.contains("ahci") || stdout.contains("nvme");
-    let has_gpu_modules = stdout.contains("nvidia") || stdout.contains("i915") || stdout.contains("radeon");
+    let has_gpu_modules =
+        stdout.contains("nvidia") || stdout.contains("i915") || stdout.contains("radeon");
     let has_sound_modules = stdout.contains("snd_hda_intel");
 
     assert!(
         has_network_modules || has_storage_modules || has_gpu_modules || has_sound_modules,
-        "Should load modules from multiple extensions. Stdout: {}", stdout
+        "Should load modules from multiple extensions. Stdout: {}",
+        stdout
     );
 
     assert!(
@@ -720,21 +697,13 @@ fn test_ext_merge_with_modprobe_processing() {
     let fixtures_path = current_dir.join("tests/fixtures");
     let release_dir = fixtures_path.join("extension-release.d");
 
-    // Add fixtures path to PATH so mock binaries can be found
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    // Set environment variables to use test release directory and mocks
-    let output = run_avocadoctl_with_env(
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &["ext", "merge", "--verbose"],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            (
-                "AVOCADO_EXTENSION_RELEASE_DIR",
-                &release_dir.to_string_lossy(),
-            ),
-        ],
+        &[(
+            "AVOCADO_EXTENSION_RELEASE_DIR",
+            &release_dir.to_string_lossy(),
+        )],
     );
 
     assert!(
@@ -779,22 +748,13 @@ fn test_ext_merge_with_modprobe_processing() {
 #[test]
 fn test_ext_merge_no_depmod_needed() {
     // This test verifies that merge works normally when no depmod is needed
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let fixtures_path = current_dir.join("tests/fixtures");
-
     // Use a non-existent release directory to ensure no post-merge tasks run
     let empty_release_dir = "/tmp/nonexistent_release_dir";
 
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &["ext", "merge", "--verbose"],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            ("AVOCADO_EXTENSION_RELEASE_DIR", empty_release_dir),
-        ],
+        &[("AVOCADO_EXTENSION_RELEASE_DIR", empty_release_dir)],
     );
 
     assert!(
@@ -812,18 +772,7 @@ fn test_ext_merge_no_depmod_needed() {
 /// Test ext status command with mock systemd binaries
 #[test]
 fn test_ext_status_with_mocks() {
-    // Setup mock environment
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let fixtures_path = current_dir.join("tests/fixtures");
-
-    // Add fixtures path to PATH so mock binaries can be found
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
-        &["ext", "status"],
-        &[("AVOCADO_TEST_MODE", "1"), ("PATH", &new_path)],
-    );
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(&["ext", "status"], &[]);
 
     assert!(
         output.status.success(),
