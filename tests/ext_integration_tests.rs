@@ -684,8 +684,7 @@ fn test_ext_merge_multiple_extensions_single_depmod() {
 
     assert!(
         has_network_modules || has_storage_modules || has_gpu_modules || has_sound_modules,
-        "Should load modules from multiple extensions. Stdout: {}",
-        stdout
+        "Should load modules from multiple extensions. Stdout: {stdout}"
     );
 
     assert!(

@@ -402,61 +402,64 @@ struct MountedExtension {
     hierarchy: String,
 }
 
-/// Get mounted extensions from systemd
+/// Get mounted extensions from systemd using JSON format
 fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>, SystemdError> {
     let mut mounted = Vec::new();
 
-    let output = run_systemd_command(command, &["status"])?;
+    let output = run_systemd_command(command, &["status", "--json=short"])?;
     if output.trim().is_empty() {
         return Ok(mounted);
     }
 
-    let lines: Vec<&str> = output.lines().collect();
-    let mut current_hierarchy = String::new();
-    let mut current_since = String::new();
+    // Parse JSON output
+    let json_data: serde_json::Value =
+        serde_json::from_str(&output).map_err(|e| SystemdError::CommandFailed {
+            command: format!("{command} status --json=short"),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        })?;
 
-    // Skip header and process data lines
-    for line in lines
-        .iter()
-        .skip_while(|line| line.starts_with("HIERARCHY") || line.trim().is_empty())
-    {
-        if line.trim().is_empty() {
-            continue;
-        }
+    // Handle both single object and array formats
+    let hierarchies = if json_data.is_array() {
+        json_data.as_array().unwrap()
+    } else {
+        std::slice::from_ref(&json_data)
+    };
 
-        let parts: Vec<&str> = line.split_whitespace().collect();
+    for hierarchy_obj in hierarchies {
+        let hierarchy = hierarchy_obj["hierarchy"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
 
-        if parts.is_empty() {
-            continue;
-        }
+        let since_timestamp = hierarchy_obj["since"].as_u64();
+        let since = if let Some(ts) = since_timestamp {
+            // Convert microseconds timestamp to human readable format
+            let secs = ts / 1_000_000;
+            // For now, use a simple format. In the future we could add chrono for better formatting
+            format!("timestamp:{secs}")
+        } else {
+            "-".to_string()
+        };
 
-        // Check if this line starts with a hierarchy path (doesn't start with whitespace)
-        if !line.starts_with(' ') && !line.starts_with('\t') {
-            // Parse format: HIERARCHY EXTENSIONS SINCE
-            if parts.len() >= 3 {
-                current_hierarchy = parts[0].to_string();
-                let extensions = parts[1];
-                current_since = parts[2..].join(" ");
-
-                // Split multiple extensions (comma-separated)
-                for ext_name in extensions.split(',') {
+        // Handle extensions field - can be string "none" or array of strings
+        if let Some(extensions) = hierarchy_obj["extensions"].as_array() {
+            // Array of extension names
+            for ext in extensions {
+                if let Some(ext_name) = ext.as_str() {
                     mounted.push(MountedExtension {
-                        name: ext_name.trim().to_string(),
-                        since: current_since.clone(),
-                        hierarchy: current_hierarchy.clone(),
+                        name: ext_name.to_string(),
+                        since: since.clone(),
+                        hierarchy: hierarchy.clone(),
                     });
                 }
             }
-        } else {
-            // This line starts with whitespace - it's an extension for the current hierarchy
-            let extension_name = parts[0];
-
-            // Only add if we have a current hierarchy set
-            if !current_hierarchy.is_empty() {
+        } else if let Some(ext_str) = hierarchy_obj["extensions"].as_str() {
+            // Single string - skip if it's "none"
+            if ext_str != "none" {
                 mounted.push(MountedExtension {
-                    name: extension_name.trim().to_string(),
-                    since: current_since.clone(),
-                    hierarchy: current_hierarchy.clone(),
+                    name: ext_str.to_string(),
+                    since: since.clone(),
+                    hierarchy: hierarchy.clone(),
                 });
             }
         }

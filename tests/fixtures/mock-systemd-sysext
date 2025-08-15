@@ -44,12 +44,17 @@ case "$ACTION" in
         fi
         ;;
     status)
-        # Mock status output similar to real systemd-sysext
-        echo "HIERARCHY EXTENSIONS  SINCE                      "
-        echo "/opt      test-ext-1  Tue 2025-01-14 15:30:00 UTC"
-        echo "          test-ext-2    "
-        echo "/usr      test-ext-1  Tue 2025-01-14 15:30:05 UTC"
-        echo "          test-ext-2    "
+        if [ "$JSON" = "short" ]; then
+            # JSON format similar to real systemd-sysext
+            echo '[{"hierarchy":"/opt","extensions":"none","since":null},{"hierarchy":"/usr","extensions":["test-ext-1","test-ext-2"],"since":1705243805000000}]'
+        else
+            # Mock status output similar to real systemd-sysext
+            echo "HIERARCHY EXTENSIONS  SINCE                      "
+            echo "/opt      test-ext-1  Tue 2025-01-14 15:30:00 UTC"
+            echo "          test-ext-2    "
+            echo "/usr      test-ext-1  Tue 2025-01-14 15:30:05 UTC"
+            echo "          test-ext-2    "
+        fi
         ;;
     *)
         echo "Invalid action: $ACTION" >&2

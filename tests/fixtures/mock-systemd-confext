@@ -44,9 +44,14 @@ case "$ACTION" in
         fi
         ;;
     status)
-        # Mock status output similar to real systemd-confext
-        echo "HIERARCHY EXTENSIONS  SINCE                      "
-        echo "/etc      config-ext-1 Tue 2025-01-14 15:30:10 UTC"
+        if [ "$JSON" = "short" ]; then
+            # JSON format similar to real systemd-confext
+            echo '[{"hierarchy":"/etc","extensions":["config-ext-1"],"since":1705243810000000}]'
+        else
+            # Mock status output similar to real systemd-confext
+            echo "HIERARCHY EXTENSIONS  SINCE                      "
+            echo "/etc      config-ext-1 Tue 2025-01-14 15:30:10 UTC"
+        fi
         ;;
     *)
         echo "Invalid action: $ACTION" >&2
