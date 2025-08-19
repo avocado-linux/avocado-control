@@ -1695,6 +1695,68 @@ fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
     Ok(())
 }
 
+/// Execute a single command with its arguments
+fn execute_single_command(command_str: &str) -> Result<(), SystemdError> {
+    // Parse the command string to handle commands with arguments
+    // Commands may be quoted or contain spaces
+    let parts: Vec<&str> = if command_str.starts_with('"') && command_str.ends_with('"') {
+        // Handle quoted commands
+        let unquoted = &command_str[1..command_str.len() - 1];
+        unquoted.split_whitespace().collect()
+    } else {
+        // Handle unquoted commands
+        command_str.split_whitespace().collect()
+    };
+
+    if parts.is_empty() {
+        eprintln!("Warning: Empty command in AVOCADO_ON_MERGE, skipping");
+        return Ok(());
+    }
+
+    let (command_name, args) = parts.split_first().unwrap();
+
+    // Check if we're in test mode and should use mock commands
+    let mock_command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        match *command_name {
+            "depmod" => "mock-depmod".to_string(),
+            "modprobe" => "mock-modprobe".to_string(),
+            _ => {
+                // For other commands in test mode, prefix with mock- if not already
+                if command_name.starts_with("mock-") {
+                    command_name.to_string()
+                } else {
+                    format!("mock-{command_name}")
+                }
+            }
+        }
+    } else {
+        command_name.to_string()
+    };
+
+    let actual_command = &mock_command_name;
+
+    let output = ProcessCommand::new(actual_command)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| SystemdError::CommandFailed {
+            command: command_str.to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        eprintln!("Warning: Command '{command_str}' failed: {stderr}");
+        // Log warning but don't fail the entire operation
+        // This matches the behavior of modprobe failures
+    } else {
+        print_colored_success(&format!("Command '{command_str}' completed successfully"));
+    }
+
+    Ok(())
+}
+
 /// Run accumulated AVOCADO_ON_MERGE commands
 fn run_avocado_on_merge_commands(commands: &[String]) -> Result<(), SystemdError> {
     if commands.is_empty() {
@@ -1706,61 +1768,20 @@ fn run_avocado_on_merge_commands(commands: &[String]) -> Result<(), SystemdError
     for command_str in commands {
         print_colored_info(&format!("Running command: {command_str}"));
 
-        // Parse the command string to handle commands with arguments
-        // Commands may be quoted or contain spaces
-        let parts: Vec<&str> = if command_str.starts_with('"') && command_str.ends_with('"') {
-            // Handle quoted commands
-            let unquoted = &command_str[1..command_str.len() - 1];
-            unquoted.split_whitespace().collect()
-        } else {
-            // Handle unquoted commands
-            command_str.split_whitespace().collect()
-        };
+        // Check if the command contains shell operators like semicolons
+        if command_str.contains(';') {
+            // Split the command by semicolons and execute each part sequentially
+            let sub_commands: Vec<&str> = command_str.split(';').map(|s| s.trim()).collect();
 
-        if parts.is_empty() {
-            eprintln!("Warning: Empty command in AVOCADO_ON_MERGE, skipping");
-            continue;
-        }
-
-        let (command_name, args) = parts.split_first().unwrap();
-
-        // Check if we're in test mode and should use mock commands
-        let mock_command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-            match *command_name {
-                "depmod" => "mock-depmod".to_string(),
-                "modprobe" => "mock-modprobe".to_string(),
-                _ => {
-                    // For other commands in test mode, prefix with mock- if not already
-                    if command_name.starts_with("mock-") {
-                        command_name.to_string()
-                    } else {
-                        format!("mock-{command_name}")
-                    }
+            for sub_command in sub_commands {
+                if !sub_command.is_empty() {
+                    print_colored_info(&format!("Running sub-command: {sub_command}"));
+                    execute_single_command(sub_command)?;
                 }
             }
         } else {
-            command_name.to_string()
-        };
-
-        let actual_command = &mock_command_name;
-
-        let output = ProcessCommand::new(actual_command)
-            .args(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .output()
-            .map_err(|e| SystemdError::CommandFailed {
-                command: command_str.clone(),
-                source: e,
-            })?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            eprintln!("Warning: Command '{command_str}' failed: {stderr}");
-            // Log warning but don't fail the entire operation
-            // This matches the behavior of modprobe failures
-        } else {
-            print_colored_success(&format!("Command '{command_str}' completed successfully"));
+            // Execute as a single command
+            execute_single_command(command_str)?;
         }
     }
 
@@ -2134,5 +2155,35 @@ AVOCADO_ON_MERGE="systemctl restart some-service"
 "#;
         let commands = parse_avocado_on_merge_commands(content_simple);
         assert_eq!(commands, vec!["depmod", "systemctl restart some-service"]);
+    }
+
+    #[test]
+    fn test_parse_avocado_on_merge_commands_with_semicolons() {
+        // Test case with semicolon-separated commands
+        let content_with_semicolons = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE="systemctl --no-block restart dbus; systemctl --no-block restart avahi-daemon"
+AVOCADO_ON_MERGE="command1 --arg=value; command2; command3 --option"
+OTHER_KEY=value
+"#;
+        let commands = parse_avocado_on_merge_commands(content_with_semicolons);
+        assert_eq!(commands, vec![
+            "systemctl --no-block restart dbus; systemctl --no-block restart avahi-daemon",
+            "command1 --arg=value; command2; command3 --option"
+        ]);
+
+        // Test case with mixed semicolons and regular commands
+        let content_mixed = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=depmod
+AVOCADO_ON_MERGE="systemctl restart service1; systemctl restart service2"
+AVOCADO_ON_MERGE="single-command --arg"
+"#;
+        let commands = parse_avocado_on_merge_commands(content_mixed);
+        assert_eq!(commands, vec![
+            "depmod",
+            "systemctl restart service1; systemctl restart service2",
+            "single-command --arg"
+        ]);
     }
 }
