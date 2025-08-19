@@ -1214,7 +1214,7 @@ fn unmount_loop_ref(extension_name: &str) -> Result<(), SystemdError> {
     };
 
     let output = ProcessCommand::new(command_name)
-        .args(["-U", "--rmdir", &mount_point])
+        .args(["-U", &mount_point])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -1572,7 +1572,7 @@ fn parse_avocado_on_merge_commands(content: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with("AVOCADO_ON_MERGE=") {
             let value = line
-                .split('=')
+                .splitn(2, '=')
                 .nth(1)
                 .unwrap_or("")
                 .trim_matches('"')
@@ -1603,7 +1603,7 @@ fn parse_avocado_modprobe(content: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with("AVOCADO_MODPROBE=") {
             let value = line
-                .split('=')
+                .splitn(2, '=')
                 .nth(1)
                 .unwrap_or("")
                 .trim_matches('"')
@@ -2104,5 +2104,35 @@ OTHER_KEY=value
 "#;
         let modules = parse_avocado_modprobe(content_multiple_lines);
         assert_eq!(modules, vec!["nvidia", "i915"]);
+    }
+
+    #[test]
+    fn test_parse_avocado_on_merge_commands_with_equals() {
+        // Test case with command containing equals signs in arguments
+        let content_with_equals = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE="udevadm trigger --action=add"
+AVOCADO_ON_MERGE=command --option=value --other=setting
+OTHER_KEY=value
+"#;
+        let commands = parse_avocado_on_merge_commands(content_with_equals);
+        assert_eq!(commands, vec!["udevadm trigger --action=add", "command --option=value --other=setting"]);
+
+        // Test case with multiple equals signs in same argument
+        let content_multiple_equals = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE="systemctl set-property --runtime some.service CPUQuota=50% MemoryLimit=1G"
+"#;
+        let commands = parse_avocado_on_merge_commands(content_multiple_equals);
+        assert_eq!(commands, vec!["systemctl set-property --runtime some.service CPUQuota=50% MemoryLimit=1G"]);
+
+        // Test case ensuring backwards compatibility with simple commands
+        let content_simple = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=depmod
+AVOCADO_ON_MERGE="systemctl restart some-service"
+"#;
+        let commands = parse_avocado_on_merge_commands(content_simple);
+        assert_eq!(commands, vec!["depmod", "systemctl restart some-service"]);
     }
 }

@@ -288,7 +288,7 @@ fn unmount_nfs_extension(mount_point: &str, output: &OutputManager) -> Result<()
     };
 
     let output = ProcessCommand::new(command_name)
-        .args([mount_point])
+        .args(["-f", mount_point])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
