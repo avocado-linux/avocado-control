@@ -921,9 +921,9 @@ fn test_ext_merge_with_quoted_commands() {
     );
 }
 
-/// Test ext unmerge also executes AVOCADO_ON_MERGE commands
+/// Test ext unmerge does NOT execute AVOCADO_ON_MERGE commands
 #[test]
-fn test_ext_unmerge_executes_on_merge_commands() {
+fn test_ext_unmerge_does_not_execute_on_merge_commands() {
     // Setup mock environment with release files
     let current_dir = std::env::current_dir().expect("Failed to get current directory");
     let fixtures_path = current_dir.join("tests/fixtures");
@@ -950,7 +950,7 @@ fn test_ext_unmerge_executes_on_merge_commands() {
 
     assert!(
         output.status.success(),
-        "ext unmerge should succeed and execute AVOCADO_ON_MERGE commands"
+        "ext unmerge should succeed without executing AVOCADO_ON_MERGE commands"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -959,10 +959,10 @@ fn test_ext_unmerge_executes_on_merge_commands() {
         "Should show unmerge success"
     );
 
-    // Should execute post-merge commands during unmerge too
+    // Should NOT execute post-merge commands during unmerge
     assert!(
-        stdout.contains("post-merge commands") || stdout.contains("Running command:"),
-        "Should execute AVOCADO_ON_MERGE commands during unmerge"
+        !stdout.contains("post-merge commands") && !stdout.contains("Running command:"),
+        "Should NOT execute AVOCADO_ON_MERGE commands during unmerge"
     );
 }
 

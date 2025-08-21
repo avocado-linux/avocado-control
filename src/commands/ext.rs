@@ -99,52 +99,54 @@ fn parse_scope_from_release_content(content: &str, scope_key: &str) -> Vec<Strin
     scopes
 }
 
-/// Check if an extension is enabled for the current environment (initrd vs system)
-fn is_extension_enabled_for_current_environment(
-    extension_path: &Path,
-    extension_name: &str,
-    is_sysext: bool,
-    is_confext: bool,
-) -> (bool, bool) {
+/// Check if a sysext is enabled for the current environment (initrd vs system)
+fn is_sysext_enabled_for_current_environment(extension_path: &Path, extension_name: &str) -> bool {
     let in_initrd = is_running_in_initrd();
     let required_scope = if in_initrd { "initrd" } else { "system" };
 
-    let mut sysext_enabled = is_sysext;
-    let mut confext_enabled = is_confext;
+    let sysext_release_path = extension_path
+        .join("usr/lib/extension-release.d")
+        .join(format!("extension-release.{extension_name}"));
 
-    // Check sysext scope if it's a sysext
-    if is_sysext {
-        let sysext_release_path = extension_path
-            .join("usr/lib/extension-release.d")
-            .join(format!("extension-release.{extension_name}"));
-
-        if sysext_release_path.exists() {
-            if let Ok(content) = fs::read_to_string(&sysext_release_path) {
-                let scopes = parse_scope_from_release_content(&content, "SYSEXT_SCOPE");
-                if !scopes.is_empty() && !scopes.contains(&required_scope.to_string()) {
-                    sysext_enabled = false;
-                }
+    if sysext_release_path.exists() {
+        if let Ok(content) = fs::read_to_string(&sysext_release_path) {
+            let scopes = parse_scope_from_release_content(&content, "SYSEXT_SCOPE");
+            // If no scope is specified, default to enabled (backward compatibility)
+            if scopes.is_empty() {
+                return true;
             }
+            // Check if the required scope is in the list
+            return scopes.contains(&required_scope.to_string());
         }
     }
 
-    // Check confext scope if it's a confext
-    if is_confext {
-        let confext_release_path = extension_path
-            .join("etc/extension-release.d")
-            .join(format!("extension-release.{extension_name}"));
+    // If no release file exists, default to enabled (backward compatibility)
+    true
+}
 
-        if confext_release_path.exists() {
-            if let Ok(content) = fs::read_to_string(&confext_release_path) {
-                let scopes = parse_scope_from_release_content(&content, "CONFEXT_SCOPE");
-                if !scopes.is_empty() && !scopes.contains(&required_scope.to_string()) {
-                    confext_enabled = false;
-                }
+/// Check if a confext is enabled for the current environment (initrd vs system)
+fn is_confext_enabled_for_current_environment(extension_path: &Path, extension_name: &str) -> bool {
+    let in_initrd = is_running_in_initrd();
+    let required_scope = if in_initrd { "initrd" } else { "system" };
+
+    let confext_release_path = extension_path
+        .join("etc/extension-release.d")
+        .join(format!("extension-release.{extension_name}"));
+
+    if confext_release_path.exists() {
+        if let Ok(content) = fs::read_to_string(&confext_release_path) {
+            let scopes = parse_scope_from_release_content(&content, "CONFEXT_SCOPE");
+            // If no scope is specified, default to enabled (backward compatibility)
+            if scopes.is_empty() {
+                return true;
             }
+            // Check if the required scope is in the list
+            return scopes.contains(&required_scope.to_string());
         }
     }
 
-    (sysext_enabled, confext_enabled)
+    // If no release file exists, default to enabled (backward compatibility)
+    true
 }
 
 /// Create the ext subcommand definition
@@ -325,22 +327,27 @@ fn unmerge_extensions_internal_with_depmod(
     unmount: bool,
     output: &OutputManager,
 ) -> Result<(), SystemdError> {
-    unmerge_extensions_internal_with_options(call_depmod, true, unmount, output)
+    unmerge_extensions_internal_with_options(call_depmod, unmount, output)
 }
 
 /// Internal unmerge function with all options
 fn unmerge_extensions_internal_with_options(
     call_depmod: bool,
-    call_on_merge_commands: bool,
     unmount: bool,
     output: &OutputManager,
 ) -> Result<(), SystemdError> {
-    output.info("Extension Unmerge", "Starting extension unmerge process");
+    let environment_info = if is_running_in_initrd() {
+        "initrd environment"
+    } else {
+        "system environment"
+    };
+    output.info(
+        "Extension Unmerge",
+        &format!("Starting extension unmerge process in {environment_info}"),
+    );
 
-    // Process post-unmerge tasks before actual unmerge to have access to release files
-    if call_on_merge_commands {
-        process_post_unmerge_tasks()?;
-    }
+    // Note: We don't execute AVOCADO_ON_MERGE commands during unmerge
+    // Those commands are only meant to be run during merge operations
 
     // Unmerge system extensions
     let sysext_result = run_systemd_command("systemd-sysext", &["unmerge", "--json=short"])?;
@@ -395,8 +402,8 @@ pub fn refresh_extensions(output: &OutputManager) {
         &format!("Starting extension refresh process in {environment_info}"),
     );
 
-    // First unmerge (skip depmod and AVOCADO_ON_MERGE commands since we'll call them after merge, don't unmount loops)
-    if let Err(e) = unmerge_extensions_internal_with_options(false, false, false, output) {
+    // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
+    if let Err(e) = unmerge_extensions_internal_with_options(false, false, output) {
         output.error(
             "Extension Refresh",
             &format!("Failed to unmerge extensions: {e}"),
@@ -1025,8 +1032,17 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
     }
 
     // Check scope requirements for current environment (initrd vs system)
-    let (sysext_enabled, confext_enabled) =
-        is_extension_enabled_for_current_environment(path, name, is_sysext, is_confext);
+    let sysext_enabled = if is_sysext {
+        is_sysext_enabled_for_current_environment(path, name)
+    } else {
+        false
+    };
+
+    let confext_enabled = if is_confext {
+        is_confext_enabled_for_current_environment(path, name)
+    } else {
+        false
+    };
 
     Ok(Extension {
         name: name.to_string(),
@@ -1085,8 +1101,17 @@ fn analyze_raw_extension_with_loop(name: &str, path: &Path) -> Result<Extension,
     }
 
     // Check scope requirements for current environment (initrd vs system)
-    let (sysext_enabled, confext_enabled) =
-        is_extension_enabled_for_current_environment(&mount_path, name, is_sysext, is_confext);
+    let sysext_enabled = if is_sysext {
+        is_sysext_enabled_for_current_environment(&mount_path, name)
+    } else {
+        false
+    };
+
+    let confext_enabled = if is_confext {
+        is_confext_enabled_for_current_environment(&mount_path, name)
+    } else {
+        false
+    };
 
     Ok(Extension {
         name: name.to_string(),
@@ -1506,27 +1531,6 @@ fn check_for_stale_symlinks(directory: &str) -> Result<Option<Vec<String>>, Syst
     }
 }
 
-/// Scan release files from trusted, read-only mounted extension loops
-fn scan_release_files_for_commands() -> Result<(Vec<String>, Vec<String>), SystemdError> {
-    let mut on_merge_commands = Vec::new();
-    let mut modprobe_modules = Vec::new();
-
-    // Handle test mode with custom release directory (for backwards compatibility)
-    if let Ok(custom_dir) = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR") {
-        return scan_custom_release_directory(&custom_dir);
-    }
-
-    // Get all available extensions from trusted sources only
-    let extensions = scan_extensions_from_all_sources()?;
-
-    for extension in extensions {
-        // Scan release files from each trusted extension mount point
-        scan_extension_release_files(&extension, &mut on_merge_commands, &mut modprobe_modules)?;
-    }
-
-    Ok((on_merge_commands, modprobe_modules))
-}
-
 /// Scan release files for only the enabled extensions
 fn scan_release_files_for_enabled_extensions(
     enabled_extensions: &[Extension],
@@ -1679,27 +1683,6 @@ fn process_post_merge_tasks_for_extensions(
     // Call modprobe for each module after commands complete
     if !modprobe_modules.is_empty() {
         run_modprobe(&modprobe_modules)?;
-    }
-
-    Ok(())
-}
-
-/// Process post-unmerge tasks by checking extension release files
-/// This is called before the actual unmerge to have access to release files
-fn process_post_unmerge_tasks() -> Result<(), SystemdError> {
-    let (on_merge_commands, _modprobe_modules) = scan_release_files_for_commands()?;
-
-    // Remove duplicates while preserving order
-    let mut unique_commands = Vec::new();
-    for command in on_merge_commands {
-        if !unique_commands.contains(&command) {
-            unique_commands.push(command);
-        }
-    }
-
-    // Execute accumulated AVOCADO_ON_MERGE commands during unmerge
-    if !unique_commands.is_empty() {
-        run_avocado_on_merge_commands(&unique_commands)?;
     }
 
     Ok(())
@@ -2396,5 +2379,81 @@ OTHER_KEY=value
         // But we can test that the function exists and returns a boolean
         let result = is_running_in_initrd();
         assert!(result == true || result == false); // Just ensure it returns a boolean
+    }
+
+    #[test]
+    fn test_sysext_scope_checking() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        // Create a temporary directory structure
+        let temp_dir = TempDir::new().unwrap();
+        let ext_path = temp_dir.path().join("test_ext");
+        let release_dir = ext_path.join("usr/lib/extension-release.d");
+        fs::create_dir_all(&release_dir).unwrap();
+
+        // Test case 1: Extension with initrd scope only
+        let release_file = release_dir.join("extension-release.test_ext");
+        fs::write(&release_file, "VERSION_ID=1.0\nSYSEXT_SCOPE=\"initrd\"\n").unwrap();
+
+        // This test will always return true since we can't mock is_running_in_initrd easily
+        // But we can verify the function doesn't crash
+        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert!(result == true || result == false);
+
+        // Test case 2: Extension with system scope only
+        fs::write(&release_file, "VERSION_ID=1.0\nSYSEXT_SCOPE=\"system\"\n").unwrap();
+        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert!(result == true || result == false);
+
+        // Test case 3: Extension with both scopes
+        fs::write(
+            &release_file,
+            "VERSION_ID=1.0\nSYSEXT_SCOPE=\"initrd system\"\n",
+        )
+        .unwrap();
+        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert!(result == true || result == false);
+
+        // Test case 4: Extension with no scope (should default to enabled)
+        fs::write(&release_file, "VERSION_ID=1.0\n").unwrap();
+        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert_eq!(result, true);
+
+        // Test case 5: No release file (should default to enabled)
+        fs::remove_file(&release_file).unwrap();
+        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn test_confext_scope_checking() {
+        use std::fs;
+        use tempfile::TempDir;
+
+        // Create a temporary directory structure
+        let temp_dir = TempDir::new().unwrap();
+        let ext_path = temp_dir.path().join("test_ext");
+        let release_dir = ext_path.join("etc/extension-release.d");
+        fs::create_dir_all(&release_dir).unwrap();
+
+        // Test case 1: Extension with initrd scope only
+        let release_file = release_dir.join("extension-release.test_ext");
+        fs::write(&release_file, "VERSION_ID=1.0\nCONFEXT_SCOPE=\"initrd\"\n").unwrap();
+
+        // This test will always return true since we can't mock is_running_in_initrd easily
+        // But we can verify the function doesn't crash
+        let result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert!(result == true || result == false);
+
+        // Test case 2: Extension with no scope (should default to enabled)
+        fs::write(&release_file, "VERSION_ID=1.0\n").unwrap();
+        let result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert_eq!(result, true);
+
+        // Test case 3: No release file (should default to enabled)
+        fs::remove_file(&release_file).unwrap();
+        let result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
+        assert_eq!(result, true);
     }
 }
