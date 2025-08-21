@@ -67,6 +67,86 @@ fn print_colored_info(message: &str) {
     }
 }
 
+/// Detect if we are running in the initrd by checking for /etc/initrd-release
+fn is_running_in_initrd() -> bool {
+    Path::new("/etc/initrd-release").exists()
+}
+
+/// Parse scope values from release file content (e.g., SYSEXT_SCOPE or CONFEXT_SCOPE)
+fn parse_scope_from_release_content(content: &str, scope_key: &str) -> Vec<String> {
+    let mut scopes = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with(&format!("{scope_key}=")) {
+            let value = line
+                .split_once('=')
+                .map(|x| x.1)
+                .unwrap_or("")
+                .trim_matches('"')
+                .trim();
+
+            // Parse space-separated list of scopes
+            for scope in value.split_whitespace() {
+                if !scope.is_empty() {
+                    scopes.push(scope.to_string());
+                }
+            }
+            break; // Only process the first occurrence
+        }
+    }
+
+    scopes
+}
+
+/// Check if an extension is enabled for the current environment (initrd vs system)
+fn is_extension_enabled_for_current_environment(
+    extension_path: &Path,
+    extension_name: &str,
+    is_sysext: bool,
+    is_confext: bool,
+) -> (bool, bool) {
+    let in_initrd = is_running_in_initrd();
+    let required_scope = if in_initrd { "initrd" } else { "system" };
+
+    let mut sysext_enabled = is_sysext;
+    let mut confext_enabled = is_confext;
+
+    // Check sysext scope if it's a sysext
+    if is_sysext {
+        let sysext_release_path = extension_path
+            .join("usr/lib/extension-release.d")
+            .join(format!("extension-release.{extension_name}"));
+
+        if sysext_release_path.exists() {
+            if let Ok(content) = fs::read_to_string(&sysext_release_path) {
+                let scopes = parse_scope_from_release_content(&content, "SYSEXT_SCOPE");
+                if !scopes.is_empty() && !scopes.contains(&required_scope.to_string()) {
+                    sysext_enabled = false;
+                }
+            }
+        }
+    }
+
+    // Check confext scope if it's a confext
+    if is_confext {
+        let confext_release_path = extension_path
+            .join("etc/extension-release.d")
+            .join(format!("extension-release.{extension_name}"));
+
+        if confext_release_path.exists() {
+            if let Ok(content) = fs::read_to_string(&confext_release_path) {
+                let scopes = parse_scope_from_release_content(&content, "CONFEXT_SCOPE");
+                if !scopes.is_empty() && !scopes.contains(&required_scope.to_string()) {
+                    confext_enabled = false;
+                }
+            }
+        }
+    }
+
+    (sysext_enabled, confext_enabled)
+}
+
 /// Create the ext subcommand definition
 pub fn create_command() -> Command {
     Command::new("ext")
@@ -185,10 +265,18 @@ pub fn merge_extensions(output: &OutputManager) {
 
 /// Internal merge function that returns a Result
 fn merge_extensions_internal(output: &OutputManager) -> Result<(), SystemdError> {
-    output.info("Extension Merge", "Starting extension merge process");
+    let environment_info = if is_running_in_initrd() {
+        "initrd environment"
+    } else {
+        "system environment"
+    };
+    output.info(
+        "Extension Merge",
+        &format!("Starting extension merge process in {environment_info}"),
+    );
 
-    // Prepare the environment by setting up symlinks
-    prepare_extension_environment_with_output(output)?;
+    // Prepare the environment by setting up symlinks and get the list of enabled extensions
+    let enabled_extensions = prepare_extension_environment_with_output(output)?;
 
     // Merge system extensions
     let sysext_result = run_systemd_command(
@@ -204,8 +292,8 @@ fn merge_extensions_internal(output: &OutputManager) -> Result<(), SystemdError>
     )?;
     handle_systemd_output("systemd-confext merge", &confext_result, output)?;
 
-    // Process post-merge tasks
-    process_post_merge_tasks()?;
+    // Process post-merge tasks only for enabled extensions
+    process_post_merge_tasks_for_extensions(&enabled_extensions)?;
 
     Ok(())
 }
@@ -297,7 +385,15 @@ pub fn refresh_extensions_direct(output: &OutputManager) {
 
 /// Refresh extensions (unmerge then merge)
 pub fn refresh_extensions(output: &OutputManager) {
-    output.info("Extension Refresh", "Starting extension refresh process");
+    let environment_info = if is_running_in_initrd() {
+        "initrd environment"
+    } else {
+        "system environment"
+    };
+    output.info(
+        "Extension Refresh",
+        &format!("Starting extension refresh process in {environment_info}"),
+    );
 
     // First unmerge (skip depmod and AVOCADO_ON_MERGE commands since we'll call them after merge, don't unmount loops)
     if let Err(e) = unmerge_extensions_internal_with_options(false, false, false, output) {
@@ -686,7 +782,9 @@ fn format_status_output(output: &str) {
 }
 
 /// Prepare the extension environment by setting up symlinks with output manager
-fn prepare_extension_environment_with_output(output: &OutputManager) -> Result<(), SystemdError> {
+fn prepare_extension_environment_with_output(
+    output: &OutputManager,
+) -> Result<Vec<Extension>, SystemdError> {
     output.step("Environment", "Preparing extension environment");
 
     // Verify clean state by ensuring no stale symlinks exist
@@ -697,24 +795,36 @@ fn prepare_extension_environment_with_output(output: &OutputManager) -> Result<(
 
     if extensions.is_empty() {
         output.progress("No extensions found in any source location");
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     // Create target directories
     create_target_directories()?;
 
+    // Track which extensions are actually enabled and linked
+    let mut enabled_extensions = Vec::new();
+
     // Create symlinks for sysext and confext extensions
     for extension in &extensions {
+        let mut extension_enabled = false;
+
         if extension.is_sysext {
             create_sysext_symlink_with_verbosity(extension, output.is_verbose())?;
+            extension_enabled = true;
         }
         if extension.is_confext {
             create_confext_symlink_with_verbosity(extension, output.is_verbose())?;
+            extension_enabled = true;
+        }
+
+        // Only add to enabled list if at least one type was linked
+        if extension_enabled {
+            enabled_extensions.push(extension.clone());
         }
     }
 
     output.progress("Extension environment prepared successfully");
-    Ok(())
+    Ok(enabled_extensions)
 }
 
 /// Scan all extension sources in priority order (legacy)
@@ -914,11 +1024,15 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
         is_confext = true;
     }
 
+    // Check scope requirements for current environment (initrd vs system)
+    let (sysext_enabled, confext_enabled) =
+        is_extension_enabled_for_current_environment(path, name, is_sysext, is_confext);
+
     Ok(Extension {
         name: name.to_string(),
         path: path.to_path_buf(),
-        is_sysext,
-        is_confext,
+        is_sysext: sysext_enabled,
+        is_confext: confext_enabled,
         is_directory: true,
     })
 }
@@ -970,11 +1084,15 @@ fn analyze_raw_extension_with_loop(name: &str, path: &Path) -> Result<Extension,
         is_confext = true;
     }
 
+    // Check scope requirements for current environment (initrd vs system)
+    let (sysext_enabled, confext_enabled) =
+        is_extension_enabled_for_current_environment(&mount_path, name, is_sysext, is_confext);
+
     Ok(Extension {
         name: name.to_string(),
         path: mount_path, // Use the mounted path instead of the raw file path
-        is_sysext,
-        is_confext,
+        is_sysext: sysext_enabled,
+        is_confext: confext_enabled,
         is_directory: false, // Still track that this originated from a .raw file
     })
 }
@@ -1409,6 +1527,26 @@ fn scan_release_files_for_commands() -> Result<(Vec<String>, Vec<String>), Syste
     Ok((on_merge_commands, modprobe_modules))
 }
 
+/// Scan release files for only the enabled extensions
+fn scan_release_files_for_enabled_extensions(
+    enabled_extensions: &[Extension],
+) -> Result<(Vec<String>, Vec<String>), SystemdError> {
+    let mut on_merge_commands = Vec::new();
+    let mut modprobe_modules = Vec::new();
+
+    // Handle test mode with custom release directory (for backwards compatibility)
+    if let Ok(custom_dir) = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR") {
+        return scan_custom_release_directory(&custom_dir);
+    }
+
+    for extension in enabled_extensions {
+        // Scan release files from each enabled extension mount point
+        scan_extension_release_files(extension, &mut on_merge_commands, &mut modprobe_modules)?;
+    }
+
+    Ok((on_merge_commands, modprobe_modules))
+}
+
 /// Scan release files from a custom directory (test mode)
 fn scan_custom_release_directory(
     custom_dir: &str,
@@ -1518,9 +1656,12 @@ fn scan_directory_for_release_files(
     }
 }
 
-/// Process post-merge tasks by checking extension release files
-fn process_post_merge_tasks() -> Result<(), SystemdError> {
-    let (on_merge_commands, modprobe_modules) = scan_release_files_for_commands()?;
+/// Process post-merge tasks for only the enabled extensions
+fn process_post_merge_tasks_for_extensions(
+    enabled_extensions: &[Extension],
+) -> Result<(), SystemdError> {
+    let (on_merge_commands, modprobe_modules) =
+        scan_release_files_for_enabled_extensions(enabled_extensions)?;
 
     // Remove duplicates while preserving order
     let mut unique_commands = Vec::new();
@@ -1572,8 +1713,8 @@ fn parse_avocado_on_merge_commands(content: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with("AVOCADO_ON_MERGE=") {
             let value = line
-                .splitn(2, '=')
-                .nth(1)
+                .split_once('=')
+                .map(|x| x.1)
                 .unwrap_or("")
                 .trim_matches('"')
                 .trim();
@@ -1603,8 +1744,8 @@ fn parse_avocado_modprobe(content: &str) -> Vec<String> {
         let line = line.trim();
         if line.starts_with("AVOCADO_MODPROBE=") {
             let value = line
-                .splitn(2, '=')
-                .nth(1)
+                .split_once('=')
+                .map(|x| x.1)
                 .unwrap_or("")
                 .trim_matches('"')
                 .trim();
@@ -2137,7 +2278,13 @@ AVOCADO_ON_MERGE=command --option=value --other=setting
 OTHER_KEY=value
 "#;
         let commands = parse_avocado_on_merge_commands(content_with_equals);
-        assert_eq!(commands, vec!["udevadm trigger --action=add", "command --option=value --other=setting"]);
+        assert_eq!(
+            commands,
+            vec![
+                "udevadm trigger --action=add",
+                "command --option=value --other=setting"
+            ]
+        );
 
         // Test case with multiple equals signs in same argument
         let content_multiple_equals = r#"
@@ -2145,7 +2292,10 @@ VERSION_ID=1.0
 AVOCADO_ON_MERGE="systemctl set-property --runtime some.service CPUQuota=50% MemoryLimit=1G"
 "#;
         let commands = parse_avocado_on_merge_commands(content_multiple_equals);
-        assert_eq!(commands, vec!["systemctl set-property --runtime some.service CPUQuota=50% MemoryLimit=1G"]);
+        assert_eq!(
+            commands,
+            vec!["systemctl set-property --runtime some.service CPUQuota=50% MemoryLimit=1G"]
+        );
 
         // Test case ensuring backwards compatibility with simple commands
         let content_simple = r#"
@@ -2167,10 +2317,13 @@ AVOCADO_ON_MERGE="command1 --arg=value; command2; command3 --option"
 OTHER_KEY=value
 "#;
         let commands = parse_avocado_on_merge_commands(content_with_semicolons);
-        assert_eq!(commands, vec![
-            "systemctl --no-block restart dbus; systemctl --no-block restart avahi-daemon",
-            "command1 --arg=value; command2; command3 --option"
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                "systemctl --no-block restart dbus; systemctl --no-block restart avahi-daemon",
+                "command1 --arg=value; command2; command3 --option"
+            ]
+        );
 
         // Test case with mixed semicolons and regular commands
         let content_mixed = r#"
@@ -2180,10 +2333,68 @@ AVOCADO_ON_MERGE="systemctl restart service1; systemctl restart service2"
 AVOCADO_ON_MERGE="single-command --arg"
 "#;
         let commands = parse_avocado_on_merge_commands(content_mixed);
-        assert_eq!(commands, vec![
-            "depmod",
-            "systemctl restart service1; systemctl restart service2",
-            "single-command --arg"
-        ]);
+        assert_eq!(
+            commands,
+            vec![
+                "depmod",
+                "systemctl restart service1; systemctl restart service2",
+                "single-command --arg"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_scope_from_release_content() {
+        // Test case with SYSEXT_SCOPE
+        let content_with_sysext_scope = r#"
+VERSION_ID=1.0
+SYSEXT_SCOPE="initrd system"
+OTHER_KEY=value
+"#;
+        let scopes = parse_scope_from_release_content(content_with_sysext_scope, "SYSEXT_SCOPE");
+        assert_eq!(scopes, vec!["initrd", "system"]);
+
+        // Test case with CONFEXT_SCOPE
+        let content_with_confext_scope = r#"
+VERSION_ID=1.0
+CONFEXT_SCOPE=system
+OTHER_KEY=value
+"#;
+        let scopes = parse_scope_from_release_content(content_with_confext_scope, "CONFEXT_SCOPE");
+        assert_eq!(scopes, vec!["system"]);
+
+        // Test case with no scope
+        let content_no_scope = r#"
+VERSION_ID=1.0
+OTHER_KEY=value
+"#;
+        let scopes = parse_scope_from_release_content(content_no_scope, "SYSEXT_SCOPE");
+        assert!(scopes.is_empty());
+
+        // Test case with empty scope
+        let content_empty_scope = r#"
+VERSION_ID=1.0
+SYSEXT_SCOPE=""
+OTHER_KEY=value
+"#;
+        let scopes = parse_scope_from_release_content(content_empty_scope, "SYSEXT_SCOPE");
+        assert!(scopes.is_empty());
+
+        // Test case with extra whitespace
+        let content_with_whitespace = r#"
+VERSION_ID=1.0
+SYSEXT_SCOPE="  initrd   system  portable  "
+OTHER_KEY=value
+"#;
+        let scopes = parse_scope_from_release_content(content_with_whitespace, "SYSEXT_SCOPE");
+        assert_eq!(scopes, vec!["initrd", "system", "portable"]);
+    }
+
+    #[test]
+    fn test_is_running_in_initrd() {
+        // This test can't easily test the actual function since it depends on filesystem state
+        // But we can test that the function exists and returns a boolean
+        let result = is_running_in_initrd();
+        assert!(result == true || result == false); // Just ensure it returns a boolean
     }
 }
