@@ -1682,3 +1682,390 @@ fn test_enable_disable_refresh_workflow() {
         "Should scan ext2 from runtime"
     );
 }
+
+/// Test that disabled extensions are not merged after refresh
+#[test]
+fn test_disabled_extension_not_merged_after_refresh() {
+    // Create a temporary directory for extensions
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create test extensions
+    fs::create_dir(extensions_dir.join("ext1-1.0.0"))
+        .expect("Failed to create test extension directory");
+    fs::create_dir(extensions_dir.join("ext2-1.0.0"))
+        .expect("Failed to create test extension directory");
+
+    // Create release files for both extensions
+    let ext1_release_dir = extensions_dir.join("ext1-1.0.0/usr/lib/extension-release.d");
+    fs::create_dir_all(&ext1_release_dir).expect("Failed to create release dir");
+    fs::write(
+        ext1_release_dir.join("extension-release.ext1-1.0.0"),
+        "ID=avocado\nVERSION_ID=1.0",
+    )
+    .expect("Failed to write release file");
+
+    let ext2_release_dir = extensions_dir.join("ext2-1.0.0/usr/lib/extension-release.d");
+    fs::create_dir_all(&ext2_release_dir).expect("Failed to create release dir");
+    fs::write(
+        ext2_release_dir.join("extension-release.ext2-1.0.0"),
+        "ID=avocado\nVERSION_ID=1.0",
+    )
+    .expect("Failed to write release file");
+
+    let test_env = [
+        ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+        ("AVOCADO_TEST_MODE", "1"),
+        ("TMPDIR", temp_dir.path().to_str().unwrap()),
+    ];
+
+    // Enable both extensions
+    let enable_output = run_avocadoctl_with_env(
+        &["enable", "--verbose", "ext1-1.0.0", "ext2-1.0.0"],
+        &test_env,
+    );
+    assert!(enable_output.status.success(), "Enable should succeed");
+
+    // Refresh with both enabled
+    let (refresh1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh1.status.success(), "First refresh should succeed");
+
+    // Verify both symlinks exist after merge
+    let sysext_dir = temp_dir.path().join("test_extensions");
+    assert!(
+        sysext_dir.join("ext1-1.0.0").exists(),
+        "ext1 symlink should exist"
+    );
+    assert!(
+        sysext_dir.join("ext2-1.0.0").exists(),
+        "ext2 symlink should exist"
+    );
+
+    // Disable ext1
+    let disable_output =
+        run_avocadoctl_with_env(&["disable", "--verbose", "ext1-1.0.0"], &test_env);
+    assert!(disable_output.status.success(), "Disable should succeed");
+
+    // Refresh after disabling ext1
+    let (refresh2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh2.status.success(), "Second refresh should succeed");
+    let stdout2 = String::from_utf8_lossy(&refresh2.stdout);
+
+    // Verify ext1 is NOT scanned from runtime
+    assert!(
+        !stdout2.contains("Found runtime extension: ext1-1.0.0"),
+        "ext1 should NOT be found from runtime after being disabled. Stdout: {}",
+        stdout2
+    );
+
+    // Verify ext2 IS scanned from runtime
+    assert!(
+        stdout2.contains("Found runtime extension: ext2-1.0.0"),
+        "ext2 should still be found from runtime"
+    );
+
+    // Verify ext1 symlink was removed (stale cleanup)
+    assert!(
+        !sysext_dir.join("ext1-1.0.0").exists(),
+        "ext1 symlink should be removed after refresh"
+    );
+
+    // Verify ext2 symlink still exists
+    assert!(
+        sysext_dir.join("ext2-1.0.0").exists(),
+        "ext2 symlink should still exist"
+    );
+
+    // Verify base directory was skipped (because runtime directory exists)
+    assert!(
+        stdout2.contains("Runtime directory exists, skipping base extensions directory")
+            || !stdout2.contains("Found directory extension: ext1-1.0.0"),
+        "Base directory should be skipped when runtime directory exists"
+    );
+}
+
+/// Test that base directory is completely skipped when runtime directory exists
+#[test]
+fn test_base_directory_skipped_with_runtime() {
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create extensions in base directory
+    fs::create_dir(extensions_dir.join("ext1-1.0.0"))
+        .expect("Failed to create test extension directory");
+    fs::create_dir(extensions_dir.join("ext2-1.0.0"))
+        .expect("Failed to create test extension directory");
+    fs::create_dir(extensions_dir.join("ext3-1.0.0"))
+        .expect("Failed to create test extension directory");
+
+    // Create release files
+    for ext in &["ext1-1.0.0", "ext2-1.0.0", "ext3-1.0.0"] {
+        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        fs::create_dir_all(&release_dir).expect("Failed to create release dir");
+        fs::write(
+            release_dir.join(format!("extension-release.{}", ext)),
+            "ID=avocado\nVERSION_ID=1.0",
+        )
+        .expect("Failed to write release file");
+    }
+
+    let test_env = [
+        ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+        ("AVOCADO_TEST_MODE", "1"),
+        ("TMPDIR", temp_dir.path().to_str().unwrap()),
+    ];
+
+    // Enable only ext1
+    let enable_output = run_avocadoctl_with_env(&["enable", "--verbose", "ext1-1.0.0"], &test_env);
+    assert!(enable_output.status.success(), "Enable should succeed");
+
+    // Refresh - should only merge ext1, not ext2 or ext3 from base directory
+    let (refresh_output, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh_output.status.success(), "Refresh should succeed");
+    let stdout = String::from_utf8_lossy(&refresh_output.stdout);
+
+    // Verify ext1 is found from runtime
+    assert!(
+        stdout.contains("Found runtime extension: ext1-1.0.0"),
+        "ext1 should be found from runtime"
+    );
+
+    // Verify ext2 and ext3 are NOT found (base directory skipped)
+    assert!(
+        !stdout.contains("Found directory extension: ext2-1.0.0"),
+        "ext2 should NOT be found from base directory"
+    );
+    assert!(
+        !stdout.contains("Found directory extension: ext3-1.0.0"),
+        "ext3 should NOT be found from base directory"
+    );
+
+    // Verify message about skipping base directory
+    assert!(
+        stdout.contains("Runtime directory exists, skipping base extensions directory")
+            || stdout.contains("Runtime directory exists, skipping base raw files"),
+        "Should show message about skipping base directory"
+    );
+}
+
+/// Test that all extensions from base are used when no runtime directory exists
+#[test]
+fn test_base_directory_used_without_runtime() {
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create extensions in base directory
+    fs::create_dir(extensions_dir.join("ext1-1.0.0"))
+        .expect("Failed to create test extension directory");
+    fs::create_dir(extensions_dir.join("ext2-1.0.0"))
+        .expect("Failed to create test extension directory");
+
+    // Create release files
+    for ext in &["ext1-1.0.0", "ext2-1.0.0"] {
+        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        fs::create_dir_all(&release_dir).expect("Failed to create release dir");
+        fs::write(
+            release_dir.join(format!("extension-release.{}", ext)),
+            "ID=avocado\nVERSION_ID=1.0",
+        )
+        .expect("Failed to write release file");
+    }
+
+    let test_env = [
+        ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+        ("AVOCADO_TEST_MODE", "1"),
+        ("TMPDIR", temp_dir.path().to_str().unwrap()),
+    ];
+
+    // DON'T enable any extensions - this means no runtime directory exists
+
+    // Refresh - should use all extensions from base directory
+    let (refresh_output, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh_output.status.success(), "Refresh should succeed");
+    let stdout = String::from_utf8_lossy(&refresh_output.stdout);
+
+    // Verify both extensions are found from base directory (not runtime)
+    assert!(
+        stdout.contains("Found directory extension: ext1-1.0.0"),
+        "ext1 should be found from base directory. Stdout: {}",
+        stdout
+    );
+    assert!(
+        stdout.contains("Found directory extension: ext2-1.0.0"),
+        "ext2 should be found from base directory. Stdout: {}",
+        stdout
+    );
+
+    // Verify message about no runtime directory
+    assert!(
+        stdout.contains("No runtime directory found")
+            || stdout.contains("Runtime directory") && stdout.contains("does not exist"),
+        "Should indicate runtime directory doesn't exist"
+    );
+}
+
+/// Test enable with --all flag to disable all extensions
+#[test]
+fn test_disable_all_then_refresh() {
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create test extensions
+    for ext in &["ext1-1.0.0", "ext2-1.0.0", "ext3-1.0.0"] {
+        fs::create_dir(extensions_dir.join(ext))
+            .expect("Failed to create test extension directory");
+        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        fs::create_dir_all(&release_dir).expect("Failed to create release dir");
+        fs::write(
+            release_dir.join(format!("extension-release.{}", ext)),
+            "ID=avocado\nVERSION_ID=1.0",
+        )
+        .expect("Failed to write release file");
+    }
+
+    let test_env = [
+        ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+        ("AVOCADO_TEST_MODE", "1"),
+        ("TMPDIR", temp_dir.path().to_str().unwrap()),
+    ];
+
+    // Enable all three extensions
+    let enable_output = run_avocadoctl_with_env(
+        &[
+            "enable",
+            "--verbose",
+            "ext1-1.0.0",
+            "ext2-1.0.0",
+            "ext3-1.0.0",
+        ],
+        &test_env,
+    );
+    assert!(enable_output.status.success(), "Enable should succeed");
+
+    // Refresh to merge them
+    let (refresh1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh1.status.success(), "First refresh should succeed");
+
+    // Disable all extensions
+    let disable_output = run_avocadoctl_with_env(&["disable", "--verbose", "--all"], &test_env);
+    assert!(
+        disable_output.status.success(),
+        "Disable all should succeed"
+    );
+
+    // Refresh after disabling all
+    let (refresh2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh2.status.success(), "Second refresh should succeed");
+    let stdout2 = String::from_utf8_lossy(&refresh2.stdout);
+
+    // Verify NO extensions are found from runtime (all were disabled)
+    assert!(
+        !stdout2.contains("Found runtime extension:"),
+        "No extensions should be found from runtime after disabling all"
+    );
+
+    // The runtime directory should still exist but be empty, so base directory should still be skipped
+    let runtime_dir = temp_dir.path().join("avocado/runtime/24.04");
+    assert!(runtime_dir.exists(), "Runtime directory should still exist");
+
+    // Verify no symlinks exist after refresh
+    let sysext_dir = temp_dir.path().join("test_extensions");
+    if sysext_dir.exists() {
+        let entries: Vec<_> = fs::read_dir(&sysext_dir)
+            .expect("Should read sysext dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_symlink())
+            .collect();
+        assert_eq!(
+            entries.len(),
+            0,
+            "No symlinks should exist after disabling all and refreshing"
+        );
+    }
+}
+
+/// Test stale symlink cleanup
+#[test]
+fn test_stale_symlink_cleanup() {
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create test extensions
+    for ext in &["ext1-1.0.0", "ext2-1.0.0"] {
+        fs::create_dir(extensions_dir.join(ext))
+            .expect("Failed to create test extension directory");
+        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        fs::create_dir_all(&release_dir).expect("Failed to create release dir");
+        fs::write(
+            release_dir.join(format!("extension-release.{}", ext)),
+            "ID=avocado\nVERSION_ID=1.0",
+        )
+        .expect("Failed to write release file");
+    }
+
+    let test_env = [
+        ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+        ("AVOCADO_TEST_MODE", "1"),
+        ("TMPDIR", temp_dir.path().to_str().unwrap()),
+    ];
+
+    // Enable both extensions
+    let enable_output = run_avocadoctl_with_env(
+        &["enable", "--verbose", "ext1-1.0.0", "ext2-1.0.0"],
+        &test_env,
+    );
+    assert!(enable_output.status.success());
+
+    // Refresh to create symlinks
+    let (refresh1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh1.status.success());
+
+    let sysext_dir = temp_dir.path().join("test_extensions");
+    assert!(
+        sysext_dir.join("ext1-1.0.0").exists(),
+        "ext1 symlink should exist"
+    );
+    assert!(
+        sysext_dir.join("ext2-1.0.0").exists(),
+        "ext2 symlink should exist"
+    );
+
+    // Disable ext1
+    let disable_output =
+        run_avocadoctl_with_env(&["disable", "--verbose", "ext1-1.0.0"], &test_env);
+    assert!(disable_output.status.success());
+
+    // Refresh - should clean up ext1 stale symlink
+    let (refresh2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh2.status.success());
+    let stdout2 = String::from_utf8_lossy(&refresh2.stdout);
+
+    // Verify stale symlink was removed
+    assert!(
+        !sysext_dir.join("ext1-1.0.0").exists(),
+        "ext1 stale symlink should be removed"
+    );
+    assert!(
+        sysext_dir.join("ext2-1.0.0").exists(),
+        "ext2 symlink should still exist"
+    );
+
+    // Check for cleanup message
+    assert!(
+        stdout2.contains("Removed stale") || !sysext_dir.join("ext1-1.0.0").exists(),
+        "Should remove stale symlink or show cleanup message"
+    );
+}

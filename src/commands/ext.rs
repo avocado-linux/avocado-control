@@ -1130,8 +1130,108 @@ fn prepare_extension_environment_with_output(
         }
     }
 
+    // Important: After creating symlinks for enabled extensions, ensure no stale symlinks remain
+    // This handles the case where an extension was previously enabled but is now disabled
+    cleanup_stale_extension_symlinks(&enabled_extensions, output)?;
+
     output.progress("Extension environment prepared successfully");
     Ok(enabled_extensions)
+}
+
+/// Remove any symlinks in /run/extensions and /run/confexts that are NOT in the enabled list
+/// This ensures disabled extensions are not merged
+fn cleanup_stale_extension_symlinks(
+    enabled_extensions: &[Extension],
+    output: &OutputManager,
+) -> Result<(), SystemdError> {
+    let sysext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/test_extensions")
+    } else {
+        "/run/extensions".to_string()
+    };
+
+    let confext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/test_confexts")
+    } else {
+        "/run/confexts".to_string()
+    };
+
+    // Build a set of expected symlink names (with versions)
+    let mut expected_names = std::collections::HashSet::new();
+    for ext in enabled_extensions {
+        let name_with_version = if let Some(ver) = &ext.version {
+            format!("{}-{}", ext.name, ver)
+        } else {
+            ext.name.clone()
+        };
+        expected_names.insert(name_with_version);
+    }
+
+    // Clean up sysext directory
+    if Path::new(&sysext_dir).exists() {
+        if let Ok(entries) = fs::read_dir(&sysext_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_symlink() {
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        // Remove .raw suffix if present for comparison
+                        let name_without_raw = file_name.strip_suffix(".raw").unwrap_or(file_name);
+
+                        if !expected_names.contains(file_name)
+                            && !expected_names.contains(name_without_raw)
+                        {
+                            if let Err(e) = fs::remove_file(&path) {
+                                output.progress(&format!(
+                                    "Warning: Failed to remove stale sysext symlink {}: {}",
+                                    file_name, e
+                                ));
+                            } else {
+                                output.progress(&format!(
+                                    "Removed stale sysext symlink: {}",
+                                    file_name
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Clean up confext directory
+    if Path::new(&confext_dir).exists() {
+        if let Ok(entries) = fs::read_dir(&confext_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_symlink() {
+                    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
+                        // Remove .raw suffix if present for comparison
+                        let name_without_raw = file_name.strip_suffix(".raw").unwrap_or(file_name);
+
+                        if !expected_names.contains(file_name)
+                            && !expected_names.contains(name_without_raw)
+                        {
+                            if let Err(e) = fs::remove_file(&path) {
+                                output.progress(&format!(
+                                    "Warning: Failed to remove stale confext symlink {}: {}",
+                                    file_name, e
+                                ));
+                            } else {
+                                output.progress(&format!(
+                                    "Removed stale confext symlink: {}",
+                                    file_name
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 /// Scan all extension sources in priority order (legacy)
@@ -1282,78 +1382,100 @@ fn scan_extensions_from_all_sources_with_verbosity(
     }
 
     // 3. Third priority: Regular directory extensions (skip if already have HITL or runtime version)
+    // IMPORTANT: If a runtime directory exists, we do NOT fall back to the base extensions directory
+    // This ensures that explicitly disabled extensions (removed from runtime) are not merged
+    let runtime_dir_exists = Path::new(&runtime_extensions_dir).exists();
+
     if verbose {
         println!("Scanning directory extensions in {extensions_dir}");
     }
-    if let Ok(dir_extensions) = scan_directory_extensions(&extensions_dir) {
-        for ext in dir_extensions {
-            if !extension_map.contains_key(&ext.name) {
-                if verbose {
+
+    if !runtime_dir_exists {
+        // Only scan base directory if no runtime directory exists (backward compatibility)
+        if verbose {
+            println!("No runtime directory found, scanning base extensions directory");
+        }
+        if let Ok(dir_extensions) = scan_directory_extensions(&extensions_dir) {
+            for ext in dir_extensions {
+                if !extension_map.contains_key(&ext.name) {
+                    if verbose {
+                        println!(
+                            "Found directory extension: {} at {}",
+                            ext.name,
+                            ext.path.display()
+                        );
+                    }
+                    extension_map.insert(ext.name.clone(), ext);
+                } else if verbose {
                     println!(
-                        "Found directory extension: {} at {}",
-                        ext.name,
-                        ext.path.display()
+                        "Skipping directory extension {} (HITL or runtime version preferred)",
+                        ext.name
                     );
                 }
-                extension_map.insert(ext.name.clone(), ext);
-            } else if verbose {
-                println!(
-                    "Skipping directory extension {} (HITL or runtime version preferred)",
-                    ext.name
-                );
             }
         }
+    } else if verbose {
+        println!("Runtime directory exists, skipping base extensions directory (use enable/disable to manage extensions)");
     }
 
     // 4. Fourth priority: Raw file extensions (skip if already have directory version)
+    // IMPORTANT: Same as above - only scan if no runtime directory exists
     if verbose {
         println!("Scanning raw file extensions in {extensions_dir}");
     }
-    let raw_files = scan_raw_files(&extensions_dir)?;
 
-    // Cleanup stale loops before processing new ones
-    // Build list of all valid loop names (with versions for versioned extensions)
-    let mut available_loop_names: Vec<String> = Vec::new();
-
-    // Add extensions already in the map (these might have versioned loop names)
-    for ext in extension_map.values() {
-        if let Some(ver) = &ext.version {
-            available_loop_names.push(format!("{}-{}", ext.name, ver));
-        } else {
-            available_loop_names.push(ext.name.clone());
+    if !runtime_dir_exists {
+        if verbose {
+            println!("No runtime directory found, scanning base raw files");
         }
-    }
+        let raw_files = scan_raw_files(&extensions_dir)?;
 
-    // Add versioned names for raw files we're about to process
-    for (name, version, _path) in &raw_files {
-        if let Some(ver) = version {
-            available_loop_names.push(format!("{}-{}", name, ver));
-        } else {
-            available_loop_names.push(name.clone());
-        }
-    }
+        // Cleanup stale loops before processing new ones
+        // Build list of all valid loop names (with versions for versioned extensions)
+        let mut available_loop_names: Vec<String> = Vec::new();
 
-    cleanup_stale_loops(&available_loop_names)?;
-
-    // Process .raw files with persistent loops (only if not already found)
-    for (ext_name, ext_version, path) in raw_files {
-        match extension_map.entry(ext_name.clone()) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                if verbose {
-                    println!("Found raw file extension: {ext_name} at {}", path.display());
-                }
-                let extension =
-                    analyze_raw_extension_with_loop(&ext_name, &ext_version, &path, verbose)?;
-                entry.insert(extension);
-            }
-            std::collections::hash_map::Entry::Occupied(_) => {
-                if verbose {
-                    println!(
-                        "Skipping raw file extension {ext_name} (higher priority version preferred)"
-                    );
-                }
+        // Add extensions already in the map (these might have versioned loop names)
+        for ext in extension_map.values() {
+            if let Some(ver) = &ext.version {
+                available_loop_names.push(format!("{}-{}", ext.name, ver));
+            } else {
+                available_loop_names.push(ext.name.clone());
             }
         }
+
+        // Add versioned names for raw files we're about to process
+        for (name, version, _path) in &raw_files {
+            if let Some(ver) = version {
+                available_loop_names.push(format!("{}-{}", name, ver));
+            } else {
+                available_loop_names.push(name.clone());
+            }
+        }
+
+        cleanup_stale_loops(&available_loop_names)?;
+
+        // Process .raw files with persistent loops (only if not already found)
+        for (ext_name, ext_version, path) in raw_files {
+            match extension_map.entry(ext_name.clone()) {
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    if verbose {
+                        println!("Found raw file extension: {ext_name} at {}", path.display());
+                    }
+                    let extension =
+                        analyze_raw_extension_with_loop(&ext_name, &ext_version, &path, verbose)?;
+                    entry.insert(extension);
+                }
+                std::collections::hash_map::Entry::Occupied(_) => {
+                    if verbose {
+                        println!(
+                            "Skipping raw file extension {ext_name} (higher priority version preferred)"
+                        );
+                    }
+                }
+            }
+        }
+    } else if verbose {
+        println!("Runtime directory exists, skipping base raw files (use enable/disable to manage extensions)");
     }
 
     // Convert map to vector
