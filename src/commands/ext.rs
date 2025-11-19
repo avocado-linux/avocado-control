@@ -391,6 +391,152 @@ pub fn refresh_extensions_direct(output: &OutputManager) {
     refresh_extensions(output);
 }
 
+/// Enable extensions for a specific runtime version
+pub fn enable_extensions(
+    runtime_version: Option<&str>,
+    extensions: &[&str],
+    config: &Config,
+    output: &OutputManager,
+) {
+    // Determine the runtime version to use
+    let version_id = if let Some(version) = runtime_version {
+        version.to_string()
+    } else {
+        read_os_version_id()
+    };
+
+    output.info(
+        "Enable Extensions",
+        &format!("Enabling extensions for runtime version: {version_id}"),
+    );
+
+    // Get the extensions directory from config
+    let extensions_dir = config.get_extensions_dir();
+    
+    // Determine runtime directory based on test mode
+    let runtime_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/runtime/{version_id}")
+    } else {
+        format!("/var/lib/avocado/runtime/{version_id}")
+    };
+
+    // Create the runtime directory if it doesn't exist
+    if let Err(e) = fs::create_dir_all(&runtime_dir) {
+        output.error(
+            "Enable Extensions",
+            &format!("Failed to create runtime directory '{runtime_dir}': {e}"),
+        );
+        std::process::exit(1);
+    }
+
+    // Sync the parent directory to ensure the runtime directory is persisted
+    if let Err(e) = sync_directory(Path::new(&runtime_dir).parent().unwrap_or(Path::new("/"))) {
+        output.progress(&format!("Warning: Failed to sync parent directory: {e}"));
+    }
+
+    output.step(
+        "Enable",
+        &format!("Created runtime directory: {runtime_dir}"),
+    );
+
+    // Process each extension
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    for ext_name in extensions {
+        // Check if extension exists - try both directory and .raw file
+        let ext_dir_path = format!("{}/{}", extensions_dir, ext_name);
+        let ext_raw_path = format!("{}/{}.raw", extensions_dir, ext_name);
+
+        let source_path = if Path::new(&ext_dir_path).exists() {
+            ext_dir_path
+        } else if Path::new(&ext_raw_path).exists() {
+            ext_raw_path
+        } else {
+            output.error(
+                "Enable Extensions",
+                &format!("Extension '{ext_name}' not found in {extensions_dir}"),
+            );
+            error_count += 1;
+            continue;
+        };
+
+        // Create symlink in runtime directory
+        let target_path = format!("{}/{}", runtime_dir, Path::new(&source_path).file_name().unwrap().to_string_lossy());
+
+        // Remove existing symlink if it exists
+        if Path::new(&target_path).exists() {
+            if let Err(e) = fs::remove_file(&target_path) {
+                output.error(
+                    "Enable Extensions",
+                    &format!("Failed to remove existing symlink '{target_path}': {e}"),
+                );
+                error_count += 1;
+                continue;
+            }
+        }
+
+        // Create the symlink
+        if let Err(e) = unix_fs::symlink(&source_path, &target_path) {
+            output.error(
+                "Enable Extensions",
+                &format!("Failed to create symlink for '{ext_name}': {e}"),
+            );
+            error_count += 1;
+        } else {
+            output.progress(&format!("Enabled extension: {ext_name}"));
+            success_count += 1;
+        }
+    }
+
+    // Sync the runtime directory to ensure all symlinks are persisted to disk
+    if success_count > 0 {
+        if let Err(e) = sync_directory(Path::new(&runtime_dir)) {
+            output.error(
+                "Enable Extensions",
+                &format!("Failed to sync runtime directory to disk: {e}"),
+            );
+            std::process::exit(1);
+        }
+        output.progress("Synced changes to disk");
+    }
+
+    // Summary
+    if error_count > 0 {
+        output.error(
+            "Enable Extensions",
+            &format!(
+                "Completed with errors: {success_count} succeeded, {error_count} failed"
+            ),
+        );
+        std::process::exit(1);
+    } else {
+        output.success(
+            "Enable Extensions",
+            &format!("Successfully enabled {success_count} extension(s) for runtime {version_id}"),
+        );
+    }
+}
+
+/// Sync a directory to ensure all changes are persisted to disk
+fn sync_directory(dir_path: &Path) -> Result<(), SystemdError> {
+    // Open the directory
+    let dir = fs::File::open(dir_path).map_err(|e| SystemdError::CommandFailed {
+        command: format!("open directory {}", dir_path.display()),
+        source: e,
+    })?;
+
+    // Sync the directory to disk
+    // This ensures directory entries (like new symlinks) are persisted
+    dir.sync_all().map_err(|e| SystemdError::CommandFailed {
+        command: format!("sync directory {}", dir_path.display()),
+        source: e,
+    })?;
+
+    Ok(())
+}
+
 /// Refresh extensions (unmerge then merge)
 pub fn refresh_extensions(output: &OutputManager) {
     let environment_info = if is_running_in_initrd() {

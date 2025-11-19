@@ -1079,3 +1079,171 @@ fn test_ext_merge_with_confext_commands() {
         "Should show execution of post-merge commands"
     );
 }
+
+/// Test enable command with default runtime version
+#[test]
+fn test_enable_extensions_default_runtime() {
+    // Create a temporary directory for extensions
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create test extensions
+    fs::create_dir(extensions_dir.join("ext1-1.0.0"))
+        .expect("Failed to create test extension directory");
+    fs::write(extensions_dir.join("ext2-1.0.0.raw"), b"mock raw data")
+        .expect("Failed to create test raw extension");
+    fs::write(extensions_dir.join("ext3-1.0.0.raw"), b"mock raw data")
+        .expect("Failed to create test raw extension");
+
+    // Run enable command with test mode
+    let output = run_avocadoctl_with_env(
+        &["enable", "--verbose", "ext1-1.0.0", "ext2-1.0.0", "ext3-1.0.0"],
+        &[
+            ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+            ("AVOCADO_TEST_MODE", "1"),
+            ("TMPDIR", temp_dir.path().to_str().unwrap()),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        println!("STDOUT: {stdout}");
+        println!("STDERR: {stderr}");
+        panic!("enable command should succeed");
+    }
+
+    assert!(
+        stdout.contains("Enabling extensions for runtime version"),
+        "Should show runtime version message"
+    );
+    assert!(
+        stdout.contains("Successfully enabled 3 extension(s)"),
+        "Should show success message for 3 extensions"
+    );
+    assert!(
+        stdout.contains("Enabled extension: ext1-1.0.0"),
+        "Should show ext1 enabled"
+    );
+    assert!(
+        stdout.contains("Enabled extension: ext2-1.0.0"),
+        "Should show ext2 enabled"
+    );
+    assert!(
+        stdout.contains("Enabled extension: ext3-1.0.0"),
+        "Should show ext3 enabled"
+    );
+}
+
+/// Test enable command with custom runtime version
+#[test]
+fn test_enable_extensions_custom_runtime() {
+    // Create a temporary directory for extensions
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create test extensions
+    fs::create_dir(extensions_dir.join("ext1-1.0.0"))
+        .expect("Failed to create test extension directory");
+    fs::write(extensions_dir.join("ext2-1.0.0.raw"), b"mock raw data")
+        .expect("Failed to create test raw extension");
+
+    // Run enable command with custom runtime version and test mode
+    let output = run_avocadoctl_with_env(
+        &[
+            "enable",
+            "--verbose",
+            "--runtime",
+            "2.0.0",
+            "ext1-1.0.0",
+            "ext2-1.0.0",
+        ],
+        &[
+            ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+            ("AVOCADO_TEST_MODE", "1"),
+            ("TMPDIR", temp_dir.path().to_str().unwrap()),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() {
+        println!("STDOUT: {stdout}");
+        println!("STDERR: {stderr}");
+        panic!("enable command should succeed with custom runtime");
+    }
+
+    assert!(
+        stdout.contains("Enabling extensions for runtime version: 2.0.0"),
+        "Should show custom runtime version"
+    );
+    assert!(
+        stdout.contains("Successfully enabled 2 extension(s) for runtime 2.0.0"),
+        "Should show success message with runtime version"
+    );
+}
+
+/// Test enable command with nonexistent extension
+#[test]
+fn test_enable_nonexistent_extension() {
+    // Create a temporary directory for extensions
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create one valid extension
+    fs::create_dir(extensions_dir.join("ext1-1.0.0"))
+        .expect("Failed to create test extension directory");
+
+    // Run enable command with mix of valid and invalid extensions and test mode
+    let output = run_avocadoctl_with_env(
+        &["enable", "--verbose", "ext1-1.0.0", "nonexistent-ext"],
+        &[
+            ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+            ("AVOCADO_TEST_MODE", "1"),
+            ("TMPDIR", temp_dir.path().to_str().unwrap()),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    println!("STDOUT: {stdout}");
+    println!("STDERR: {stderr}");
+
+    assert!(
+        !output.status.success(),
+        "enable command should fail with nonexistent extension"
+    );
+
+    assert!(
+        stderr.contains("Extension 'nonexistent-ext' not found"),
+        "Should show error for nonexistent extension. STDERR: {stderr}"
+    );
+    assert!(
+        stdout.contains("Enabled extension: ext1-1.0.0"),
+        "Should still enable valid extension. STDOUT: {stdout}"
+    );
+}
+
+/// Test enable command help
+#[test]
+fn test_enable_help() {
+    let output = run_avocadoctl(&["enable", "--help"]);
+    assert!(output.status.success(), "Enable help should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Enable extensions for a specific runtime version"),
+        "Should contain enable description"
+    );
+    assert!(
+        stdout.contains("--runtime"),
+        "Should mention --runtime flag"
+    );
+}
+

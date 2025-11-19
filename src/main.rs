@@ -51,6 +51,23 @@ fn main() {
         .subcommand(
             Command::new("refresh")
                 .about("Unmerge and then merge extensions (alias for 'ext refresh')"),
+        )
+        .subcommand(
+            Command::new("enable")
+                .about("Enable extensions for a specific runtime version")
+                .arg(
+                    Arg::new("runtime")
+                        .long("runtime")
+                        .value_name("VERSION")
+                        .help("Runtime version (defaults to current os-release VERSION_ID)"),
+                )
+                .arg(
+                    Arg::new("extensions")
+                        .help("Extension names to enable")
+                        .required(true)
+                        .num_args(1..)
+                        .value_name("EXTENSION"),
+                ),
         );
 
     let matches = app.get_matches();
@@ -92,6 +109,15 @@ fn main() {
         }
         Some(("refresh", _)) => {
             ext::refresh_extensions_direct(&output);
+        }
+        Some(("enable", enable_matches)) => {
+            let runtime = enable_matches.get_one::<String>("runtime").map(|s| s.as_str());
+            let extensions: Vec<&str> = enable_matches
+                .get_many::<String>("extensions")
+                .unwrap()
+                .map(|s| s.as_str())
+                .collect();
+            ext::enable_extensions(runtime, &extensions, &config, &output);
         }
         _ => {
             println!(
