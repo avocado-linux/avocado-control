@@ -1122,8 +1122,8 @@ fn test_enable_extensions_default_runtime() {
     }
 
     assert!(
-        stdout.contains("Enabling extensions for runtime version"),
-        "Should show runtime version message"
+        stdout.contains("Enabling extensions for OS release version"),
+        "Should show OS release version message"
     );
     assert!(
         stdout.contains("Successfully enabled 3 extension(s)"),
@@ -1157,12 +1157,12 @@ fn test_enable_extensions_custom_runtime() {
     fs::write(extensions_dir.join("ext2-1.0.0.raw"), b"mock raw data")
         .expect("Failed to create test raw extension");
 
-    // Run enable command with custom runtime version and test mode
+    // Run enable command with custom os-release version and test mode
     let output = run_avocadoctl_with_env(
         &[
             "enable",
             "--verbose",
-            "--runtime",
+            "--os-release",
             "2.0.0",
             "ext1-1.0.0",
             "ext2-1.0.0",
@@ -1180,16 +1180,16 @@ fn test_enable_extensions_custom_runtime() {
     if !output.status.success() {
         println!("STDOUT: {stdout}");
         println!("STDERR: {stderr}");
-        panic!("enable command should succeed with custom runtime");
+        panic!("enable command should succeed with custom OS release");
     }
 
     assert!(
-        stdout.contains("Enabling extensions for runtime version: 2.0.0"),
-        "Should show custom runtime version"
+        stdout.contains("Enabling extensions for OS release version: 2.0.0"),
+        "Should show custom OS release version"
     );
     assert!(
-        stdout.contains("Successfully enabled 2 extension(s) for runtime 2.0.0"),
-        "Should show success message with runtime version"
+        stdout.contains("Successfully enabled 2 extension(s) for OS release 2.0.0"),
+        "Should show success message with OS release version"
     );
 }
 
@@ -1248,8 +1248,8 @@ fn test_enable_help() {
         "Should contain enable description"
     );
     assert!(
-        stdout.contains("--runtime"),
-        "Should mention --runtime flag"
+        stdout.contains("--os-release"),
+        "Should mention --os-release flag"
     );
 }
 
@@ -1274,7 +1274,7 @@ fn test_disable_extensions() {
         &[
             "enable",
             "--verbose",
-            "--runtime",
+            "--os-release",
             "2.0.0",
             "ext1-1.0.0",
             "ext2-1.0.0",
@@ -1294,7 +1294,7 @@ fn test_disable_extensions() {
         &[
             "disable",
             "--verbose",
-            "--runtime",
+            "--os-release",
             "2.0.0",
             "ext1-1.0.0",
             "ext2-1.0.0",
@@ -1316,8 +1316,8 @@ fn test_disable_extensions() {
     }
 
     assert!(
-        stdout.contains("Disabling extensions for runtime version: 2.0.0"),
-        "Should show runtime version message"
+        stdout.contains("Disabling extensions for OS release version: 2.0.0"),
+        "Should show OS release version message"
     );
     assert!(
         stdout.contains("Successfully disabled 2 extension(s)"),
@@ -1337,17 +1337,17 @@ fn test_disable_extensions() {
     );
 
     // Verify ext3 still exists
-    let runtime_dir = temp_dir.path().join("avocado/runtime/2.0.0");
+    let os_releases_dir = temp_dir.path().join("avocado/os-releases/2.0.0");
     assert!(
-        runtime_dir.join("ext3-1.0.0.raw").exists(),
+        os_releases_dir.join("ext3-1.0.0.raw").exists(),
         "ext3 should still be enabled"
     );
     assert!(
-        !runtime_dir.join("ext1-1.0.0").exists(),
+        !os_releases_dir.join("ext1-1.0.0").exists(),
         "ext1 should be disabled"
     );
     assert!(
-        !runtime_dir.join("ext2-1.0.0.raw").exists(),
+        !os_releases_dir.join("ext2-1.0.0.raw").exists(),
         "ext2 should be disabled"
     );
 }
@@ -1373,7 +1373,7 @@ fn test_disable_all_extensions() {
         &[
             "enable",
             "--verbose",
-            "--runtime",
+            "--os-release",
             "2.0.0",
             "ext1-1.0.0",
             "ext2-1.0.0",
@@ -1390,7 +1390,7 @@ fn test_disable_all_extensions() {
 
     // Now disable all extensions
     let disable_output = run_avocadoctl_with_env(
-        &["disable", "--verbose", "--runtime", "2.0.0", "--all"],
+        &["disable", "--verbose", "--os-release", "2.0.0", "--all"],
         &[
             ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
             ("AVOCADO_TEST_MODE", "1"),
@@ -1408,8 +1408,8 @@ fn test_disable_all_extensions() {
     }
 
     assert!(
-        stdout.contains("Disabling extensions for runtime version: 2.0.0"),
-        "Should show runtime version message"
+        stdout.contains("Disabling extensions for OS release version: 2.0.0"),
+        "Should show OS release version message"
     );
     assert!(
         stdout.contains("Removing all extensions"),
@@ -1425,8 +1425,9 @@ fn test_disable_all_extensions() {
     );
 
     // Verify all extensions are removed
-    let runtime_dir = temp_dir.path().join("avocado/runtime/2.0.0");
-    let entries = fs::read_dir(&runtime_dir).expect("Should be able to read runtime directory");
+    let os_releases_dir = temp_dir.path().join("avocado/os-releases/2.0.0");
+    let entries =
+        fs::read_dir(&os_releases_dir).expect("Should be able to read os-releases directory");
     let symlink_count = entries
         .filter(|e| {
             if let Ok(entry) = e {
@@ -1484,8 +1485,8 @@ fn test_disable_extensions_default_runtime() {
     }
 
     assert!(
-        stdout.contains("Disabling extensions for runtime version"),
-        "Should show runtime version message"
+        stdout.contains("Disabling extensions for OS release version"),
+        "Should show OS release version message"
     );
     assert!(
         stdout.contains("Successfully disabled 1 extension(s)"),
@@ -1507,7 +1508,7 @@ fn test_disable_nonexistent_extension() {
 
     // First enable extension
     let enable_output = run_avocadoctl_with_env(
-        &["enable", "--verbose", "--runtime", "2.0.0", "ext1-1.0.0"],
+        &["enable", "--verbose", "--os-release", "2.0.0", "ext1-1.0.0"],
         &[
             ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
             ("AVOCADO_TEST_MODE", "1"),
@@ -1522,7 +1523,7 @@ fn test_disable_nonexistent_extension() {
         &[
             "disable",
             "--verbose",
-            "--runtime",
+            "--os-release",
             "2.0.0",
             "nonexistent-ext",
         ],
@@ -1558,8 +1559,8 @@ fn test_disable_help() {
         "Should contain disable description"
     );
     assert!(
-        stdout.contains("--runtime"),
-        "Should mention --runtime flag"
+        stdout.contains("--os-release"),
+        "Should mention --os-release flag"
     );
     assert!(stdout.contains("--all"), "Should mention --all flag");
 }
@@ -1754,17 +1755,17 @@ fn test_disabled_extension_not_merged_after_refresh() {
     assert!(refresh2.status.success(), "Second refresh should succeed");
     let stdout2 = String::from_utf8_lossy(&refresh2.stdout);
 
-    // Verify ext1 is NOT scanned from runtime
+    // Verify ext1 is NOT scanned from OS release
     assert!(
-        !stdout2.contains("Found runtime extension: ext1-1.0.0"),
-        "ext1 should NOT be found from runtime after being disabled. Stdout: {}",
+        !stdout2.contains("Found OS release extension: ext1-1.0.0"),
+        "ext1 should NOT be found from OS release after being disabled. Stdout: {}",
         stdout2
     );
 
-    // Verify ext2 IS scanned from runtime
+    // Verify ext2 IS scanned from OS release
     assert!(
-        stdout2.contains("Found runtime extension: ext2-1.0.0"),
-        "ext2 should still be found from runtime"
+        stdout2.contains("Found OS release extension: ext2-1.0.0"),
+        "ext2 should still be found from OS release"
     );
 
     // Verify ext1 symlink was removed (stale cleanup)
@@ -1779,11 +1780,11 @@ fn test_disabled_extension_not_merged_after_refresh() {
         "ext2 symlink should still exist"
     );
 
-    // Verify base directory was skipped (because runtime directory exists)
+    // Verify base directory was skipped (because os-releases directory exists)
     assert!(
-        stdout2.contains("Runtime directory exists, skipping base extensions directory")
+        stdout2.contains("OS releases directory exists, skipping base extensions directory")
             || !stdout2.contains("Found directory extension: ext1-1.0.0"),
-        "Base directory should be skipped when runtime directory exists"
+        "Base directory should be skipped when OS releases directory exists"
     );
 }
 
@@ -1829,10 +1830,10 @@ fn test_base_directory_skipped_with_runtime() {
     assert!(refresh_output.status.success(), "Refresh should succeed");
     let stdout = String::from_utf8_lossy(&refresh_output.stdout);
 
-    // Verify ext1 is found from runtime
+    // Verify ext1 is found from OS release
     assert!(
-        stdout.contains("Found runtime extension: ext1-1.0.0"),
-        "ext1 should be found from runtime"
+        stdout.contains("Found OS release extension: ext1-1.0.0"),
+        "ext1 should be found from OS release"
     );
 
     // Verify ext2 and ext3 are NOT found (base directory skipped)
@@ -1847,8 +1848,8 @@ fn test_base_directory_skipped_with_runtime() {
 
     // Verify message about skipping base directory
     assert!(
-        stdout.contains("Runtime directory exists, skipping base extensions directory")
-            || stdout.contains("Runtime directory exists, skipping base raw files"),
+        stdout.contains("OS releases directory exists, skipping base extensions directory")
+            || stdout.contains("OS releases directory exists, skipping base raw files"),
         "Should show message about skipping base directory"
     );
 }
@@ -1891,7 +1892,7 @@ fn test_base_directory_used_without_runtime() {
     assert!(refresh_output.status.success(), "Refresh should succeed");
     let stdout = String::from_utf8_lossy(&refresh_output.stdout);
 
-    // Verify both extensions are found from base directory (not runtime)
+    // Verify both extensions are found from base directory (not OS release)
     assert!(
         stdout.contains("Found directory extension: ext1-1.0.0"),
         "ext1 should be found from base directory. Stdout: {}",
@@ -1903,11 +1904,11 @@ fn test_base_directory_used_without_runtime() {
         stdout
     );
 
-    // Verify message about no runtime directory
+    // Verify message about no OS releases directory
     assert!(
-        stdout.contains("No runtime directory found")
-            || stdout.contains("Runtime directory") && stdout.contains("does not exist"),
-        "Should indicate runtime directory doesn't exist"
+        stdout.contains("No OS releases directory found")
+            || stdout.contains("OS releases directory") && stdout.contains("does not exist"),
+        "Should indicate OS releases directory doesn't exist"
     );
 }
 
@@ -1974,9 +1975,12 @@ fn test_disable_all_then_refresh() {
         "No extensions should be found from runtime after disabling all"
     );
 
-    // The runtime directory should still exist but be empty, so base directory should still be skipped
-    let runtime_dir = temp_dir.path().join("avocado/runtime/24.04");
-    assert!(runtime_dir.exists(), "Runtime directory should still exist");
+    // The os-releases directory should still exist but be empty, so base directory should still be skipped
+    let os_releases_dir = temp_dir.path().join("avocado/os-releases/24.04");
+    assert!(
+        os_releases_dir.exists(),
+        "OS releases directory should still exist"
+    );
 
     // Verify no symlinks exist after refresh
     let sysext_dir = temp_dir.path().join("test_extensions");

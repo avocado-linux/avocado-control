@@ -391,15 +391,15 @@ pub fn refresh_extensions_direct(output: &OutputManager) {
     refresh_extensions(output);
 }
 
-/// Enable extensions for a specific runtime version
+/// Enable extensions for a specific OS release version
 pub fn enable_extensions(
-    runtime_version: Option<&str>,
+    os_release_version: Option<&str>,
     extensions: &[&str],
     config: &Config,
     output: &OutputManager,
 ) {
-    // Determine the runtime version to use
-    let version_id = if let Some(version) = runtime_version {
+    // Determine the OS release version to use
+    let version_id = if let Some(version) = os_release_version {
         version.to_string()
     } else {
         read_os_version_id()
@@ -407,37 +407,41 @@ pub fn enable_extensions(
 
     output.info(
         "Enable Extensions",
-        &format!("Enabling extensions for runtime version: {version_id}"),
+        &format!("Enabling extensions for OS release version: {version_id}"),
     );
 
     // Get the extensions directory from config
     let extensions_dir = config.get_extensions_dir();
 
-    // Determine runtime directory based on test mode
-    let runtime_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+    // Determine os-releases directory based on test mode
+    let os_releases_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{temp_base}/avocado/runtime/{version_id}")
+        format!("{temp_base}/avocado/os-releases/{version_id}")
     } else {
-        format!("/var/lib/avocado/runtime/{version_id}")
+        format!("/var/lib/avocado/os-releases/{version_id}")
     };
 
-    // Create the runtime directory if it doesn't exist
-    if let Err(e) = fs::create_dir_all(&runtime_dir) {
+    // Create the os-releases directory if it doesn't exist
+    if let Err(e) = fs::create_dir_all(&os_releases_dir) {
         output.error(
             "Enable Extensions",
-            &format!("Failed to create runtime directory '{runtime_dir}': {e}"),
+            &format!("Failed to create os-releases directory '{os_releases_dir}': {e}"),
         );
         std::process::exit(1);
     }
 
-    // Sync the parent directory to ensure the runtime directory is persisted
-    if let Err(e) = sync_directory(Path::new(&runtime_dir).parent().unwrap_or(Path::new("/"))) {
+    // Sync the parent directory to ensure the os-releases directory is persisted
+    if let Err(e) = sync_directory(
+        Path::new(&os_releases_dir)
+            .parent()
+            .unwrap_or(Path::new("/")),
+    ) {
         output.progress(&format!("Warning: Failed to sync parent directory: {e}"));
     }
 
     output.step(
         "Enable",
-        &format!("Created runtime directory: {runtime_dir}"),
+        &format!("Created os-releases directory: {os_releases_dir}"),
     );
 
     // Process each extension
@@ -462,10 +466,10 @@ pub fn enable_extensions(
             continue;
         };
 
-        // Create symlink in runtime directory
+        // Create symlink in os-releases directory
         let target_path = format!(
             "{}/{}",
-            runtime_dir,
+            os_releases_dir,
             Path::new(&source_path)
                 .file_name()
                 .unwrap()
@@ -497,12 +501,12 @@ pub fn enable_extensions(
         }
     }
 
-    // Sync the runtime directory to ensure all symlinks are persisted to disk
+    // Sync the os-releases directory to ensure all symlinks are persisted to disk
     if success_count > 0 {
-        if let Err(e) = sync_directory(Path::new(&runtime_dir)) {
+        if let Err(e) = sync_directory(Path::new(&os_releases_dir)) {
             output.error(
                 "Enable Extensions",
-                &format!("Failed to sync runtime directory to disk: {e}"),
+                &format!("Failed to sync os-releases directory to disk: {e}"),
             );
             std::process::exit(1);
         }
@@ -519,7 +523,9 @@ pub fn enable_extensions(
     } else {
         output.success(
             "Enable Extensions",
-            &format!("Successfully enabled {success_count} extension(s) for runtime {version_id}"),
+            &format!(
+                "Successfully enabled {success_count} extension(s) for OS release {version_id}"
+            ),
         );
     }
 }
@@ -542,16 +548,16 @@ fn sync_directory(dir_path: &Path) -> Result<(), SystemdError> {
     Ok(())
 }
 
-/// Disable extensions for a specific runtime version
+/// Disable extensions for a specific OS release version
 pub fn disable_extensions(
-    runtime_version: Option<&str>,
+    os_release_version: Option<&str>,
     extensions: Option<&[&str]>,
     all: bool,
     _config: &Config,
     output: &OutputManager,
 ) {
-    // Determine the runtime version to use
-    let version_id = if let Some(version) = runtime_version {
+    // Determine the OS release version to use
+    let version_id = if let Some(version) = os_release_version {
         version.to_string()
     } else {
         read_os_version_id()
@@ -559,22 +565,22 @@ pub fn disable_extensions(
 
     output.info(
         "Disable Extensions",
-        &format!("Disabling extensions for runtime version: {version_id}"),
+        &format!("Disabling extensions for OS release version: {version_id}"),
     );
 
-    // Determine runtime directory based on test mode
-    let runtime_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+    // Determine os-releases directory based on test mode
+    let os_releases_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{temp_base}/avocado/runtime/{version_id}")
+        format!("{temp_base}/avocado/os-releases/{version_id}")
     } else {
-        format!("/var/lib/avocado/runtime/{version_id}")
+        format!("/var/lib/avocado/os-releases/{version_id}")
     };
 
-    // Check if runtime directory exists
-    if !Path::new(&runtime_dir).exists() {
+    // Check if os-releases directory exists
+    if !Path::new(&os_releases_dir).exists() {
         output.error(
             "Disable Extensions",
-            &format!("Runtime directory '{runtime_dir}' does not exist"),
+            &format!("OS releases directory '{os_releases_dir}' does not exist"),
         );
         std::process::exit(1);
     }
@@ -583,10 +589,10 @@ pub fn disable_extensions(
     let mut error_count = 0;
 
     if all {
-        // Disable all extensions by removing all symlinks in the runtime directory
+        // Disable all extensions by removing all symlinks in the os-releases directory
         output.step("Disable", "Removing all extensions");
 
-        match fs::read_dir(&runtime_dir) {
+        match fs::read_dir(&os_releases_dir) {
             Ok(entries) => {
                 for entry in entries {
                     match entry {
@@ -628,7 +634,7 @@ pub fn disable_extensions(
             Err(e) => {
                 output.error(
                     "Disable Extensions",
-                    &format!("Failed to read runtime directory '{runtime_dir}': {e}"),
+                    &format!("Failed to read os-releases directory '{os_releases_dir}': {e}"),
                 );
                 std::process::exit(1);
             }
@@ -637,8 +643,8 @@ pub fn disable_extensions(
         // Disable specific extensions
         for ext_name in ext_names {
             // Check for both directory and .raw file symlinks
-            let symlink_dir = format!("{}/{}", runtime_dir, ext_name);
-            let symlink_raw = format!("{}/{}.raw", runtime_dir, ext_name);
+            let symlink_dir = format!("{}/{}", os_releases_dir, ext_name);
+            let symlink_raw = format!("{}/{}.raw", os_releases_dir, ext_name);
 
             let mut found = false;
 
@@ -685,7 +691,7 @@ pub fn disable_extensions(
             if !found {
                 output.error(
                     "Disable Extensions",
-                    &format!("Extension '{ext_name}' is not enabled for runtime {version_id}"),
+                    &format!("Extension '{ext_name}' is not enabled for OS release {version_id}"),
                 );
                 error_count += 1;
             }
@@ -699,12 +705,12 @@ pub fn disable_extensions(
         std::process::exit(1);
     }
 
-    // Sync the runtime directory to ensure all removals are persisted to disk
+    // Sync the os-releases directory to ensure all removals are persisted to disk
     if success_count > 0 {
-        if let Err(e) = sync_directory(Path::new(&runtime_dir)) {
+        if let Err(e) = sync_directory(Path::new(&os_releases_dir)) {
             output.error(
                 "Disable Extensions",
-                &format!("Failed to sync runtime directory to disk: {e}"),
+                &format!("Failed to sync os-releases directory to disk: {e}"),
             );
             std::process::exit(1);
         }
@@ -721,7 +727,9 @@ pub fn disable_extensions(
     } else {
         output.success(
             "Disable Extensions",
-            &format!("Successfully disabled {success_count} extension(s) for runtime {version_id}"),
+            &format!(
+                "Successfully disabled {success_count} extension(s) for OS release {version_id}"
+            ),
         );
     }
 }
@@ -1299,38 +1307,38 @@ fn scan_extensions_from_all_sources_with_verbosity(
         }
     }
 
-    // 2. Second priority: Runtime-specific extensions (/var/lib/avocado/runtime/<VERSION_ID>)
-    // Check runtime directory to see which extensions are explicitly enabled
-    let runtime_extensions_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+    // 2. Second priority: OS release-specific extensions (/var/lib/avocado/os-releases/<VERSION_ID>)
+    // Check os-releases directory to see which extensions are explicitly enabled
+    let os_releases_extensions_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{temp_base}/avocado/runtime/{version_id}")
+        format!("{temp_base}/avocado/os-releases/{version_id}")
     } else {
-        format!("/var/lib/avocado/runtime/{version_id}")
+        format!("/var/lib/avocado/os-releases/{version_id}")
     };
 
     if verbose {
         println!(
-            "Scanning runtime extensions in {runtime_extensions_dir} (VERSION_ID: {version_id})"
+            "Scanning OS release extensions in {os_releases_extensions_dir} (VERSION_ID: {version_id})"
         );
     }
 
-    // Check if runtime directory exists
-    if !Path::new(&runtime_extensions_dir).exists() {
+    // Check if os-releases directory exists
+    if !Path::new(&os_releases_extensions_dir).exists() {
         if verbose {
-            println!("Runtime directory {runtime_extensions_dir} does not exist, skipping");
+            println!("OS releases directory {os_releases_extensions_dir} does not exist, skipping");
         }
         // Only warn in non-test mode
         if std::env::var("AVOCADO_TEST_MODE").is_err() {
-            eprintln!("Warning: No extensions are enabled for VERSION_ID '{version_id}'. Directory not found: {runtime_extensions_dir}");
+            eprintln!("Warning: No extensions are enabled for VERSION_ID '{version_id}'. Directory not found: {os_releases_extensions_dir}");
         }
     } else {
-        // Scan runtime directory for symlinks or extensions
-        if let Ok(runtime_extensions) = scan_directory_extensions(&runtime_extensions_dir) {
-            for ext in runtime_extensions {
+        // Scan os-releases directory for symlinks or extensions
+        if let Ok(os_releases_extensions) = scan_directory_extensions(&os_releases_extensions_dir) {
+            for ext in os_releases_extensions {
                 if !extension_map.contains_key(&ext.name) {
                     if verbose {
                         println!(
-                            "Found runtime extension: {} at {}",
+                            "Found OS release extension: {} at {}",
                             ext.name,
                             ext.path.display()
                         );
@@ -1345,9 +1353,9 @@ fn scan_extensions_from_all_sources_with_verbosity(
             }
         }
 
-        // Also scan for .raw files in runtime directory (symlinks to actual extensions)
-        if let Ok(runtime_raw_files) = scan_raw_files(&runtime_extensions_dir) {
-            for (ext_name, ext_version, ext_path) in runtime_raw_files {
+        // Also scan for .raw files in os-releases directory (symlinks to actual extensions)
+        if let Ok(os_releases_raw_files) = scan_raw_files(&os_releases_extensions_dir) {
+            for (ext_name, ext_version, ext_path) in os_releases_raw_files {
                 use std::collections::hash_map::Entry;
                 match extension_map.entry(ext_name.clone()) {
                     Entry::Vacant(entry) => {
@@ -1360,7 +1368,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
                         ) {
                             if verbose {
                                 println!(
-                                    "Found runtime raw extension: {} at {}",
+                                    "Found OS release raw extension: {} at {}",
                                     ext.name,
                                     ext.path.display()
                                 );
@@ -1371,7 +1379,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
                     Entry::Occupied(_) => {
                         if verbose {
                             println!(
-                                "Skipping runtime raw extension {} (higher priority version preferred)",
+                                "Skipping OS release raw extension {} (higher priority version preferred)",
                                 ext_name
                             );
                         }
@@ -1381,19 +1389,19 @@ fn scan_extensions_from_all_sources_with_verbosity(
         }
     }
 
-    // 3. Third priority: Regular directory extensions (skip if already have HITL or runtime version)
-    // IMPORTANT: If a runtime directory exists, we do NOT fall back to the base extensions directory
-    // This ensures that explicitly disabled extensions (removed from runtime) are not merged
-    let runtime_dir_exists = Path::new(&runtime_extensions_dir).exists();
+    // 3. Third priority: Regular directory extensions (skip if already have HITL or OS release version)
+    // IMPORTANT: If an os-releases directory exists, we do NOT fall back to the base extensions directory
+    // This ensures that explicitly disabled extensions (removed from os-releases) are not merged
+    let os_releases_dir_exists = Path::new(&os_releases_extensions_dir).exists();
 
     if verbose {
         println!("Scanning directory extensions in {extensions_dir}");
     }
 
-    if !runtime_dir_exists {
-        // Only scan base directory if no runtime directory exists (backward compatibility)
+    if !os_releases_dir_exists {
+        // Only scan base directory if no os-releases directory exists (backward compatibility)
         if verbose {
-            println!("No runtime directory found, scanning base extensions directory");
+            println!("No OS releases directory found, scanning base extensions directory");
         }
         if let Ok(dir_extensions) = scan_directory_extensions(&extensions_dir) {
             for ext in dir_extensions {
@@ -1415,18 +1423,18 @@ fn scan_extensions_from_all_sources_with_verbosity(
             }
         }
     } else if verbose {
-        println!("Runtime directory exists, skipping base extensions directory (use enable/disable to manage extensions)");
+        println!("OS releases directory exists, skipping base extensions directory (use enable/disable to manage extensions)");
     }
 
     // 4. Fourth priority: Raw file extensions (skip if already have directory version)
-    // IMPORTANT: Same as above - only scan if no runtime directory exists
+    // IMPORTANT: Same as above - only scan if no os-releases directory exists
     if verbose {
         println!("Scanning raw file extensions in {extensions_dir}");
     }
 
-    if !runtime_dir_exists {
+    if !os_releases_dir_exists {
         if verbose {
-            println!("No runtime directory found, scanning base raw files");
+            println!("No OS releases directory found, scanning base raw files");
         }
         let raw_files = scan_raw_files(&extensions_dir)?;
 
@@ -1475,7 +1483,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
             }
         }
     } else if verbose {
-        println!("Runtime directory exists, skipping base raw files (use enable/disable to manage extensions)");
+        println!("OS releases directory exists, skipping base raw files (use enable/disable to manage extensions)");
     }
 
     // Convert map to vector
