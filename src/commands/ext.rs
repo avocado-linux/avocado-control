@@ -1177,7 +1177,6 @@ fn scan_extensions_from_all_sources_with_verbosity(
 
     // Read OS VERSION_ID for runtime-specific extensions
     let version_id = read_os_version_id();
-    let runtime_extensions_dir = format!("/var/lib/avocado/runtime/{}", version_id);
 
     // Fallback to direct extensions path (for backward compatibility)
     let extensions_dir = std::env::var("AVOCADO_EXTENSIONS_PATH")
@@ -1201,75 +1200,80 @@ fn scan_extensions_from_all_sources_with_verbosity(
     }
 
     // 2. Second priority: Runtime-specific extensions (/var/lib/avocado/runtime/<VERSION_ID>)
-    // Only check runtime directory if not in test mode and not using custom extensions path
-    let use_runtime_dir = std::env::var("AVOCADO_TEST_MODE").is_err()
-        && std::env::var("AVOCADO_EXTENSIONS_PATH").is_err();
+    // Check runtime directory to see which extensions are explicitly enabled
+    let runtime_extensions_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/runtime/{version_id}")
+    } else {
+        format!("/var/lib/avocado/runtime/{version_id}")
+    };
 
-    if use_runtime_dir {
+    if verbose {
+        println!(
+            "Scanning runtime extensions in {runtime_extensions_dir} (VERSION_ID: {version_id})"
+        );
+    }
+
+    // Check if runtime directory exists
+    if !Path::new(&runtime_extensions_dir).exists() {
         if verbose {
-            println!(
-                "Scanning runtime extensions in {runtime_extensions_dir} (VERSION_ID: {version_id})"
-            );
+            println!("Runtime directory {runtime_extensions_dir} does not exist, skipping");
         }
-
-        // Check if runtime directory exists and warn if not
-        if !Path::new(&runtime_extensions_dir).exists() {
+        // Only warn in non-test mode
+        if std::env::var("AVOCADO_TEST_MODE").is_err() {
             eprintln!("Warning: No extensions are enabled for VERSION_ID '{version_id}'. Directory not found: {runtime_extensions_dir}");
-            if verbose {
-                println!("Runtime directory {runtime_extensions_dir} does not exist, skipping");
-            }
-        } else {
-            // Scan runtime directory for symlinks or extensions
-            if let Ok(runtime_extensions) = scan_directory_extensions(&runtime_extensions_dir) {
-                for ext in runtime_extensions {
-                    if !extension_map.contains_key(&ext.name) {
-                        if verbose {
-                            println!(
-                                "Found runtime extension: {} at {}",
-                                ext.name,
-                                ext.path.display()
-                            );
-                        }
-                        extension_map.insert(ext.name.clone(), ext);
-                    } else if verbose {
+        }
+    } else {
+        // Scan runtime directory for symlinks or extensions
+        if let Ok(runtime_extensions) = scan_directory_extensions(&runtime_extensions_dir) {
+            for ext in runtime_extensions {
+                if !extension_map.contains_key(&ext.name) {
+                    if verbose {
                         println!(
-                            "Skipping runtime extension {} (higher priority version preferred)",
-                            ext.name
+                            "Found runtime extension: {} at {}",
+                            ext.name,
+                            ext.path.display()
                         );
                     }
+                    extension_map.insert(ext.name.clone(), ext);
+                } else if verbose {
+                    println!(
+                        "Skipping runtime extension {} (higher priority version preferred)",
+                        ext.name
+                    );
                 }
             }
+        }
 
-            // Also scan for .raw files in runtime directory (symlinks to actual extensions)
-            if let Ok(runtime_raw_files) = scan_raw_files(&runtime_extensions_dir) {
-                for (ext_name, ext_version, ext_path) in runtime_raw_files {
-                    use std::collections::hash_map::Entry;
-                    match extension_map.entry(ext_name.clone()) {
-                        Entry::Vacant(entry) => {
-                            // Analyze the raw file
-                            if let Ok(ext) = analyze_raw_extension_with_loop(
-                                &ext_name,
-                                &ext_version,
-                                &ext_path,
-                                verbose,
-                            ) {
-                                if verbose {
-                                    println!(
-                                        "Found runtime raw extension: {} at {}",
-                                        ext.name,
-                                        ext.path.display()
-                                    );
-                                }
-                                entry.insert(ext);
-                            }
-                        }
-                        Entry::Occupied(_) => {
+        // Also scan for .raw files in runtime directory (symlinks to actual extensions)
+        if let Ok(runtime_raw_files) = scan_raw_files(&runtime_extensions_dir) {
+            for (ext_name, ext_version, ext_path) in runtime_raw_files {
+                use std::collections::hash_map::Entry;
+                match extension_map.entry(ext_name.clone()) {
+                    Entry::Vacant(entry) => {
+                        // Analyze the raw file
+                        if let Ok(ext) = analyze_raw_extension_with_loop(
+                            &ext_name,
+                            &ext_version,
+                            &ext_path,
+                            verbose,
+                        ) {
                             if verbose {
                                 println!(
-                                    "Skipping runtime raw extension {} (higher priority version preferred)",
-                                    ext_name
+                                    "Found runtime raw extension: {} at {}",
+                                    ext.name,
+                                    ext.path.display()
                                 );
                             }
+                            entry.insert(ext);
+                        }
+                    }
+                    Entry::Occupied(_) => {
+                        if verbose {
+                            println!(
+                                "Skipping runtime raw extension {} (higher priority version preferred)",
+                                ext_name
+                            );
                         }
                     }
                 }

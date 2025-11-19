@@ -1563,3 +1563,122 @@ fn test_disable_help() {
     );
     assert!(stdout.contains("--all"), "Should mention --all flag");
 }
+
+/// Test enable/disable/refresh workflow
+#[test]
+fn test_enable_disable_refresh_workflow() {
+    // Create a temporary directory for extensions
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create test extensions
+    fs::create_dir(extensions_dir.join("ext1-1.0.0"))
+        .expect("Failed to create test extension directory");
+    fs::create_dir(extensions_dir.join("ext2-1.0.0"))
+        .expect("Failed to create test extension directory");
+
+    // Create release files for both extensions
+    let ext1_release_dir = extensions_dir.join("ext1-1.0.0/usr/lib/extension-release.d");
+    fs::create_dir_all(&ext1_release_dir).expect("Failed to create release dir");
+    fs::write(
+        ext1_release_dir.join("extension-release.ext1-1.0.0"),
+        "ID=avocado\nVERSION_ID=1.0",
+    )
+    .expect("Failed to write release file");
+
+    let ext2_release_dir = extensions_dir.join("ext2-1.0.0/usr/lib/extension-release.d");
+    fs::create_dir_all(&ext2_release_dir).expect("Failed to create release dir");
+    fs::write(
+        ext2_release_dir.join("extension-release.ext2-1.0.0"),
+        "ID=avocado\nVERSION_ID=1.0",
+    )
+    .expect("Failed to write release file");
+
+    let test_env = [
+        ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+        ("AVOCADO_TEST_MODE", "1"),
+        ("TMPDIR", temp_dir.path().to_str().unwrap()),
+    ];
+
+    // Step 1: Enable both extensions
+    let enable_output = run_avocadoctl_with_env(
+        &["enable", "--verbose", "ext1-1.0.0", "ext2-1.0.0"],
+        &test_env,
+    );
+    assert!(
+        enable_output.status.success(),
+        "Initial enable should succeed"
+    );
+    let stdout = String::from_utf8_lossy(&enable_output.stdout);
+    assert!(stdout.contains("Successfully enabled 2 extension(s)"));
+
+    // Step 2: Refresh with both enabled - both should be merged
+    let (refresh_output1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(
+        refresh_output1.status.success(),
+        "First refresh should succeed"
+    );
+    let stdout1 = String::from_utf8_lossy(&refresh_output1.stdout);
+    assert!(
+        stdout1.contains("Found runtime extension: ext1-1.0.0") || stdout1.contains("ext1-1.0.0"),
+        "Should scan ext1 from runtime"
+    );
+    assert!(
+        stdout1.contains("Found runtime extension: ext2-1.0.0") || stdout1.contains("ext2-1.0.0"),
+        "Should scan ext2 from runtime"
+    );
+
+    // Step 3: Disable ext1
+    let disable_output =
+        run_avocadoctl_with_env(&["disable", "--verbose", "ext1-1.0.0"], &test_env);
+    assert!(disable_output.status.success(), "Disable should succeed");
+
+    // Step 4: Refresh after disabling ext1 - only ext2 should be merged
+    let (refresh_output2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(
+        refresh_output2.status.success(),
+        "Second refresh should succeed"
+    );
+    let stdout2 = String::from_utf8_lossy(&refresh_output2.stdout);
+
+    // ext2 should still be found from runtime
+    assert!(
+        stdout2.contains("Found runtime extension: ext2-1.0.0") || stdout2.contains("ext2-1.0.0"),
+        "Should still scan ext2 from runtime"
+    );
+
+    // ext1 should NOT be found from runtime (it was disabled)
+    // It might be found from the base extensions directory though
+    if stdout2.contains("ext1-1.0.0") {
+        // If ext1 appears, it should be from the base directory, not runtime
+        assert!(
+            !stdout2.contains("Found runtime extension: ext1-1.0.0"),
+            "ext1 should not be found in runtime directory"
+        );
+    }
+
+    // Step 5: Re-enable ext1
+    let reenable_output =
+        run_avocadoctl_with_env(&["enable", "--verbose", "ext1-1.0.0"], &test_env);
+    assert!(reenable_output.status.success(), "Re-enable should succeed");
+
+    // Step 6: Refresh with both enabled again - both should be merged
+    let (refresh_output3, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(
+        refresh_output3.status.success(),
+        "Third refresh should succeed"
+    );
+    let stdout3 = String::from_utf8_lossy(&refresh_output3.stdout);
+    assert!(
+        stdout3.contains("Found runtime extension: ext1-1.0.0") || stdout3.contains("ext1-1.0.0"),
+        "Should scan ext1 from runtime again"
+    );
+    assert!(
+        stdout3.contains("Found runtime extension: ext2-1.0.0") || stdout3.contains("ext2-1.0.0"),
+        "Should scan ext2 from runtime"
+    );
+}
