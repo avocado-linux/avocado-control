@@ -807,8 +807,8 @@ fn test_ext_status_with_mocks() {
         "Should show configuration extension in table"
     );
     assert!(
-        stdout.contains("Mount Info"),
-        "Should show mount information for extensions"
+        stdout.contains("Origin"),
+        "Should show origin column for extensions"
     );
 }
 

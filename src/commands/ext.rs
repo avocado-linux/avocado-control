@@ -13,6 +13,7 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 #[derive(Debug, Clone)]
 struct Extension {
     name: String,
+    version: Option<String>, // Version extracted from filename (e.g., "1.0.0" from "app-1.0.0.raw")
     path: PathBuf,
     is_sysext: bool,
     is_confext: bool,
@@ -500,7 +501,6 @@ fn show_legacy_status(output: &OutputManager) {
 #[derive(Debug, Clone)]
 struct MountedExtension {
     name: String,
-    since: String,
     #[allow(dead_code)] // May be used in future for hierarchy-specific logic
     hierarchy: String,
 }
@@ -534,16 +534,6 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
             .unwrap_or("unknown")
             .to_string();
 
-        let since_timestamp = hierarchy_obj["since"].as_u64();
-        let since = if let Some(ts) = since_timestamp {
-            // Convert microseconds timestamp to human readable format
-            let secs = ts / 1_000_000;
-            // For now, use a simple format. In the future we could add chrono for better formatting
-            format!("timestamp:{secs}")
-        } else {
-            "-".to_string()
-        };
-
         // Handle extensions field - can be string "none" or array of strings
         if let Some(extensions) = hierarchy_obj["extensions"].as_array() {
             // Array of extension names
@@ -551,7 +541,6 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
                 if let Some(ext_name) = ext.as_str() {
                     mounted.push(MountedExtension {
                         name: ext_name.to_string(),
-                        since: since.clone(),
                         hierarchy: hierarchy.clone(),
                     });
                 }
@@ -561,7 +550,6 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
             if ext_str != "none" {
                 mounted.push(MountedExtension {
                     name: ext_str.to_string(),
-                    since: since.clone(),
                     hierarchy: hierarchy.clone(),
                 });
             }
@@ -577,17 +565,24 @@ fn display_extension_status(
     mounted_sysext: &[MountedExtension],
     mounted_confext: &[MountedExtension],
 ) -> Result<(), SystemdError> {
-    // Collect all unique extension names
+    // Collect all unique extension names (with versions if present)
     let mut all_extensions = std::collections::HashSet::new();
 
+    // For available extensions, use versioned name if available
     for ext in available {
-        all_extensions.insert(&ext.name);
+        if let Some(ver) = &ext.version {
+            all_extensions.insert(format!("{}-{}", ext.name, ver));
+        } else {
+            all_extensions.insert(ext.name.clone());
+        }
     }
+
+    // Add mounted extensions (these already include versions in their names)
     for ext in mounted_sysext {
-        all_extensions.insert(&ext.name);
+        all_extensions.insert(ext.name.clone());
     }
     for ext in mounted_confext {
-        all_extensions.insert(&ext.name);
+        all_extensions.insert(ext.name.clone());
     }
 
     if all_extensions.is_empty() {
@@ -595,19 +590,19 @@ fn display_extension_status(
         return Ok(());
     }
 
-    // Display header
+    // Display header - optimized for 80 columns
     println!(
-        "{:<20} {:<12} {:<15} {:<30} Mount Info",
-        "Extension", "Status", "Type", "Origin"
+        "{:<24} {:<10} {:<12} Origin",
+        "Extension", "Status", "Type"
     );
-    println!("{}", "=".repeat(100));
+    println!("{}", "=".repeat(79));
 
     // Sort extensions for consistent display
     let mut sorted_extensions: Vec<_> = all_extensions.into_iter().collect();
     sorted_extensions.sort();
 
     for ext_name in sorted_extensions {
-        display_extension_info(ext_name, available, mounted_sysext, mounted_confext);
+        display_extension_info(&ext_name, available, mounted_sysext, mounted_confext);
     }
 
     // Display summary
@@ -624,100 +619,73 @@ fn display_extension_info(
     mounted_sysext: &[MountedExtension],
     mounted_confext: &[MountedExtension],
 ) {
-    let available_ext = available.iter().find(|e| e.name == ext_name);
+    // Find extension in available list (match by full versioned name or base name)
+    let available_ext = available.iter().find(|e| {
+        if let Some(ver) = &e.version {
+            format!("{}-{}", e.name, ver) == ext_name
+        } else {
+            e.name == ext_name
+        }
+    });
+
     let sysext_mount = mounted_sysext.iter().find(|e| e.name == ext_name);
     let confext_mount = mounted_confext.iter().find(|e| e.name == ext_name);
 
     // Determine status
     let status = match (sysext_mount.is_some(), confext_mount.is_some()) {
-        (true, true) => "MOUNTED",
+        (true, true) => "MERGED",
         (true, false) => "SYSEXT",
         (false, true) => "CONFEXT",
-        (false, false) => "AVAILABLE",
+        (false, false) => {
+            if available_ext.is_some() {
+                "READY"
+            } else {
+                "UNKNOWN"
+            }
+        }
     };
 
     // Determine types
     let mut types = Vec::new();
     if let Some(ext) = available_ext {
         if ext.is_sysext {
-            types.push("sysext");
+            types.push("sys");
         }
         if ext.is_confext {
-            types.push("confext");
+            types.push("conf");
         }
     }
     let type_str = if types.is_empty() {
-        "unknown".to_string()
+        "?".to_string()
     } else {
         types.join("+")
     };
 
-    // Determine origin
+    // Determine origin - shortened for 80 columns
     let origin = if let Some(ext) = available_ext {
-        get_extension_origin(ext)
+        get_extension_origin_short(ext)
     } else {
-        "unknown".to_string()
+        "?".to_string()
     };
 
-    // Determine mount info
-    let mount_info = match (sysext_mount, confext_mount) {
-        (Some(s), Some(c)) => format!("sys:{}, conf:{}", s.since, c.since),
-        (Some(s), None) => format!("sys:{}", s.since),
-        (None, Some(c)) => format!("conf:{}", c.since),
-        (None, None) => "not mounted".to_string(),
-    };
-
-    println!("{ext_name:<20} {status:<12} {type_str:<15} {origin:<30} {mount_info}");
+    // For 80 columns: name(24) status(10) type(12) origin(remaining ~33)
+    println!("{ext_name:<24} {status:<10} {type_str:<12} {origin}");
 }
 
-/// Get extension origin description
-fn get_extension_origin(ext: &Extension) -> String {
+/// Get short extension origin description (for 80-column display)
+fn get_extension_origin_short(ext: &Extension) -> String {
     let path_str = ext.path.to_string_lossy();
 
     if path_str.contains("/hitl") {
-        format!("HITL ({})", get_short_path(&ext.path))
+        "HITL".to_string()
     } else if ext.is_directory {
-        format!("Directory ({})", get_short_path(&ext.path))
+        "Dir".to_string()
     } else {
-        format!("Loop device ({})", get_short_path(&ext.path))
-    }
-}
-
-/// Get shortened path for display
-fn get_short_path(path: &Path) -> String {
-    let path_str = path.to_string_lossy();
-
-    // Show relative to common base paths
-    if let Some(suffix) = path_str.strip_prefix("/run/avocado/hitl/") {
-        format!("hitl/{suffix}")
-    } else if let Some(suffix) = path_str.strip_prefix("/var/lib/avocado/extensions/") {
-        format!("ext/{suffix}")
-    } else if let Some(suffix) = path_str.strip_prefix("/run/avocado/extensions/") {
-        format!("loop/{suffix}")
-    } else if path_str.contains("/tmp/") {
-        // For test mode, show just the final components
-        path.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-    } else {
-        // Fallback: show last two components
-        let components: Vec<_> = path.components().collect();
-        if components.len() >= 2 {
-            format!(
-                "{}/{}",
-                components[components.len() - 2]
-                    .as_os_str()
-                    .to_string_lossy(),
-                components[components.len() - 1]
-                    .as_os_str()
-                    .to_string_lossy()
-            )
+        // Extract just the filename from loop path
+        if let Some(filename) = ext.path.file_name() {
+            format!("Loop:{}", filename.to_string_lossy())
         } else {
-            path.file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_string()
+            "Loop".to_string()
         }
     }
 }
@@ -839,6 +807,27 @@ fn scan_extensions_from_all_sources() -> Result<Vec<Extension>, SystemdError> {
     scan_extensions_from_all_sources_with_verbosity(true)
 }
 
+/// Read VERSION_ID from /etc/os-release
+fn read_os_version_id() -> String {
+    let os_release_path = "/etc/os-release";
+
+    if let Ok(contents) = fs::read_to_string(os_release_path) {
+        for line in contents.lines() {
+            if line.starts_with("VERSION_ID=") {
+                // Parse VERSION_ID value, removing quotes if present
+                let value = line.trim_start_matches("VERSION_ID=");
+                let value = value.trim_matches('"').trim_matches('\'');
+                if !value.is_empty() {
+                    return value.to_string();
+                }
+            }
+        }
+    }
+
+    // Return default if VERSION_ID not found or file doesn't exist
+    "unknown".to_string()
+}
+
 /// Scan all extension sources in priority order with verbosity control
 fn scan_extensions_from_all_sources_with_verbosity(
     verbose: bool,
@@ -846,7 +835,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
     let mut extensions = Vec::new();
     let mut extension_map = std::collections::HashMap::new();
 
-    // Define search paths in priority order: HITL → Directory → Loop-mounted
+    // Define search paths in priority order: HITL → Runtime/<VERSION_ID> → Directory → Loop-mounted
     let hitl_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/avocado/hitl")
@@ -854,6 +843,11 @@ fn scan_extensions_from_all_sources_with_verbosity(
         "/run/avocado/hitl".to_string()
     };
 
+    // Read OS VERSION_ID for runtime-specific extensions
+    let version_id = read_os_version_id();
+    let runtime_extensions_dir = format!("/var/lib/avocado/runtime/{}", version_id);
+
+    // Fallback to direct extensions path (for backward compatibility)
     let extensions_dir = std::env::var("AVOCADO_EXTENSIONS_PATH")
         .unwrap_or_else(|_| "/var/lib/avocado/extensions".to_string());
 
@@ -874,7 +868,84 @@ fn scan_extensions_from_all_sources_with_verbosity(
         }
     }
 
-    // 2. Second priority: Regular directory extensions (skip if already have HITL version)
+    // 2. Second priority: Runtime-specific extensions (/var/lib/avocado/runtime/<VERSION_ID>)
+    // Only check runtime directory if not in test mode and not using custom extensions path
+    let use_runtime_dir = std::env::var("AVOCADO_TEST_MODE").is_err()
+        && std::env::var("AVOCADO_EXTENSIONS_PATH").is_err();
+
+    if use_runtime_dir {
+        if verbose {
+            println!(
+                "Scanning runtime extensions in {runtime_extensions_dir} (VERSION_ID: {version_id})"
+            );
+        }
+
+        // Check if runtime directory exists and warn if not
+        if !Path::new(&runtime_extensions_dir).exists() {
+            eprintln!("Warning: No extensions are enabled for VERSION_ID '{version_id}'. Directory not found: {runtime_extensions_dir}");
+            if verbose {
+                println!("Runtime directory {runtime_extensions_dir} does not exist, skipping");
+            }
+        } else {
+            // Scan runtime directory for symlinks or extensions
+            if let Ok(runtime_extensions) = scan_directory_extensions(&runtime_extensions_dir) {
+                for ext in runtime_extensions {
+                    if !extension_map.contains_key(&ext.name) {
+                        if verbose {
+                            println!(
+                                "Found runtime extension: {} at {}",
+                                ext.name,
+                                ext.path.display()
+                            );
+                        }
+                        extension_map.insert(ext.name.clone(), ext);
+                    } else if verbose {
+                        println!(
+                            "Skipping runtime extension {} (higher priority version preferred)",
+                            ext.name
+                        );
+                    }
+                }
+            }
+
+            // Also scan for .raw files in runtime directory (symlinks to actual extensions)
+            if let Ok(runtime_raw_files) = scan_raw_files(&runtime_extensions_dir) {
+                for (ext_name, ext_version, ext_path) in runtime_raw_files {
+                    use std::collections::hash_map::Entry;
+                    match extension_map.entry(ext_name.clone()) {
+                        Entry::Vacant(entry) => {
+                            // Analyze the raw file
+                            if let Ok(ext) = analyze_raw_extension_with_loop(
+                                &ext_name,
+                                &ext_version,
+                                &ext_path,
+                                verbose,
+                            ) {
+                                if verbose {
+                                    println!(
+                                        "Found runtime raw extension: {} at {}",
+                                        ext.name,
+                                        ext.path.display()
+                                    );
+                                }
+                                entry.insert(ext);
+                            }
+                        }
+                        Entry::Occupied(_) => {
+                            if verbose {
+                                println!(
+                                    "Skipping runtime raw extension {} (higher priority version preferred)",
+                                    ext_name
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. Third priority: Regular directory extensions (skip if already have HITL or runtime version)
     if verbose {
         println!("Scanning directory extensions in {extensions_dir}");
     }
@@ -891,32 +962,52 @@ fn scan_extensions_from_all_sources_with_verbosity(
                 extension_map.insert(ext.name.clone(), ext);
             } else if verbose {
                 println!(
-                    "Skipping directory extension {} (HITL version preferred)",
+                    "Skipping directory extension {} (HITL or runtime version preferred)",
                     ext.name
                 );
             }
         }
     }
 
-    // 3. Third priority: Raw file extensions (skip if already have directory version)
+    // 4. Fourth priority: Raw file extensions (skip if already have directory version)
     if verbose {
         println!("Scanning raw file extensions in {extensions_dir}");
     }
     let raw_files = scan_raw_files(&extensions_dir)?;
 
     // Cleanup stale loops before processing new ones
-    let mut available_extension_names: Vec<String> = extension_map.keys().cloned().collect();
-    available_extension_names.extend(raw_files.iter().map(|(name, _)| name.clone()));
-    cleanup_stale_loops(&available_extension_names)?;
+    // Build list of all valid loop names (with versions for versioned extensions)
+    let mut available_loop_names: Vec<String> = Vec::new();
+
+    // Add extensions already in the map (these might have versioned loop names)
+    for ext in extension_map.values() {
+        if let Some(ver) = &ext.version {
+            available_loop_names.push(format!("{}-{}", ext.name, ver));
+        } else {
+            available_loop_names.push(ext.name.clone());
+        }
+    }
+
+    // Add versioned names for raw files we're about to process
+    for (name, version, _path) in &raw_files {
+        if let Some(ver) = version {
+            available_loop_names.push(format!("{}-{}", name, ver));
+        } else {
+            available_loop_names.push(name.clone());
+        }
+    }
+
+    cleanup_stale_loops(&available_loop_names)?;
 
     // Process .raw files with persistent loops (only if not already found)
-    for (ext_name, path) in raw_files {
+    for (ext_name, ext_version, path) in raw_files {
         match extension_map.entry(ext_name.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 if verbose {
                     println!("Found raw file extension: {ext_name} at {}", path.display());
                 }
-                let extension = analyze_raw_extension_with_loop(&ext_name, &path)?;
+                let extension =
+                    analyze_raw_extension_with_loop(&ext_name, &ext_version, &path, verbose)?;
                 entry.insert(extension);
             }
             std::collections::hash_map::Entry::Occupied(_) => {
@@ -969,7 +1060,7 @@ fn scan_directory_extensions(dir_path: &str) -> Result<Vec<Extension>, SystemdEr
 }
 
 /// Scan a directory for raw file extensions
-fn scan_raw_files(dir_path: &str) -> Result<Vec<(String, PathBuf)>, SystemdError> {
+fn scan_raw_files(dir_path: &str) -> Result<Vec<(String, Option<String>, PathBuf)>, SystemdError> {
     let mut raw_files = Vec::new();
 
     if !Path::new(dir_path).exists() {
@@ -993,8 +1084,34 @@ fn scan_raw_files(dir_path: &str) -> Result<Vec<(String, PathBuf)>, SystemdError
             if let Some(file_name) = path.file_name() {
                 if let Some(name_str) = file_name.to_str() {
                     if name_str.ends_with(".raw") {
-                        let ext_name = name_str.strip_suffix(".raw").unwrap_or(name_str);
-                        raw_files.push((ext_name.to_string(), path));
+                        // Strip .raw suffix to get the extension name (with version)
+                        let ext_name_with_version =
+                            name_str.strip_suffix(".raw").unwrap_or(name_str);
+
+                        // Extract base extension name and version
+                        // Extension name pattern: <name>-<version>.raw -> extract <name> and <version>
+                        let (ext_name, ext_version) =
+                            if let Some(last_dash) = ext_name_with_version.rfind('-') {
+                                // Check if what follows the last dash looks like a version (contains digits or dots)
+                                let potential_version = &ext_name_with_version[last_dash + 1..];
+                                if potential_version
+                                    .chars()
+                                    .any(|c| c.is_ascii_digit() || c == '.')
+                                {
+                                    // This looks like a version, split name and version
+                                    let name = &ext_name_with_version[..last_dash];
+                                    let version = potential_version;
+                                    (name.to_string(), Some(version.to_string()))
+                                } else {
+                                    // No version pattern found, use full name without version
+                                    (ext_name_with_version.to_string(), None)
+                                }
+                            } else {
+                                // No dash found, use full name without version
+                                (ext_name_with_version.to_string(), None)
+                            };
+
+                        raw_files.push((ext_name, ext_version, path));
                     }
                 }
             }
@@ -1009,7 +1126,8 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
     let mut is_sysext = false;
     let mut is_confext = false;
 
-    // Look for extension-release files
+    // Look for extension-release files - try both versioned and non-versioned names
+    // First try non-versioned (backward compatibility)
     let sysext_release_path = path
         .join("usr/lib/extension-release.d")
         .join(format!("extension-release.{name}"));
@@ -1019,10 +1137,42 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
 
     if sysext_release_path.exists() {
         is_sysext = true;
+    } else {
+        // Try to find versioned release file (extension-release.name-version)
+        let sysext_dir = path.join("usr/lib/extension-release.d");
+        if sysext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&sysext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    // Check if filename starts with "extension-release.{name}-"
+                    if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                        is_sysext = true;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     if confext_release_path.exists() {
         is_confext = true;
+    } else {
+        // Try to find versioned release file (extension-release.name-version)
+        let confext_dir = path.join("etc/extension-release.d");
+        if confext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&confext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    // Check if filename starts with "extension-release.{name}-"
+                    if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                        is_confext = true;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     // If no release files found, default to both types
@@ -1046,6 +1196,7 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
 
     Ok(Extension {
         name: name.to_string(),
+        version: None, // Directory extensions don't have versions in their names
         path: path.to_path_buf(),
         is_sysext: sysext_enabled,
         is_confext: confext_enabled,
@@ -1054,21 +1205,36 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
 }
 
 /// Analyze a .raw file extension using persistent loops
-fn analyze_raw_extension_with_loop(name: &str, path: &Path) -> Result<Extension, SystemdError> {
-    println!("Analyzing raw extension with persistent loop: {name}");
+fn analyze_raw_extension_with_loop(
+    name: &str,
+    version: &Option<String>,
+    path: &Path,
+    verbose: bool,
+) -> Result<Extension, SystemdError> {
+    if verbose {
+        println!("Analyzing raw extension with persistent loop: {name}");
+    }
 
     // Check if we already have a persistent loop for this extension
-    let mount_point = if check_existing_loop_ref(name) {
-        println!("Using existing persistent loop for {name}");
+    let mount_name = if let Some(ver) = version {
+        format!("{name}-{ver}")
+    } else {
+        name.to_string()
+    };
+
+    let mount_point = if check_existing_loop_ref(&mount_name) {
+        if verbose {
+            println!("Using existing persistent loop for {mount_name}");
+        }
         if std::env::var("AVOCADO_TEST_MODE").is_ok() {
             let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-            format!("{temp_base}/avocado/extensions/{name}")
+            format!("{temp_base}/avocado/extensions/{mount_name}")
         } else {
-            format!("/run/avocado/extensions/{name}")
+            format!("/run/avocado/extensions/{mount_name}")
         }
     } else {
         // Create new persistent loop
-        mount_raw_file_with_loop(name, path)?
+        mount_raw_file_with_loop(&mount_name, path, verbose)?
             .to_string_lossy()
             .to_string()
     };
@@ -1078,20 +1244,50 @@ fn analyze_raw_extension_with_loop(name: &str, path: &Path) -> Result<Extension,
     let mut is_sysext = false;
     let mut is_confext = false;
 
-    // Check for sysext release file
+    // Check for sysext release file - try both versioned and non-versioned
     let sysext_release_path = mount_path
         .join("usr/lib/extension-release.d")
         .join(format!("extension-release.{name}"));
     if sysext_release_path.exists() {
         is_sysext = true;
+    } else {
+        // Try to find versioned release file
+        let sysext_dir = mount_path.join("usr/lib/extension-release.d");
+        if sysext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&sysext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                        is_sysext = true;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
-    // Check for confext release file
+    // Check for confext release file - try both versioned and non-versioned
     let confext_release_path = mount_path
         .join("etc/extension-release.d")
         .join(format!("extension-release.{name}"));
     if confext_release_path.exists() {
         is_confext = true;
+    } else {
+        // Try to find versioned release file
+        let confext_dir = mount_path.join("etc/extension-release.d");
+        if confext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&confext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                        is_confext = true;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     // If no release files found, default to both types (same as directory behavior)
@@ -1115,6 +1311,7 @@ fn analyze_raw_extension_with_loop(name: &str, path: &Path) -> Result<Extension,
 
     Ok(Extension {
         name: name.to_string(),
+        version: version.clone(),
         path: mount_path, // Use the mounted path instead of the raw file path
         is_sysext: sysext_enabled,
         is_confext: confext_enabled,
@@ -1166,8 +1363,12 @@ fn create_sysext_symlink_with_verbosity(
         "/run/extensions".to_string()
     };
 
-    // Always use just the extension name for symlinks
-    let symlink_name = extension.name.clone();
+    // Use versioned name for symlinks if version is available
+    let symlink_name = if let Some(ver) = &extension.version {
+        format!("{}-{}", extension.name, ver)
+    } else {
+        extension.name.clone()
+    };
 
     let target_path = format!("{sysext_dir}/{symlink_name}");
 
@@ -1215,8 +1416,12 @@ fn create_confext_symlink_with_verbosity(
         "/run/confexts".to_string()
     };
 
-    // Always use just the extension name for symlinks
-    let symlink_name = extension.name.clone();
+    // Use versioned name for symlinks if version is available
+    let symlink_name = if let Some(ver) = &extension.version {
+        format!("{}-{}", extension.name, ver)
+    } else {
+        extension.name.clone()
+    };
 
     let target_path = format!("{confext_dir}/{symlink_name}");
 
@@ -1256,6 +1461,7 @@ fn create_confext_symlink_with_verbosity(
 fn mount_raw_file_with_loop(
     extension_name: &str,
     raw_path: &Path,
+    verbose: bool,
 ) -> Result<PathBuf, SystemdError> {
     let mount_point = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
@@ -1272,7 +1478,9 @@ fn mount_raw_file_with_loop(
         })?;
     }
 
-    println!("Mounting raw file {extension_name} with persistent loop...");
+    if verbose {
+        println!("Mounting raw file {extension_name} with persistent loop...");
+    }
 
     // Check if we're in test mode and should use mock commands
     let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
@@ -1307,7 +1515,9 @@ fn mount_raw_file_with_loop(
         });
     }
 
-    println!("Mounted {extension_name} to {mount_point}");
+    if verbose {
+        println!("Mounted {extension_name} to {mount_point}");
+    }
     Ok(PathBuf::from(mount_point))
 }
 
@@ -1319,6 +1529,11 @@ fn check_existing_loop_ref(extension_name: &str) -> bool {
 
 /// Cleanup stale loop refs for extensions that no longer exist
 fn cleanup_stale_loops(available_extensions: &[String]) -> Result<(), SystemdError> {
+    // Skip cleanup in test mode to avoid interfering with system loops
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        return Ok(());
+    }
+
     let loop_ref_dir = "/dev/disk/by-loop-ref";
     if !Path::new(loop_ref_dir).exists() {
         return Ok(());
@@ -1599,7 +1814,7 @@ fn scan_extension_release_files(
     on_merge_commands: &mut Vec<String>,
     modprobe_modules: &mut Vec<String>,
 ) -> Result<(), SystemdError> {
-    // Check for sysext release file
+    // Check for sysext release file - try both versioned and non-versioned
     let sysext_release_path = extension
         .path
         .join("usr/lib/extension-release.d")
@@ -1613,9 +1828,30 @@ fn scan_extension_release_files(
             let mut modules = parse_avocado_modprobe(&content);
             modprobe_modules.append(&mut modules);
         }
+    } else {
+        // Try to find versioned release file
+        let sysext_dir = extension.path.join("usr/lib/extension-release.d");
+        if sysext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&sysext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    if filename_str.starts_with(&format!("extension-release.{}-", extension.name)) {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            let mut commands = parse_avocado_on_merge_commands(&content);
+                            on_merge_commands.append(&mut commands);
+
+                            let mut modules = parse_avocado_modprobe(&content);
+                            modprobe_modules.append(&mut modules);
+                        }
+                        break;
+                    }
+                }
+            }
+        }
     }
 
-    // Check for confext release file
+    // Check for confext release file - try both versioned and non-versioned
     let confext_release_path = extension
         .path
         .join("etc/extension-release.d")
@@ -1628,6 +1864,27 @@ fn scan_extension_release_files(
 
             let mut modules = parse_avocado_modprobe(&content);
             modprobe_modules.append(&mut modules);
+        }
+    } else {
+        // Try to find versioned release file
+        let confext_dir = extension.path.join("etc/extension-release.d");
+        if confext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&confext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    if filename_str.starts_with(&format!("extension-release.{}-", extension.name)) {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            let mut commands = parse_avocado_on_merge_commands(&content);
+                            on_merge_commands.append(&mut commands);
+
+                            let mut modules = parse_avocado_modprobe(&content);
+                            modprobe_modules.append(&mut modules);
+                        }
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -2086,6 +2343,7 @@ mod tests {
         // Simulate adding a .raw file first
         let raw_extension = Extension {
             name: "test_ext".to_string(),
+            version: Some("1.0.0".to_string()),
             path: PathBuf::from("/test/test_ext.raw"),
             is_sysext: true,
             is_confext: false,
@@ -2096,6 +2354,7 @@ mod tests {
         // Now add a directory with the same name (should replace the .raw)
         let dir_extension = Extension {
             name: "test_ext".to_string(),
+            version: None,
             path: PathBuf::from("/test/test_ext"),
             is_sysext: true,
             is_confext: true,
@@ -2125,6 +2384,7 @@ mod tests {
         // Test directory extension symlink naming
         let dir_extension = Extension {
             name: "test_ext".to_string(),
+            version: None,
             path: PathBuf::from("/test/test_ext"),
             is_sysext: true,
             is_confext: true,
@@ -2134,18 +2394,28 @@ mod tests {
         // Test loop-mounted raw file extension symlink naming
         let raw_extension = Extension {
             name: "test_ext".to_string(),
-            path: PathBuf::from("/run/avocado/extensions/test_ext"), // Points to mounted directory
+            version: Some("1.0.0".to_string()),
+            path: PathBuf::from("/run/avocado/extensions/test_ext-1.0.0"), // Points to mounted directory
             is_sysext: true,
             is_confext: false,
             is_directory: false, // Still false to track origin, but path points to mounted dir
         };
 
-        // Both directory and loop-mounted raw extensions should use just the extension name
-        let dir_symlink_name = dir_extension.name.clone();
+        // Directory extensions should use just the name (no version)
+        let dir_symlink_name = if let Some(ver) = &dir_extension.version {
+            format!("{}-{}", dir_extension.name, ver)
+        } else {
+            dir_extension.name.clone()
+        };
         assert_eq!(dir_symlink_name, "test_ext");
 
-        let raw_symlink_name = raw_extension.name.clone();
-        assert_eq!(raw_symlink_name, "test_ext");
+        // Raw extensions with version should include version in symlink name
+        let raw_symlink_name = if let Some(ver) = &raw_extension.version {
+            format!("{}-{}", raw_extension.name, ver)
+        } else {
+            raw_extension.name.clone()
+        };
+        assert_eq!(raw_symlink_name, "test_ext-1.0.0");
     }
 
     #[test]
@@ -2378,7 +2648,7 @@ OTHER_KEY=value
         // This test can't easily test the actual function since it depends on filesystem state
         // But we can test that the function exists and returns a boolean
         let result = is_running_in_initrd();
-        assert!(result == true || result == false); // Just ensure it returns a boolean
+        let _ = result; // Just ensure it returns a boolean without crashing
     }
 
     #[test]
@@ -2398,13 +2668,11 @@ OTHER_KEY=value
 
         // This test will always return true since we can't mock is_running_in_initrd easily
         // But we can verify the function doesn't crash
-        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert!(result == true || result == false);
+        let _result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
 
         // Test case 2: Extension with system scope only
         fs::write(&release_file, "VERSION_ID=1.0\nSYSEXT_SCOPE=\"system\"\n").unwrap();
-        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert!(result == true || result == false);
+        let _result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
 
         // Test case 3: Extension with both scopes
         fs::write(
@@ -2412,18 +2680,17 @@ OTHER_KEY=value
             "VERSION_ID=1.0\nSYSEXT_SCOPE=\"initrd system\"\n",
         )
         .unwrap();
-        let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert!(result == true || result == false);
+        let _result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
 
         // Test case 4: Extension with no scope (should default to enabled)
         fs::write(&release_file, "VERSION_ID=1.0\n").unwrap();
         let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert_eq!(result, true);
+        assert!(result);
 
         // Test case 5: No release file (should default to enabled)
         fs::remove_file(&release_file).unwrap();
         let result = is_sysext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert_eq!(result, true);
+        assert!(result);
     }
 
     #[test]
@@ -2443,17 +2710,16 @@ OTHER_KEY=value
 
         // This test will always return true since we can't mock is_running_in_initrd easily
         // But we can verify the function doesn't crash
-        let result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert!(result == true || result == false);
+        let _result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
 
         // Test case 2: Extension with no scope (should default to enabled)
         fs::write(&release_file, "VERSION_ID=1.0\n").unwrap();
         let result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert_eq!(result, true);
+        assert!(result);
 
         // Test case 3: No release file (should default to enabled)
         fs::remove_file(&release_file).unwrap();
         let result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
-        assert_eq!(result, true);
+        assert!(result);
     }
 }
