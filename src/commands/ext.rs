@@ -412,7 +412,7 @@ pub fn enable_extensions(
 
     // Get the extensions directory from config
     let extensions_dir = config.get_extensions_dir();
-    
+
     // Determine runtime directory based on test mode
     let runtime_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
@@ -463,7 +463,14 @@ pub fn enable_extensions(
         };
 
         // Create symlink in runtime directory
-        let target_path = format!("{}/{}", runtime_dir, Path::new(&source_path).file_name().unwrap().to_string_lossy());
+        let target_path = format!(
+            "{}/{}",
+            runtime_dir,
+            Path::new(&source_path)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+        );
 
         // Remove existing symlink if it exists
         if Path::new(&target_path).exists() {
@@ -506,9 +513,7 @@ pub fn enable_extensions(
     if error_count > 0 {
         output.error(
             "Enable Extensions",
-            &format!(
-                "Completed with errors: {success_count} succeeded, {error_count} failed"
-            ),
+            &format!("Completed with errors: {success_count} succeeded, {error_count} failed"),
         );
         std::process::exit(1);
     } else {
@@ -535,6 +540,190 @@ fn sync_directory(dir_path: &Path) -> Result<(), SystemdError> {
     })?;
 
     Ok(())
+}
+
+/// Disable extensions for a specific runtime version
+pub fn disable_extensions(
+    runtime_version: Option<&str>,
+    extensions: Option<&[&str]>,
+    all: bool,
+    _config: &Config,
+    output: &OutputManager,
+) {
+    // Determine the runtime version to use
+    let version_id = if let Some(version) = runtime_version {
+        version.to_string()
+    } else {
+        read_os_version_id()
+    };
+
+    output.info(
+        "Disable Extensions",
+        &format!("Disabling extensions for runtime version: {version_id}"),
+    );
+
+    // Determine runtime directory based on test mode
+    let runtime_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/runtime/{version_id}")
+    } else {
+        format!("/var/lib/avocado/runtime/{version_id}")
+    };
+
+    // Check if runtime directory exists
+    if !Path::new(&runtime_dir).exists() {
+        output.error(
+            "Disable Extensions",
+            &format!("Runtime directory '{runtime_dir}' does not exist"),
+        );
+        std::process::exit(1);
+    }
+
+    let mut success_count = 0;
+    let mut error_count = 0;
+
+    if all {
+        // Disable all extensions by removing all symlinks in the runtime directory
+        output.step("Disable", "Removing all extensions");
+
+        match fs::read_dir(&runtime_dir) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            let path = entry.path();
+                            // Only remove symlinks, not regular files or directories
+                            if path.is_symlink() {
+                                if let Some(file_name) = path.file_name() {
+                                    if let Some(name_str) = file_name.to_str() {
+                                        match fs::remove_file(&path) {
+                                            Ok(_) => {
+                                                output.progress(&format!(
+                                                    "Disabled extension: {name_str}"
+                                                ));
+                                                success_count += 1;
+                                            }
+                                            Err(e) => {
+                                                output.error(
+                                                    "Disable Extensions",
+                                                    &format!("Failed to remove symlink '{name_str}': {e}"),
+                                                );
+                                                error_count += 1;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            output.error(
+                                "Disable Extensions",
+                                &format!("Failed to read directory entry: {e}"),
+                            );
+                            error_count += 1;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                output.error(
+                    "Disable Extensions",
+                    &format!("Failed to read runtime directory '{runtime_dir}': {e}"),
+                );
+                std::process::exit(1);
+            }
+        }
+    } else if let Some(ext_names) = extensions {
+        // Disable specific extensions
+        for ext_name in ext_names {
+            // Check for both directory and .raw file symlinks
+            let symlink_dir = format!("{}/{}", runtime_dir, ext_name);
+            let symlink_raw = format!("{}/{}.raw", runtime_dir, ext_name);
+
+            let mut found = false;
+
+            // Try to remove directory symlink
+            if Path::new(&symlink_dir).exists() {
+                match fs::remove_file(&symlink_dir) {
+                    Ok(_) => {
+                        output.progress(&format!("Disabled extension: {ext_name}"));
+                        success_count += 1;
+                        found = true;
+                    }
+                    Err(e) => {
+                        output.error(
+                            "Disable Extensions",
+                            &format!("Failed to remove symlink for '{ext_name}': {e}"),
+                        );
+                        error_count += 1;
+                        found = true;
+                    }
+                }
+            }
+
+            // Try to remove .raw symlink
+            if Path::new(&symlink_raw).exists() {
+                match fs::remove_file(&symlink_raw) {
+                    Ok(_) => {
+                        if !found {
+                            output.progress(&format!("Disabled extension: {ext_name}"));
+                            success_count += 1;
+                        }
+                        found = true;
+                    }
+                    Err(e) => {
+                        output.error(
+                            "Disable Extensions",
+                            &format!("Failed to remove .raw symlink for '{ext_name}': {e}"),
+                        );
+                        error_count += 1;
+                        found = true;
+                    }
+                }
+            }
+
+            if !found {
+                output.error(
+                    "Disable Extensions",
+                    &format!("Extension '{ext_name}' is not enabled for runtime {version_id}"),
+                );
+                error_count += 1;
+            }
+        }
+    } else {
+        // This should not happen due to clap validation, but handle it anyway
+        output.error(
+            "Disable Extensions",
+            "No extensions specified. Use --all to disable all extensions or specify extension names.",
+        );
+        std::process::exit(1);
+    }
+
+    // Sync the runtime directory to ensure all removals are persisted to disk
+    if success_count > 0 {
+        if let Err(e) = sync_directory(Path::new(&runtime_dir)) {
+            output.error(
+                "Disable Extensions",
+                &format!("Failed to sync runtime directory to disk: {e}"),
+            );
+            std::process::exit(1);
+        }
+        output.progress("Synced changes to disk");
+    }
+
+    // Summary
+    if error_count > 0 {
+        output.error(
+            "Disable Extensions",
+            &format!("Completed with errors: {success_count} succeeded, {error_count} failed"),
+        );
+        std::process::exit(1);
+    } else {
+        output.success(
+            "Disable Extensions",
+            &format!("Successfully disabled {success_count} extension(s) for runtime {version_id}"),
+        );
+    }
 }
 
 /// Refresh extensions (unmerge then merge)
@@ -737,10 +926,7 @@ fn display_extension_status(
     }
 
     // Display header - optimized for 80 columns
-    println!(
-        "{:<24} {:<10} {:<12} Origin",
-        "Extension", "Status", "Type"
-    );
+    println!("{:<24} {:<10} {:<12} Origin", "Extension", "Status", "Type");
     println!("{}", "=".repeat(79));
 
     // Sort extensions for consistent display

@@ -68,6 +68,29 @@ fn main() {
                         .num_args(1..)
                         .value_name("EXTENSION"),
                 ),
+        )
+        .subcommand(
+            Command::new("disable")
+                .about("Disable extensions for a specific runtime version")
+                .arg(
+                    Arg::new("runtime")
+                        .long("runtime")
+                        .value_name("VERSION")
+                        .help("Runtime version (defaults to current os-release VERSION_ID)"),
+                )
+                .arg(
+                    Arg::new("all")
+                        .long("all")
+                        .help("Disable all extensions")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    Arg::new("extensions")
+                        .help("Extension names to disable")
+                        .required_unless_present("all")
+                        .num_args(1..)
+                        .value_name("EXTENSION"),
+                ),
         );
 
     let matches = app.get_matches();
@@ -111,13 +134,25 @@ fn main() {
             ext::refresh_extensions_direct(&output);
         }
         Some(("enable", enable_matches)) => {
-            let runtime = enable_matches.get_one::<String>("runtime").map(|s| s.as_str());
+            let runtime = enable_matches
+                .get_one::<String>("runtime")
+                .map(|s| s.as_str());
             let extensions: Vec<&str> = enable_matches
                 .get_many::<String>("extensions")
                 .unwrap()
                 .map(|s| s.as_str())
                 .collect();
             ext::enable_extensions(runtime, &extensions, &config, &output);
+        }
+        Some(("disable", disable_matches)) => {
+            let runtime = disable_matches
+                .get_one::<String>("runtime")
+                .map(|s| s.as_str());
+            let all = disable_matches.get_flag("all");
+            let extensions: Option<Vec<&str>> = disable_matches
+                .get_many::<String>("extensions")
+                .map(|values| values.map(|s| s.as_str()).collect());
+            ext::disable_extensions(runtime, extensions.as_deref(), all, &config, &output);
         }
         _ => {
             println!(
