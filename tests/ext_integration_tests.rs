@@ -2073,3 +2073,84 @@ fn test_stale_symlink_cleanup() {
         "Should remove stale symlink or show cleanup message"
     );
 }
+
+#[test]
+fn test_hitl_mount_masks_versioned_extensions() {
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let extensions_dir = temp_dir.path().join("extensions");
+    let hitl_dir = temp_dir.path().join("avocado/hitl");
+    fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create a versioned extension (myext-1.0.0) in the regular extensions directory
+    let versioned_ext_dir = extensions_dir.join("myext-1.0.0");
+    fs::create_dir(&versioned_ext_dir).expect("Failed to create versioned extension directory");
+    let versioned_release_dir = versioned_ext_dir.join("usr/lib/extension-release.d");
+    fs::create_dir_all(&versioned_release_dir).expect("Failed to create release dir");
+    fs::write(
+        versioned_release_dir.join("extension-release.myext-1.0.0"),
+        "ID=avocado\nVERSION_ID=1.0",
+    )
+    .expect("Failed to write release file");
+
+    let test_env = [
+        ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+        ("AVOCADO_TEST_MODE", "1"),
+        ("TMPDIR", temp_dir.path().to_str().unwrap()),
+    ];
+
+    // Enable the versioned extension first
+    let enable_output = run_avocadoctl_with_env(&["enable", "--verbose", "myext-1.0.0"], &test_env);
+    assert!(
+        enable_output.status.success(),
+        "Enable command should succeed"
+    );
+
+    // Refresh to create symlinks for the versioned extension (WITHOUT HITL mount yet)
+    let (refresh1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh1.status.success(), "First refresh should succeed");
+
+    let sysext_dir = temp_dir.path().join("test_extensions");
+
+    // Verify that the versioned symlink was created
+    assert!(
+        sysext_dir.join("myext-1.0.0").exists(),
+        "Versioned symlink (myext-1.0.0) should exist after initial refresh"
+    );
+
+    // Now create a HITL extension with the same base name (myext) but no version
+    fs::create_dir_all(&hitl_dir).expect("Failed to create HITL directory");
+    let hitl_ext_dir = hitl_dir.join("myext");
+    fs::create_dir(&hitl_ext_dir).expect("Failed to create HITL extension directory");
+    let hitl_release_dir = hitl_ext_dir.join("usr/lib/extension-release.d");
+    fs::create_dir_all(&hitl_release_dir).expect("Failed to create HITL release dir");
+    fs::write(
+        hitl_release_dir.join("extension-release.myext"),
+        "ID=avocado\nVERSION_ID=1.0",
+    )
+    .expect("Failed to write HITL release file");
+
+    // Refresh again - this should detect the HITL mount and remove the versioned symlink
+    let (refresh2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(refresh2.status.success(), "Second refresh should succeed");
+    let stdout2 = String::from_utf8_lossy(&refresh2.stdout);
+
+    // Verify that the versioned symlink was removed (masked by HITL)
+    assert!(
+        !sysext_dir.join("myext-1.0.0").exists(),
+        "Versioned symlink (myext-1.0.0) should be removed when HITL mount (myext) exists"
+    );
+
+    // Verify that the non-versioned HITL symlink exists
+    assert!(
+        sysext_dir.join("myext").exists(),
+        "HITL symlink (myext) should exist"
+    );
+
+    // Check for cleanup message in verbose output
+    assert!(
+        stdout2.contains("Removed stale") || stdout2.contains("myext"),
+        "Should mention cleanup or the extension name in verbose output"
+    );
+}

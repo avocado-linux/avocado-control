@@ -1168,6 +1168,9 @@ fn cleanup_stale_extension_symlinks(
 
     // Build a set of expected symlink names (with versions)
     let mut expected_names = std::collections::HashSet::new();
+    // Also track base names without versions for masking logic
+    let mut non_versioned_base_names = std::collections::HashSet::new();
+
     for ext in enabled_extensions {
         let name_with_version = if let Some(ver) = &ext.version {
             format!("{}-{}", ext.name, ver)
@@ -1175,6 +1178,11 @@ fn cleanup_stale_extension_symlinks(
             ext.name.clone()
         };
         expected_names.insert(name_with_version);
+
+        // Track non-versioned extensions (e.g., HITL mounts) for masking
+        if ext.version.is_none() {
+            non_versioned_base_names.insert(ext.name.clone());
+        }
     }
 
     // Clean up sysext directory
@@ -1187,9 +1195,34 @@ fn cleanup_stale_extension_symlinks(
                         // Remove .raw suffix if present for comparison
                         let name_without_raw = file_name.strip_suffix(".raw").unwrap_or(file_name);
 
-                        if !expected_names.contains(file_name)
+                        // Check if this symlink should be removed
+                        let should_remove = if !expected_names.contains(file_name)
                             && !expected_names.contains(name_without_raw)
                         {
+                            // Not in expected list, should be removed
+                            true
+                        } else {
+                            // Check if this is a versioned symlink that should be masked by a non-versioned one
+                            // e.g., "myext-1.0.0" should be removed if "myext" (HITL mount) exists
+                            if let Some(last_dash) = name_without_raw.rfind('-') {
+                                let base_name = &name_without_raw[..last_dash];
+                                let potential_version = &name_without_raw[last_dash + 1..];
+                                // Check if this looks like a version (contains digits or dots)
+                                if potential_version
+                                    .chars()
+                                    .any(|c| c.is_ascii_digit() || c == '.')
+                                {
+                                    // This is a versioned symlink, check if we have a non-versioned version
+                                    non_versioned_base_names.contains(base_name)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        };
+
+                        if should_remove {
                             if let Err(e) = fs::remove_file(&path) {
                                 output.progress(&format!(
                                     "Warning: Failed to remove stale sysext symlink {}: {}",
@@ -1218,9 +1251,34 @@ fn cleanup_stale_extension_symlinks(
                         // Remove .raw suffix if present for comparison
                         let name_without_raw = file_name.strip_suffix(".raw").unwrap_or(file_name);
 
-                        if !expected_names.contains(file_name)
+                        // Check if this symlink should be removed
+                        let should_remove = if !expected_names.contains(file_name)
                             && !expected_names.contains(name_without_raw)
                         {
+                            // Not in expected list, should be removed
+                            true
+                        } else {
+                            // Check if this is a versioned symlink that should be masked by a non-versioned one
+                            // e.g., "myext-1.0.0" should be removed if "myext" (HITL mount) exists
+                            if let Some(last_dash) = name_without_raw.rfind('-') {
+                                let base_name = &name_without_raw[..last_dash];
+                                let potential_version = &name_without_raw[last_dash + 1..];
+                                // Check if this looks like a version (contains digits or dots)
+                                if potential_version
+                                    .chars()
+                                    .any(|c| c.is_ascii_digit() || c == '.')
+                                {
+                                    // This is a versioned symlink, check if we have a non-versioned version
+                                    non_versioned_base_names.contains(base_name)
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        };
+
+                        if should_remove {
                             if let Err(e) = fs::remove_file(&path) {
                                 output.progress(&format!(
                                     "Warning: Failed to remove stale confext symlink {}: {}",
