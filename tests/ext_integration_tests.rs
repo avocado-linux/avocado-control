@@ -2191,7 +2191,8 @@ fn test_hitl_mount_masks_multiple_versions() {
     assert!(enable_output.status.success(), "Enable should succeed");
 
     // Refresh to create symlinks
-    let (refresh1, _) = run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    let (refresh1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
     assert!(refresh1.status.success(), "First refresh should succeed");
 
     let sysext_dir = temp_dir.path().join("test_extensions");
@@ -2217,7 +2218,8 @@ fn test_hitl_mount_masks_multiple_versions() {
     .expect("Failed to write HITL release file");
 
     // Refresh with HITL mount
-    let (refresh2, _) = run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    let (refresh2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
     assert!(refresh2.status.success(), "Second refresh should succeed");
 
     // Verify ALL versioned symlinks are removed
@@ -2271,7 +2273,8 @@ fn test_hitl_mount_only_masks_same_base_name() {
     assert!(enable_output.status.success(), "Enable should succeed");
 
     // Refresh to create symlinks
-    let (refresh1, _) = run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    let (refresh1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
     assert!(refresh1.status.success(), "First refresh should succeed");
 
     let sysext_dir = temp_dir.path().join("test_extensions");
@@ -2299,7 +2302,8 @@ fn test_hitl_mount_only_masks_same_base_name() {
     .expect("Failed to write HITL release file");
 
     // Refresh with HITL mount
-    let (refresh2, _) = run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    let (refresh2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
     assert!(refresh2.status.success(), "Second refresh should succeed");
 
     // Verify myext-1.0.0 is masked but otherext-2.0.0 remains
@@ -2307,10 +2311,7 @@ fn test_hitl_mount_only_masks_same_base_name() {
         !sysext_dir.join("myext-1.0.0").exists(),
         "myext-1.0.0 should be masked"
     );
-    assert!(
-        sysext_dir.join("myext").exists(),
-        "HITL myext should exist"
-    );
+    assert!(sysext_dir.join("myext").exists(), "HITL myext should exist");
     assert!(
         sysext_dir.join("otherext-2.0.0").exists(),
         "otherext-2.0.0 should NOT be masked (different base name)"
@@ -2359,8 +2360,12 @@ fn test_hitl_mount_removal_restores_versioned() {
     .expect("Failed to write HITL release file");
 
     // Refresh with HITL
-    let (refresh1, _) = run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
-    assert!(refresh1.status.success(), "Refresh with HITL should succeed");
+    let (refresh1, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(
+        refresh1.status.success(),
+        "Refresh with HITL should succeed"
+    );
 
     let sysext_dir = temp_dir.path().join("test_extensions");
     assert!(
@@ -2376,8 +2381,12 @@ fn test_hitl_mount_removal_restores_versioned() {
     fs::remove_dir_all(&hitl_ext_dir).expect("Failed to remove HITL extension");
 
     // Refresh without HITL
-    let (refresh2, _) = run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
-    assert!(refresh2.status.success(), "Refresh without HITL should succeed");
+    let (refresh2, _) =
+        run_avocadoctl_with_isolated_env(&["ext", "refresh", "--verbose"], &test_env);
+    assert!(
+        refresh2.status.success(),
+        "Refresh without HITL should succeed"
+    );
 
     // Verify versioned extension is restored
     assert!(
