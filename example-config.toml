@@ -1,0 +1,27 @@
+# Example avocadoctl configuration file
+# This file demonstrates the available configuration options
+
+[avocado.ext]
+# Directory where extensions are stored
+dir = "/var/lib/avocado/extensions"
+
+# Mutability mode for system extensions - sysext (/usr, /opt)
+# Valid values: no, auto, yes, import, ephemeral, ephemeral-import
+# Default: ephemeral
+sysext_mutable = "ephemeral"
+
+# Mutability mode for configuration extensions - confext (/etc)
+# Valid values: no, auto, yes, import, ephemeral, ephemeral-import
+# Default: ephemeral
+confext_mutable = "ephemeral"
+
+# Legacy option (deprecated, use sysext_mutable and confext_mutable instead)
+# If specified, applies to both sysext and confext unless overridden
+# mutable = "ephemeral"
+
+# Examples of different configurations:
+# sysext_mutable = "no"           # Force immutable mode for /usr, /opt
+# confext_mutable = "yes"         # Force mutable mode for /etc, create write routing directories
+# sysext_mutable = "auto"         # Enable mutable mode for /usr, /opt if write routing directories present
+# confext_mutable = "import"      # Immutable mode for /etc but merge write routing contents
+# sysext_mutable = "ephemeral-import" # Mutable mode for /usr, /opt with write routing merged but changes discarded after unmerge

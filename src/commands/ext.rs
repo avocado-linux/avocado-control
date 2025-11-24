@@ -182,14 +182,14 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
             list_extensions(config, output);
         }
         Some(("merge", _)) => {
-            merge_extensions(output);
+            merge_extensions(config, output);
         }
         Some(("unmerge", unmerge_matches)) => {
             let unmount = unmerge_matches.get_flag("unmount");
             unmerge_extensions(unmount, output);
         }
         Some(("refresh", _)) => {
-            refresh_extensions(output);
+            refresh_extensions(config, output);
         }
         Some(("status", _)) => {
             status_extensions(output);
@@ -251,8 +251,8 @@ fn list_extensions(config: &Config, output: &OutputManager) {
 }
 
 /// Merge extensions using systemd-sysext and systemd-confext
-pub fn merge_extensions(output: &OutputManager) {
-    match merge_extensions_internal(output) {
+pub fn merge_extensions(config: &Config, output: &OutputManager) {
+    match merge_extensions_internal(config, output) {
         Ok(_) => {
             output.success("Extension Merge", "Extensions merged successfully");
         }
@@ -267,7 +267,7 @@ pub fn merge_extensions(output: &OutputManager) {
 }
 
 /// Internal merge function that returns a Result
-fn merge_extensions_internal(output: &OutputManager) -> Result<(), SystemdError> {
+fn merge_extensions_internal(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
     let environment_info = if is_running_in_initrd() {
         "initrd environment"
     } else {
@@ -281,17 +281,46 @@ fn merge_extensions_internal(output: &OutputManager) -> Result<(), SystemdError>
     // Prepare the environment by setting up symlinks and get the list of enabled extensions
     let enabled_extensions = prepare_extension_environment_with_output(output)?;
 
+    // Get the mutability settings from config (separate for sysext and confext)
+    let sysext_mutability = match config.get_sysext_mutable() {
+        Ok(value) => value,
+        Err(e) => {
+            output.error(
+                "Configuration Error",
+                &format!("Invalid sysext mutable configuration: {e}"),
+            );
+            return Err(SystemdError::ConfigurationError {
+                message: e.to_string(),
+            });
+        }
+    };
+    let sysext_mutable_arg = format!("--mutable={sysext_mutability}");
+
+    let confext_mutability = match config.get_confext_mutable() {
+        Ok(value) => value,
+        Err(e) => {
+            output.error(
+                "Configuration Error",
+                &format!("Invalid confext mutable configuration: {e}"),
+            );
+            return Err(SystemdError::ConfigurationError {
+                message: e.to_string(),
+            });
+        }
+    };
+    let confext_mutable_arg = format!("--mutable={confext_mutability}");
+
     // Merge system extensions
     let sysext_result = run_systemd_command(
         "systemd-sysext",
-        &["merge", "--mutable=ephemeral", "--json=short"],
+        &["merge", &sysext_mutable_arg, "--json=short"],
     )?;
     handle_systemd_output("systemd-sysext merge", &sysext_result, output)?;
 
     // Merge configuration extensions
     let confext_result = run_systemd_command(
         "systemd-confext",
-        &["merge", "--mutable=ephemeral", "--json=short"],
+        &["merge", &confext_mutable_arg, "--json=short"],
     )?;
     handle_systemd_output("systemd-confext merge", &confext_result, output)?;
 
@@ -378,7 +407,9 @@ fn unmerge_extensions_internal_with_options(
 ///
 /// Merge extensions - direct access for top-level alias
 pub fn merge_extensions_direct(output: &OutputManager) {
-    merge_extensions(output);
+    // Use default config for direct access
+    let config = Config::default();
+    merge_extensions(&config, output);
 }
 
 /// Unmerge extensions - direct access for top-level alias
@@ -388,7 +419,9 @@ pub fn unmerge_extensions_direct(unmount: bool, output: &OutputManager) {
 
 /// Refresh extensions - direct access for top-level alias
 pub fn refresh_extensions_direct(output: &OutputManager) {
-    refresh_extensions(output);
+    // Use default config for direct access
+    let config = Config::default();
+    refresh_extensions(&config, output);
 }
 
 /// Enable extensions for a specific OS release version
@@ -450,8 +483,8 @@ pub fn enable_extensions(
 
     for ext_name in extensions {
         // Check if extension exists - try both directory and .raw file
-        let ext_dir_path = format!("{}/{}", extensions_dir, ext_name);
-        let ext_raw_path = format!("{}/{}.raw", extensions_dir, ext_name);
+        let ext_dir_path = format!("{extensions_dir}/{ext_name}");
+        let ext_raw_path = format!("{extensions_dir}/{ext_name}.raw");
 
         let source_path = if Path::new(&ext_dir_path).exists() {
             ext_dir_path
@@ -643,8 +676,8 @@ pub fn disable_extensions(
         // Disable specific extensions
         for ext_name in ext_names {
             // Check for both directory and .raw file symlinks
-            let symlink_dir = format!("{}/{}", os_releases_dir, ext_name);
-            let symlink_raw = format!("{}/{}.raw", os_releases_dir, ext_name);
+            let symlink_dir = format!("{os_releases_dir}/{ext_name}");
+            let symlink_raw = format!("{os_releases_dir}/{ext_name}.raw");
 
             let mut found = false;
 
@@ -735,7 +768,7 @@ pub fn disable_extensions(
 }
 
 /// Refresh extensions (unmerge then merge)
-pub fn refresh_extensions(output: &OutputManager) {
+pub fn refresh_extensions(config: &Config, output: &OutputManager) {
     let environment_info = if is_running_in_initrd() {
         "initrd environment"
     } else {
@@ -757,7 +790,7 @@ pub fn refresh_extensions(output: &OutputManager) {
     output.step("Refresh", "Extensions unmerged");
 
     // Then merge (this will call depmod via post-merge processing)
-    if let Err(e) = merge_extensions_internal(output) {
+    if let Err(e) = merge_extensions_internal(config, output) {
         output.error(
             "Extension Refresh",
             &format!("Failed to merge extensions: {e}"),
@@ -1225,13 +1258,11 @@ fn cleanup_stale_extension_symlinks(
                         if should_remove {
                             if let Err(e) = fs::remove_file(&path) {
                                 output.progress(&format!(
-                                    "Warning: Failed to remove stale sysext symlink {}: {}",
-                                    file_name, e
-                                ));
+                        "Warning: Failed to remove stale sysext symlink {file_name}: {e}"
+                    ));
                             } else {
                                 output.progress(&format!(
-                                    "Removed stale sysext symlink: {}",
-                                    file_name
+                                    "Removed stale sysext symlink: {file_name}"
                                 ));
                             }
                         }
@@ -1281,13 +1312,11 @@ fn cleanup_stale_extension_symlinks(
                         if should_remove {
                             if let Err(e) = fs::remove_file(&path) {
                                 output.progress(&format!(
-                                    "Warning: Failed to remove stale confext symlink {}: {}",
-                                    file_name, e
-                                ));
+                        "Warning: Failed to remove stale confext symlink {file_name}: {e}"
+                    ));
                             } else {
                                 output.progress(&format!(
-                                    "Removed stale confext symlink: {}",
-                                    file_name
+                                    "Removed stale confext symlink: {file_name}"
                                 ));
                             }
                         }
@@ -1437,9 +1466,8 @@ fn scan_extensions_from_all_sources_with_verbosity(
                     Entry::Occupied(_) => {
                         if verbose {
                             println!(
-                                "Skipping OS release raw extension {} (higher priority version preferred)",
-                                ext_name
-                            );
+                        "Skipping OS release raw extension {ext_name} (higher priority version preferred)"
+                    );
                         }
                     }
                 }
@@ -1512,7 +1540,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
         // Add versioned names for raw files we're about to process
         for (name, version, _path) in &raw_files {
             if let Some(ver) = version {
-                available_loop_names.push(format!("{}-{}", name, ver));
+                available_loop_names.push(format!("{name}-{ver}"));
             } else {
                 available_loop_names.push(name.clone());
             }
@@ -2769,6 +2797,9 @@ pub enum SystemdError {
         exit_code: Option<i32>,
         stderr: String,
     },
+
+    #[error("Configuration error: {message}")]
+    ConfigurationError { message: String },
 }
 
 #[cfg(test)]
@@ -3245,5 +3276,37 @@ OTHER_KEY=value
         fs::remove_file(&release_file).unwrap();
         let result = is_confext_enabled_for_current_environment(&ext_path, "test_ext");
         assert!(result);
+    }
+
+    #[test]
+    fn test_config_mutable_integration() {
+        // Test that the config mutable options are properly used
+        let mut config = Config::default();
+
+        // Test with default values (ephemeral)
+        assert_eq!(config.get_sysext_mutable().unwrap(), "ephemeral");
+        assert_eq!(config.get_confext_mutable().unwrap(), "ephemeral");
+
+        // Test with separate custom values
+        config.avocado.ext.sysext_mutable = Some("yes".to_string());
+        config.avocado.ext.confext_mutable = Some("auto".to_string());
+        assert_eq!(config.get_sysext_mutable().unwrap(), "yes");
+        assert_eq!(config.get_confext_mutable().unwrap(), "auto");
+
+        // Test error handling for invalid values
+        config.avocado.ext.sysext_mutable = Some("invalid".to_string());
+        let result = config.get_sysext_mutable();
+        assert!(result.is_err());
+
+        let error = result.unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("Invalid mutable value 'invalid'"));
+
+        // Test backward compatibility with legacy mutable option
+        let mut legacy_config = Config::default();
+        legacy_config.avocado.ext.mutable = Some("import".to_string());
+        assert_eq!(legacy_config.get_sysext_mutable().unwrap(), "import");
+        assert_eq!(legacy_config.get_confext_mutable().unwrap(), "import");
     }
 }

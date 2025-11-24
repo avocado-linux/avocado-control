@@ -315,6 +315,172 @@ fn test_example_config_fixture() {
         toml::from_str(&config_content).expect("Example config should be valid TOML");
 }
 
+/// Test mutable config option integration
+#[test]
+fn test_mutable_config_option() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    // Test with valid mutable value
+    let config_path = temp_dir.path().join("mutable_config.toml");
+    let config_content = r#"
+[avocado.ext]
+dir = "/tmp/test_extensions"
+mutable = "yes"
+"#;
+    fs::write(&config_path, config_content).expect("Failed to write config file");
+
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "ext",
+            "merge",
+            "--verbose",
+        ],
+        &[],
+    );
+
+    // Should succeed (even though no extensions exist, config should be valid)
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with valid mutable config"
+    );
+
+    // Test with invalid mutable value
+    let invalid_config_path = temp_dir.path().join("invalid_mutable_config.toml");
+    let invalid_config_content = r#"
+[avocado.ext]
+dir = "/tmp/test_extensions"
+mutable = "invalid_value"
+"#;
+    fs::write(&invalid_config_path, invalid_config_content).expect("Failed to write config file");
+
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &[
+            "--config",
+            invalid_config_path.to_str().unwrap(),
+            "ext",
+            "merge",
+        ],
+        &[],
+    );
+
+    // Should fail with configuration error
+    assert!(
+        !output.status.success(),
+        "ext merge should fail with invalid mutable config"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid mutable value 'invalid_value'"),
+        "Should show invalid mutable value error message"
+    );
+    assert!(
+        stderr.contains("Must be one of: no, auto, yes, import, ephemeral, ephemeral-import"),
+        "Should show valid options in error message"
+    );
+}
+
+/// Test separate sysext and confext mutable config options
+#[test]
+fn test_separate_mutable_config_options() {
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+    // Test with separate sysext and confext mutable values
+    let config_path = temp_dir.path().join("separate_mutable_config.toml");
+    let config_content = r#"
+[avocado.ext]
+dir = "/tmp/test_extensions"
+sysext_mutable = "yes"
+confext_mutable = "auto"
+"#;
+    fs::write(&config_path, config_content).expect("Failed to write config file");
+
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &[
+            "--config",
+            config_path.to_str().unwrap(),
+            "ext",
+            "merge",
+            "--verbose",
+        ],
+        &[],
+    );
+
+    // Should succeed (even though no extensions exist, config should be valid)
+    assert!(
+        output.status.success(),
+        "ext merge should succeed with valid separate mutable config"
+    );
+
+    // Test with invalid sysext mutable value
+    let invalid_sysext_config_path = temp_dir.path().join("invalid_sysext_config.toml");
+    let invalid_sysext_config_content = r#"
+[avocado.ext]
+dir = "/tmp/test_extensions"
+sysext_mutable = "invalid_value"
+confext_mutable = "auto"
+"#;
+    fs::write(&invalid_sysext_config_path, invalid_sysext_config_content)
+        .expect("Failed to write config file");
+
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &[
+            "--config",
+            invalid_sysext_config_path.to_str().unwrap(),
+            "ext",
+            "merge",
+        ],
+        &[],
+    );
+
+    // Should fail with configuration error
+    assert!(
+        !output.status.success(),
+        "ext merge should fail with invalid sysext mutable config"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid sysext mutable configuration"),
+        "Should show invalid sysext mutable configuration error message"
+    );
+
+    // Test with invalid confext mutable value
+    let invalid_confext_config_path = temp_dir.path().join("invalid_confext_config.toml");
+    let invalid_confext_config_content = r#"
+[avocado.ext]
+dir = "/tmp/test_extensions"
+sysext_mutable = "yes"
+confext_mutable = "invalid_value"
+"#;
+    fs::write(&invalid_confext_config_path, invalid_confext_config_content)
+        .expect("Failed to write config file");
+
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &[
+            "--config",
+            invalid_confext_config_path.to_str().unwrap(),
+            "ext",
+            "merge",
+        ],
+        &[],
+    );
+
+    // Should fail with configuration error
+    assert!(
+        !output.status.success(),
+        "ext merge should fail with invalid confext mutable config"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Invalid confext mutable configuration"),
+        "Should show invalid confext mutable configuration error message"
+    );
+}
+
 /// Test ext merge command with mock systemd binaries
 #[test]
 fn test_ext_merge_with_mocks() {
@@ -1976,10 +2142,25 @@ fn test_disable_all_then_refresh() {
     );
 
     // The os-releases directory should still exist but be empty, so base directory should still be skipped
-    let os_releases_dir = temp_dir.path().join("avocado/os-releases/24.04");
+    // Read the actual VERSION_ID from the system to make the test environment-agnostic
+    let os_release_content = std::fs::read_to_string("/etc/os-release").unwrap_or_default();
+    let version_id = os_release_content
+        .lines()
+        .find(|line| line.starts_with("VERSION_ID="))
+        .map(|line| {
+            line.trim_start_matches("VERSION_ID=")
+                .trim_matches('"')
+                .trim_matches('\'')
+        })
+        .unwrap_or("unknown");
+
+    let os_releases_dir = temp_dir
+        .path()
+        .join(format!("avocado/os-releases/{}", version_id));
     assert!(
         os_releases_dir.exists(),
-        "OS releases directory should still exist"
+        "OS releases directory should still exist at: {}",
+        os_releases_dir.display()
     );
 
     // Verify no symlinks exist after refresh

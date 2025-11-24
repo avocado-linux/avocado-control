@@ -24,6 +24,13 @@ pub struct AvocadoConfig {
 pub struct ExtConfig {
     /// Directory where extensions are stored
     pub dir: String,
+    /// Mutability mode for system extensions - sysext (/usr, /opt)
+    pub sysext_mutable: Option<String>,
+    /// Mutability mode for configuration extensions - confext (/etc)
+    pub confext_mutable: Option<String>,
+    /// Legacy mutable option (deprecated, use sysext_mutable and confext_mutable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mutable: Option<String>,
 }
 
 impl Default for Config {
@@ -32,6 +39,9 @@ impl Default for Config {
             avocado: AvocadoConfig {
                 ext: ExtConfig {
                     dir: "/var/lib/avocado/extensions".to_string(),
+                    sysext_mutable: None,
+                    confext_mutable: None,
+                    mutable: None,
                 },
             },
         }
@@ -71,6 +81,56 @@ impl Config {
     pub fn get_extensions_dir(&self) -> String {
         // Environment variable takes precedence (for testing)
         std::env::var("AVOCADO_EXTENSIONS_PATH").unwrap_or_else(|_| self.avocado.ext.dir.clone())
+    }
+
+    /// Get the sysext mutable mode, defaulting to "ephemeral" if not set
+    /// Validates that the value is one of the supported systemd options
+    pub fn get_sysext_mutable(&self) -> Result<String, ConfigError> {
+        // Priority: sysext_mutable > legacy mutable > default
+        let value = self
+            .avocado
+            .ext
+            .sysext_mutable
+            .as_ref()
+            .or(self.avocado.ext.mutable.as_ref())
+            .unwrap_or(&"ephemeral".to_string())
+            .clone();
+
+        // Validate against supported systemd options
+        match value.as_str() {
+            "no" | "auto" | "yes" | "import" | "ephemeral" | "ephemeral-import" => Ok(value),
+            _ => Err(ConfigError::InvalidMutableValue { value }),
+        }
+    }
+
+    /// Get the confext mutable mode, defaulting to "ephemeral" if not set
+    /// Validates that the value is one of the supported systemd options
+    pub fn get_confext_mutable(&self) -> Result<String, ConfigError> {
+        // Priority: confext_mutable > legacy mutable > default
+        let value = self
+            .avocado
+            .ext
+            .confext_mutable
+            .as_ref()
+            .or(self.avocado.ext.mutable.as_ref())
+            .unwrap_or(&"ephemeral".to_string())
+            .clone();
+
+        // Validate against supported systemd options
+        match value.as_str() {
+            "no" | "auto" | "yes" | "import" | "ephemeral" | "ephemeral-import" => Ok(value),
+            _ => Err(ConfigError::InvalidMutableValue { value }),
+        }
+    }
+
+    /// Legacy method for backward compatibility
+    /// Get the extension mutable mode, defaulting to "ephemeral" if not set
+    /// Validates that the value is one of the supported systemd options
+    #[deprecated(note = "Use get_sysext_mutable() and get_confext_mutable() instead")]
+    #[allow(dead_code)]
+    pub fn get_extension_mutable(&self) -> Result<String, ConfigError> {
+        // For backward compatibility, return sysext_mutable if available, otherwise legacy mutable
+        self.get_sysext_mutable()
     }
 
     /// Save configuration to file (mainly for testing)
@@ -121,6 +181,9 @@ pub enum ConfigError {
 
     #[error("Failed to serialize config: {source}")]
     Serialize { source: toml::ser::Error },
+
+    #[error("Invalid mutable value '{value}'. Must be one of: no, auto, yes, import, ephemeral, ephemeral-import")]
+    InvalidMutableValue { value: String },
 }
 
 #[cfg(test)]
@@ -198,6 +261,237 @@ dir = "/custom/extensions/path"
 
         // Clean up
         std::env::remove_var("AVOCADO_EXTENSIONS_PATH");
+    }
+
+    #[test]
+    fn test_get_sysext_mutable() {
+        // Test default value
+        let config = Config::default();
+        assert_eq!(config.get_sysext_mutable().unwrap(), "ephemeral");
+
+        // Test with valid custom values
+        let valid_values = [
+            "no",
+            "auto",
+            "yes",
+            "import",
+            "ephemeral",
+            "ephemeral-import",
+        ];
+        for value in valid_values {
+            let mut config = Config::default();
+            config.avocado.ext.sysext_mutable = Some(value.to_string());
+            assert_eq!(config.get_sysext_mutable().unwrap(), value);
+        }
+
+        // Test with invalid value
+        let mut config = Config::default();
+        config.avocado.ext.sysext_mutable = Some("invalid".to_string());
+        assert!(config.get_sysext_mutable().is_err());
+    }
+
+    #[test]
+    fn test_get_confext_mutable() {
+        // Test default value
+        let config = Config::default();
+        assert_eq!(config.get_confext_mutable().unwrap(), "ephemeral");
+
+        // Test with valid custom values
+        let valid_values = [
+            "no",
+            "auto",
+            "yes",
+            "import",
+            "ephemeral",
+            "ephemeral-import",
+        ];
+        for value in valid_values {
+            let mut config = Config::default();
+            config.avocado.ext.confext_mutable = Some(value.to_string());
+            assert_eq!(config.get_confext_mutable().unwrap(), value);
+        }
+
+        // Test with invalid value
+        let mut config = Config::default();
+        config.avocado.ext.confext_mutable = Some("invalid".to_string());
+        assert!(config.get_confext_mutable().is_err());
+    }
+
+    #[test]
+    fn test_backward_compatibility_mutable() {
+        // Test that legacy mutable option works for both sysext and confext
+        let mut config = Config::default();
+        config.avocado.ext.mutable = Some("yes".to_string());
+
+        // Both should fall back to legacy mutable value
+        assert_eq!(config.get_sysext_mutable().unwrap(), "yes");
+        assert_eq!(config.get_confext_mutable().unwrap(), "yes");
+
+        // Test priority: specific options override legacy
+        config.avocado.ext.sysext_mutable = Some("auto".to_string());
+        config.avocado.ext.confext_mutable = Some("no".to_string());
+
+        assert_eq!(config.get_sysext_mutable().unwrap(), "auto");
+        assert_eq!(config.get_confext_mutable().unwrap(), "no");
+    }
+
+    #[test]
+    fn test_get_extension_mutable() {
+        // Test legacy method for backward compatibility
+        let config = Config::default();
+        #[allow(deprecated)]
+        {
+            assert_eq!(config.get_extension_mutable().unwrap(), "ephemeral");
+        }
+
+        // Test with valid custom values
+        let valid_values = [
+            "no",
+            "auto",
+            "yes",
+            "import",
+            "ephemeral",
+            "ephemeral-import",
+        ];
+        for value in valid_values {
+            let mut config = Config::default();
+            config.avocado.ext.mutable = Some(value.to_string());
+            #[allow(deprecated)]
+            {
+                assert_eq!(config.get_extension_mutable().unwrap(), value);
+            }
+        }
+
+        // Test with invalid value
+        let mut config = Config::default();
+        config.avocado.ext.mutable = Some("invalid".to_string());
+        #[allow(deprecated)]
+        {
+            assert!(config.get_extension_mutable().is_err());
+        }
+    }
+
+    #[test]
+    fn test_load_config_with_separate_mutable_options() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("separate_mutable_test.toml");
+
+        let config_content = r#"
+[avocado.ext]
+dir = "/test/extensions"
+sysext_mutable = "yes"
+confext_mutable = "auto"
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert_eq!(config.avocado.ext.dir, "/test/extensions");
+        assert_eq!(config.get_sysext_mutable().unwrap(), "yes");
+        assert_eq!(config.get_confext_mutable().unwrap(), "auto");
+    }
+
+    #[test]
+    fn test_load_config_with_mutable_option() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("mutable_test.toml");
+
+        let config_content = r#"
+[avocado.ext]
+dir = "/test/extensions"
+mutable = "yes"
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert_eq!(config.avocado.ext.dir, "/test/extensions");
+        #[allow(deprecated)]
+        {
+            assert_eq!(config.get_extension_mutable().unwrap(), "yes");
+        }
+        // Legacy mutable should apply to both
+        assert_eq!(config.get_sysext_mutable().unwrap(), "yes");
+        assert_eq!(config.get_confext_mutable().unwrap(), "yes");
+    }
+
+    #[test]
+    fn test_save_and_load_config_with_separate_mutable() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir
+            .path()
+            .join("roundtrip_separate_mutable_config.toml");
+
+        let mut config = Config::default();
+        config.avocado.ext.dir = "/test/extensions".to_string();
+        config.avocado.ext.sysext_mutable = Some("auto".to_string());
+        config.avocado.ext.confext_mutable = Some("yes".to_string());
+
+        config.save(&config_path).unwrap();
+
+        let loaded_config = Config::load(&config_path).unwrap();
+        assert_eq!(loaded_config.avocado.ext.dir, "/test/extensions");
+        assert_eq!(loaded_config.get_sysext_mutable().unwrap(), "auto");
+        assert_eq!(loaded_config.get_confext_mutable().unwrap(), "yes");
+    }
+
+    #[test]
+    fn test_save_and_load_config_with_mutable() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("roundtrip_mutable_config.toml");
+
+        let mut config = Config::default();
+        config.avocado.ext.dir = "/test/extensions".to_string();
+        config.avocado.ext.mutable = Some("auto".to_string());
+
+        config.save(&config_path).unwrap();
+
+        let loaded_config = Config::load(&config_path).unwrap();
+        assert_eq!(loaded_config.avocado.ext.dir, "/test/extensions");
+        #[allow(deprecated)]
+        {
+            assert_eq!(loaded_config.get_extension_mutable().unwrap(), "auto");
+        }
+    }
+
+    #[test]
+    fn test_mutable_validation_error_message() {
+        // Test sysext validation error
+        let mut config = Config::default();
+        config.avocado.ext.sysext_mutable = Some("invalid_value".to_string());
+
+        let result = config.get_sysext_mutable();
+        assert!(result.is_err());
+
+        let error_message = result.unwrap_err().to_string();
+        assert!(error_message.contains("Invalid mutable value 'invalid_value'"));
+        assert!(error_message
+            .contains("Must be one of: no, auto, yes, import, ephemeral, ephemeral-import"));
+
+        // Test confext validation error
+        let mut config = Config::default();
+        config.avocado.ext.confext_mutable = Some("invalid_value".to_string());
+
+        let result = config.get_confext_mutable();
+        assert!(result.is_err());
+
+        let error_message = result.unwrap_err().to_string();
+        assert!(error_message.contains("Invalid mutable value 'invalid_value'"));
+        assert!(error_message
+            .contains("Must be one of: no, auto, yes, import, ephemeral, ephemeral-import"));
+
+        // Test legacy validation error
+        let mut config = Config::default();
+        config.avocado.ext.mutable = Some("invalid_value".to_string());
+
+        #[allow(deprecated)]
+        let result = config.get_extension_mutable();
+        assert!(result.is_err());
+
+        let error_message = result.unwrap_err().to_string();
+        assert!(error_message.contains("Invalid mutable value 'invalid_value'"));
+        assert!(error_message
+            .contains("Must be one of: no, auto, yes, import, ephemeral, ephemeral-import"));
     }
 
     #[test]

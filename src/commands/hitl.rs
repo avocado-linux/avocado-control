@@ -136,7 +136,8 @@ fn mount_extensions(matches: &ArgMatches, output: &OutputManager) {
             "HITL Mount",
             "Refreshing extensions to apply mounted changes",
         );
-        ext::refresh_extensions(output);
+        let config = crate::config::Config::default();
+        ext::refresh_extensions(&config, output);
     } else {
         output.error("HITL Mount", "Some extensions failed to mount");
         std::process::exit(1);
@@ -263,7 +264,8 @@ fn unmount_extensions(matches: &ArgMatches, output: &OutputManager) {
         output.success("HITL Unmount", "All extensions unmounted successfully");
         output.info("HITL Unmount", "Refreshing extensions to apply changes");
         // Step 3: Merge remaining extensions
-        ext::merge_extensions(output);
+        let config = crate::config::Config::default();
+        ext::merge_extensions(&config, output);
     } else {
         output.error("HITL Unmount", "Some extensions failed to unmount");
         std::process::exit(1);
