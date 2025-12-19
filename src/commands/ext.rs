@@ -1677,6 +1677,7 @@ fn scan_raw_files(dir_path: &str) -> Result<Vec<(String, Option<String>, PathBuf
 fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, SystemdError> {
     let mut is_sysext = false;
     let mut is_confext = false;
+    let mut detected_version: Option<String> = None;
 
     // Look for extension-release files - try both versioned and non-versioned names
     // First try non-versioned (backward compatibility)
@@ -1697,9 +1698,17 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
                 for entry in entries.flatten() {
                     let filename = entry.file_name();
                     let filename_str = filename.to_string_lossy();
+                    let prefix = format!("extension-release.{name}-");
                     // Check if filename starts with "extension-release.{name}-"
-                    if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                    if filename_str.starts_with(&prefix) {
                         is_sysext = true;
+                        // Extract the version from the filename
+                        if detected_version.is_none() {
+                            let version = filename_str.strip_prefix(&prefix).unwrap_or("");
+                            if !version.is_empty() {
+                                detected_version = Some(version.to_string());
+                            }
+                        }
                         break;
                     }
                 }
@@ -1717,9 +1726,17 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
                 for entry in entries.flatten() {
                     let filename = entry.file_name();
                     let filename_str = filename.to_string_lossy();
+                    let prefix = format!("extension-release.{name}-");
                     // Check if filename starts with "extension-release.{name}-"
-                    if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                    if filename_str.starts_with(&prefix) {
                         is_confext = true;
+                        // Extract the version from the filename (if not already detected from sysext)
+                        if detected_version.is_none() {
+                            let version = filename_str.strip_prefix(&prefix).unwrap_or("");
+                            if !version.is_empty() {
+                                detected_version = Some(version.to_string());
+                            }
+                        }
                         break;
                     }
                 }
@@ -1733,22 +1750,29 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
         is_confext = true;
     }
 
+    // For scope checking, we need to use the versioned name if a version was detected
+    let scope_check_name = if let Some(ref ver) = detected_version {
+        format!("{name}-{ver}")
+    } else {
+        name.to_string()
+    };
+
     // Check scope requirements for current environment (initrd vs system)
     let sysext_enabled = if is_sysext {
-        is_sysext_enabled_for_current_environment(path, name)
+        is_sysext_enabled_for_current_environment(path, &scope_check_name)
     } else {
         false
     };
 
     let confext_enabled = if is_confext {
-        is_confext_enabled_for_current_environment(path, name)
+        is_confext_enabled_for_current_environment(path, &scope_check_name)
     } else {
         false
     };
 
     Ok(Extension {
         name: name.to_string(),
-        version: None, // Directory extensions don't have versions in their names
+        version: detected_version, // Use version extracted from release file name
         path: path.to_path_buf(),
         is_sysext: sysext_enabled,
         is_confext: confext_enabled,
