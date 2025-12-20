@@ -2467,6 +2467,93 @@ fn scan_extension_release_files(
     Ok(())
 }
 
+/// Scan extension release files for AVOCADO_ENABLE_SERVICES
+/// This is used by HITL to determine which services need mount dependencies
+pub fn scan_extension_for_enable_services(
+    extension_path: &Path,
+    extension_name: &str,
+) -> Vec<String> {
+    let mut services = Vec::new();
+
+    // Check for sysext release file - try both versioned and non-versioned
+    let sysext_release_path = extension_path
+        .join("usr/lib/extension-release.d")
+        .join(format!("extension-release.{}", extension_name));
+
+    if sysext_release_path.exists() {
+        if let Ok(content) = fs::read_to_string(&sysext_release_path) {
+            let mut svc = parse_avocado_enable_services(&content);
+            for s in svc.drain(..) {
+                if !services.contains(&s) {
+                    services.push(s);
+                }
+            }
+        }
+    } else {
+        // Try to find versioned release file
+        let sysext_dir = extension_path.join("usr/lib/extension-release.d");
+        if sysext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&sysext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    if filename_str.starts_with(&format!("extension-release.{}-", extension_name)) {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            let mut svc = parse_avocado_enable_services(&content);
+                            for s in svc.drain(..) {
+                                if !services.contains(&s) {
+                                    services.push(s);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Check for confext release file - try both versioned and non-versioned
+    let confext_release_path = extension_path
+        .join("etc/extension-release.d")
+        .join(format!("extension-release.{}", extension_name));
+
+    if confext_release_path.exists() {
+        if let Ok(content) = fs::read_to_string(&confext_release_path) {
+            let mut svc = parse_avocado_enable_services(&content);
+            for s in svc.drain(..) {
+                if !services.contains(&s) {
+                    services.push(s);
+                }
+            }
+        }
+    } else {
+        // Try to find versioned release file
+        let confext_dir = extension_path.join("etc/extension-release.d");
+        if confext_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&confext_dir) {
+                for entry in entries.flatten() {
+                    let filename = entry.file_name();
+                    let filename_str = filename.to_string_lossy();
+                    if filename_str.starts_with(&format!("extension-release.{}-", extension_name)) {
+                        if let Ok(content) = fs::read_to_string(entry.path()) {
+                            let mut svc = parse_avocado_enable_services(&content);
+                            for s in svc.drain(..) {
+                                if !services.contains(&s) {
+                                    services.push(s);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    services
+}
+
 /// Scan a directory for release files (used in test mode)
 fn scan_directory_for_release_files(
     release_dir: &str,
@@ -2577,6 +2664,33 @@ fn parse_avocado_modprobe(content: &str) -> Vec<String> {
     }
 
     modules
+}
+
+/// Parse AVOCADO_ENABLE_SERVICES from release file content
+/// Returns a list of systemd service unit names that should depend on the extension's mount
+pub fn parse_avocado_enable_services(content: &str) -> Vec<String> {
+    let mut services = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("AVOCADO_ENABLE_SERVICES=") {
+            let value = line
+                .split_once('=')
+                .map(|x| x.1)
+                .unwrap_or("")
+                .trim_matches('"')
+                .trim();
+
+            // Parse space-separated list of services
+            for service in value.split_whitespace() {
+                if !service.is_empty() && !services.contains(&service.to_string()) {
+                    services.push(service.to_string());
+                }
+            }
+        }
+    }
+
+    services
 }
 
 /// Run the depmod command
@@ -3173,6 +3287,74 @@ AVOCADO_ON_MERGE="single-command --arg"
                 "single-command --arg"
             ]
         );
+    }
+
+    #[test]
+    fn test_parse_avocado_enable_services() {
+        // Test case with multiple services
+        let content_with_services = r#"
+VERSION_ID=1.0
+AVOCADO_ENABLE_SERVICES="nginx.service prometheus.service"
+OTHER_KEY=value
+"#;
+        let services = parse_avocado_enable_services(content_with_services);
+        assert_eq!(services, vec!["nginx.service", "prometheus.service"]);
+
+        // Test case with services without .service suffix
+        let content_short_names = r#"
+VERSION_ID=1.0
+AVOCADO_ENABLE_SERVICES="nginx prometheus redis"
+OTHER_KEY=value
+"#;
+        let services = parse_avocado_enable_services(content_short_names);
+        assert_eq!(services, vec!["nginx", "prometheus", "redis"]);
+
+        // Test case with no AVOCADO_ENABLE_SERVICES
+        let content_no_services = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=depmod
+OTHER_KEY=value
+"#;
+        let services = parse_avocado_enable_services(content_no_services);
+        assert!(services.is_empty());
+
+        // Test case with empty AVOCADO_ENABLE_SERVICES
+        let content_empty_services = r#"
+VERSION_ID=1.0
+AVOCADO_ENABLE_SERVICES=""
+OTHER_KEY=value
+"#;
+        let services = parse_avocado_enable_services(content_empty_services);
+        assert!(services.is_empty());
+
+        // Test case with extra whitespace
+        let content_with_whitespace = r#"
+VERSION_ID=1.0
+AVOCADO_ENABLE_SERVICES="  nginx   redis  "
+OTHER_KEY=value
+"#;
+        let services = parse_avocado_enable_services(content_with_whitespace);
+        assert_eq!(services, vec!["nginx", "redis"]);
+
+        // Test case with multiple AVOCADO_ENABLE_SERVICES lines (all should be processed)
+        let content_multiple_lines = r#"
+VERSION_ID=1.0
+AVOCADO_ENABLE_SERVICES="nginx prometheus"
+AVOCADO_ENABLE_SERVICES="redis"
+OTHER_KEY=value
+"#;
+        let services = parse_avocado_enable_services(content_multiple_lines);
+        assert_eq!(services, vec!["nginx", "prometheus", "redis"]);
+
+        // Test case with duplicates (should be deduplicated)
+        let content_with_duplicates = r#"
+VERSION_ID=1.0
+AVOCADO_ENABLE_SERVICES="nginx redis"
+AVOCADO_ENABLE_SERVICES="nginx worker"
+OTHER_KEY=value
+"#;
+        let services = parse_avocado_enable_services(content_with_duplicates);
+        assert_eq!(services, vec!["nginx", "redis", "worker"]);
     }
 
     #[test]

@@ -1,0 +1,6 @@
+ID=extension-release.multi-services
+VERSION_ID=2.0
+DESCRIPTION="Extension with Multiple Service Lines"
+AVOCADO_ENABLE_SERVICES="app-server"
+AVOCADO_ENABLE_SERVICES="database worker"
+AVOCADO_ON_MERGE=depmod

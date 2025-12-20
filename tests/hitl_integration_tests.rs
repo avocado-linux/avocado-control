@@ -500,3 +500,142 @@ exit 1
         "Extension directory should be cleaned up after mount failure"
     );
 }
+
+/// Test that HITL mount creates service drop-ins when extension has AVOCADO_ENABLE_SERVICES
+#[test]
+fn test_hitl_mount_creates_service_dropins() {
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    // Create a temporary directory
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+
+    // Create extension directory with metadata containing AVOCADO_ENABLE_SERVICES
+    let extension_dir = temp_dir.path().join("avocado/hitl/test-ext");
+    let release_dir = extension_dir.join("usr/lib/extension-release.d");
+    std::fs::create_dir_all(&release_dir).expect("Failed to create release directory");
+
+    let release_file = release_dir.join("extension-release.test-ext");
+    std::fs::write(
+        &release_file,
+        r#"ID=extension-release.test-ext
+VERSION_ID=1.0
+DESCRIPTION="Test Extension with Services"
+AVOCADO_ENABLE_SERVICES="nginx prometheus"
+"#,
+    )
+    .expect("Failed to write release file");
+
+    // Run a mock mount that just succeeds (the directory is already created)
+    let output = run_avocadoctl_with_env(
+        &["hitl", "mount", "-s", "10.0.2.2", "-e", "test-ext", "--verbose"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            ("TMPDIR", &temp_dir.path().to_string_lossy()),
+        ],
+    );
+
+    assert!(output.status.success(), "Hitl mount should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Found 2 enabled service(s)"),
+        "Should detect enabled services. Got: {stdout}"
+    );
+    assert!(
+        stdout.contains("nginx") && stdout.contains("prometheus"),
+        "Should list the services. Got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Created drop-in"),
+        "Should create drop-ins. Got: {stdout}"
+    );
+
+    // Verify drop-in files were created
+    let systemd_dir = temp_dir.path().join("run/systemd/system");
+    let nginx_dropin = systemd_dir.join("nginx.service.d/10-hitl-test-ext.conf");
+    let prometheus_dropin = systemd_dir.join("prometheus.service.d/10-hitl-test-ext.conf");
+
+    assert!(
+        nginx_dropin.exists(),
+        "Nginx drop-in should exist at {nginx_dropin:?}"
+    );
+    assert!(
+        prometheus_dropin.exists(),
+        "Prometheus drop-in should exist at {prometheus_dropin:?}"
+    );
+
+    // Verify drop-in content
+    let nginx_content = std::fs::read_to_string(&nginx_dropin).expect("Failed to read nginx drop-in");
+    assert!(nginx_content.contains("[Unit]"), "Drop-in should have [Unit] section");
+    assert!(
+        nginx_content.contains("RequiresMountsFor="),
+        "Drop-in should have RequiresMountsFor"
+    );
+    assert!(nginx_content.contains("BindsTo="), "Drop-in should have BindsTo");
+    assert!(nginx_content.contains("After="), "Drop-in should have After");
+}
+
+/// Test that HITL unmount cleans up service drop-ins
+#[test]
+fn test_hitl_unmount_cleans_service_dropins() {
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    // Create a temporary directory
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+
+    // Create extension directory with metadata
+    let extension_dir = temp_dir.path().join("avocado/hitl/cleanup-ext");
+    let release_dir = extension_dir.join("usr/lib/extension-release.d");
+    std::fs::create_dir_all(&release_dir).expect("Failed to create release directory");
+
+    let release_file = release_dir.join("extension-release.cleanup-ext");
+    std::fs::write(
+        &release_file,
+        r#"ID=extension-release.cleanup-ext
+VERSION_ID=1.0
+AVOCADO_ENABLE_SERVICES="redis"
+"#,
+    )
+    .expect("Failed to write release file");
+
+    // Pre-create the drop-in file to simulate a previous mount
+    let systemd_dir = temp_dir.path().join("run/systemd/system");
+    let dropin_dir = systemd_dir.join("redis.service.d");
+    std::fs::create_dir_all(&dropin_dir).expect("Failed to create drop-in directory");
+    let dropin_file = dropin_dir.join("10-hitl-cleanup-ext.conf");
+    std::fs::write(&dropin_file, "[Unit]\nRequiresMountsFor=/run/avocado/hitl/cleanup-ext\n")
+        .expect("Failed to write drop-in");
+
+    assert!(dropin_file.exists(), "Drop-in should exist before unmount");
+
+    // Run unmount
+    let output = run_avocadoctl_with_env(
+        &["hitl", "unmount", "-e", "cleanup-ext", "--verbose"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            ("TMPDIR", &temp_dir.path().to_string_lossy()),
+        ],
+    );
+
+    assert!(output.status.success(), "Hitl unmount should succeed");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Removed drop-in"),
+        "Should remove drop-ins. Got: {stdout}"
+    );
+
+    // Verify drop-in file was removed
+    assert!(
+        !dropin_file.exists(),
+        "Drop-in file should be removed after unmount"
+    );
+}

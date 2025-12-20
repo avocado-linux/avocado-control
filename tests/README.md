@@ -123,6 +123,8 @@ The `tests/fixtures/extension-release.d/` directory contains sample extension re
 - `extension-release.utils`: Contains `AVOCADO_ON_MERGE=other_command` to test non-depmod values
 - `extension-release.gpu-driver`: Contains both `AVOCADO_ON_MERGE=depmod` and `AVOCADO_MODPROBE="nvidia i915 radeon"` to test combined functionality
 - `extension-release.sound-driver`: Contains `AVOCADO_MODPROBE=snd_hda_intel` to test single module loading
+- `extension-release.hitl-services`: Contains `AVOCADO_ENABLE_SERVICES="nginx.service prometheus.service"` to test service dependency creation
+- `extension-release.multi-services`: Contains multiple `AVOCADO_ENABLE_SERVICES` lines to test service accumulation
 
 Use the `AVOCADO_EXTENSION_RELEASE_DIR` environment variable to override the default `/usr/lib/extension-release.d` path for testing.
 
@@ -133,6 +135,15 @@ The HITL (Hardware-in-the-loop) testing functionality allows mounting remote NFS
 - Creates directories in the extensions path (configurable via `AVOCADO_EXTENSIONS_PATH`)
 - Supports multiple extensions with customizable server IP and port
 - Tests verify proper directory creation and mount command execution
+
+#### HITL Service Dependencies
+
+When HITL mounts an extension over NFS, the extension's release file may contain `AVOCADO_ENABLE_SERVICES` to declare services that depend on the mount:
+- **Format**: `AVOCADO_ENABLE_SERVICES="service1 service2 service3.service"` (space-separated list)
+- **Drop-in creation**: Creates systemd drop-in files at `/run/systemd/system/<service>.d/10-hitl-<extension>.conf`
+- **Dependencies**: Drop-ins add `RequiresMountsFor=`, `BindsTo=`, and `After=` directives to ensure proper shutdown ordering
+- **Cleanup**: Drop-ins are automatically removed when the HITL extension is unmounted
+- **Purpose**: Ensures services are stopped before NFS mounts are unmounted during system shutdown
 
 #### depmod Behavior
 

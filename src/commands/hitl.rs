@@ -127,10 +127,43 @@ fn mount_extensions(matches: &ArgMatches, output: &OutputManager) {
             continue;
         }
 
+        // Scan for enabled services and create drop-ins
+        let enabled_services =
+            ext::scan_extension_for_enable_services(Path::new(&extension_dir), extension);
+        if !enabled_services.is_empty() {
+            output.info(
+                "HITL Mount",
+                &format!(
+                    "Found {} enabled service(s) in extension {}: {}",
+                    enabled_services.len(),
+                    extension,
+                    enabled_services.join(", ")
+                ),
+            );
+            if let Err(e) =
+                create_service_dropins(extension, &extension_dir, &enabled_services, output)
+            {
+                output.error(
+                    "HITL Mount",
+                    &format!("Failed to create service drop-ins for {extension}: {e}"),
+                );
+                // Continue even if drop-in creation fails - the mount still succeeded
+            }
+        }
+
         output.progress(&format!("Successfully mounted extension: {extension}"));
     }
 
     if success {
+        // Reload systemd to apply any drop-in changes
+        if let Err(e) = systemd_daemon_reload(output) {
+            output.error(
+                "HITL Mount",
+                &format!("Failed to reload systemd daemon: {e}"),
+            );
+            // Continue even if daemon-reload fails
+        }
+
         output.success("HITL Mount", "All extensions mounted successfully");
         output.info(
             "HITL Mount",
@@ -215,10 +248,6 @@ fn unmount_extensions(matches: &ArgMatches, output: &OutputManager) {
         &format!("Unmounting {} extension(s)", extensions.len()),
     );
 
-    // Step 1: Unmerge extensions first
-    output.step("HITL Unmount", "Unmerging extensions");
-    ext::unmerge_extensions(false, output);
-
     let extensions_base_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/avocado/hitl")
@@ -226,9 +255,55 @@ fn unmount_extensions(matches: &ArgMatches, output: &OutputManager) {
         "/run/avocado/hitl".to_string()
     };
 
+    // Step 1: Scan for enabled services before unmerging (while mounts are still accessible)
+    let mut extension_services: Vec<(String, Vec<String>)> = Vec::new();
+    for extension in &extensions {
+        let extension_dir = format!("{extensions_base_dir}/{extension}");
+        let enabled_services =
+            ext::scan_extension_for_enable_services(Path::new(&extension_dir), extension);
+        if !enabled_services.is_empty() {
+            output.info(
+                "HITL Unmount",
+                &format!(
+                    "Found {} enabled service(s) in extension {}: {}",
+                    enabled_services.len(),
+                    extension,
+                    enabled_services.join(", ")
+                ),
+            );
+            extension_services.push((extension.to_string(), enabled_services));
+        }
+    }
+
+    // Step 2: Unmerge extensions first
+    output.step("HITL Unmount", "Unmerging extensions");
+    ext::unmerge_extensions(false, output);
+
+    // Step 3: Clean up service drop-ins
+    for (extension, services) in &extension_services {
+        if let Err(e) = cleanup_service_dropins(extension, services, output) {
+            output.error(
+                "HITL Unmount",
+                &format!("Failed to cleanup service drop-ins for {extension}: {e}"),
+            );
+            // Continue even if drop-in cleanup fails
+        }
+    }
+
+    // Step 4: Reload systemd to apply drop-in removals
+    if !extension_services.is_empty() {
+        if let Err(e) = systemd_daemon_reload(output) {
+            output.error(
+                "HITL Unmount",
+                &format!("Failed to reload systemd daemon: {e}"),
+            );
+            // Continue even if daemon-reload fails
+        }
+    }
+
     let mut success = true;
 
-    // Step 2: Unmount NFS shares and clean up directories
+    // Step 5: Unmount NFS shares and clean up directories
     for extension in &extensions {
         output.step(
             "HITL Unmount",
@@ -263,7 +338,7 @@ fn unmount_extensions(matches: &ArgMatches, output: &OutputManager) {
     if success {
         output.success("HITL Unmount", "All extensions unmounted successfully");
         output.info("HITL Unmount", "Refreshing extensions to apply changes");
-        // Step 3: Merge remaining extensions
+        // Step 6: Merge remaining extensions
         let config = crate::config::Config::default();
         ext::merge_extensions(&config, output);
     } else {
@@ -324,6 +399,185 @@ fn cleanup_extension_directory(
     Ok(())
 }
 
+/// Convert a mount path to a systemd mount unit name
+/// e.g., /run/avocado/hitl/my-ext -> run-avocado-hitl-my\x2dext.mount
+fn systemd_escape_mount_path(path: &str) -> String {
+    // Remove leading slash and replace / with -
+    let without_leading_slash = path.trim_start_matches('/');
+    // Escape dashes in path components (except separators)
+    // Systemd mount unit names simply replace / with -
+    // No escaping of dashes within path components is needed
+    let escaped = without_leading_slash.replace('/', "-");
+    format!("{escaped}.mount")
+}
+
+/// Create systemd drop-in files for services that depend on the HITL mount
+/// This ensures services are stopped before the NFS mount is unmounted during shutdown
+pub fn create_service_dropins(
+    extension: &str,
+    mount_point: &str,
+    services: &[String],
+    output: &OutputManager,
+) -> Result<(), HitlError> {
+    if services.is_empty() {
+        return Ok(());
+    }
+
+    let mount_unit = systemd_escape_mount_path(mount_point);
+    output.step(
+        "Service Dependencies",
+        &format!(
+            "Creating drop-ins for {} service(s) to depend on {}",
+            services.len(),
+            mount_unit
+        ),
+    );
+
+    // Determine the base directory for drop-ins
+    let systemd_run_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/run/systemd/system")
+    } else {
+        "/run/systemd/system".to_string()
+    };
+
+    for service in services {
+        // Ensure service name ends with .service
+        let service_unit = if service.ends_with(".service") {
+            service.clone()
+        } else {
+            format!("{service}.service")
+        };
+
+        let dropin_dir = format!("{systemd_run_dir}/{service_unit}.d");
+        let dropin_file = format!("{dropin_dir}/10-hitl-{extension}.conf");
+
+        // Create the drop-in directory
+        if let Err(e) = fs::create_dir_all(&dropin_dir) {
+            output.error(
+                "Service Dependencies",
+                &format!("Failed to create drop-in directory {dropin_dir}: {e}"),
+            );
+            continue;
+        }
+
+        // Create the drop-in content
+        let dropin_content = format!(
+            "# Auto-generated by avocadoctl hitl mount for extension: {extension}\n\
+            [Unit]\n\
+            RequiresMountsFor={mount_point}\n\
+            BindsTo={mount_unit}\n\
+            After={mount_unit}\n"
+        );
+
+        // Write the drop-in file
+        if let Err(e) = fs::write(&dropin_file, &dropin_content) {
+            output.error(
+                "Service Dependencies",
+                &format!("Failed to write drop-in file {dropin_file}: {e}"),
+            );
+            continue;
+        }
+
+        output.progress(&format!("Created drop-in: {dropin_file}"));
+    }
+
+    Ok(())
+}
+
+/// Clean up systemd drop-in files for services when unmounting HITL extensions
+pub fn cleanup_service_dropins(
+    extension: &str,
+    services: &[String],
+    output: &OutputManager,
+) -> Result<(), HitlError> {
+    if services.is_empty() {
+        return Ok(());
+    }
+
+    output.step(
+        "Service Dependencies",
+        &format!(
+            "Removing drop-ins for {} service(s) from extension {}",
+            services.len(),
+            extension
+        ),
+    );
+
+    // Determine the base directory for drop-ins
+    let systemd_run_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/run/systemd/system")
+    } else {
+        "/run/systemd/system".to_string()
+    };
+
+    for service in services {
+        // Ensure service name ends with .service
+        let service_unit = if service.ends_with(".service") {
+            service.clone()
+        } else {
+            format!("{service}.service")
+        };
+
+        let dropin_dir = format!("{systemd_run_dir}/{service_unit}.d");
+        let dropin_file = format!("{dropin_dir}/10-hitl-{extension}.conf");
+
+        // Remove the drop-in file if it exists
+        if Path::new(&dropin_file).exists() {
+            if let Err(e) = fs::remove_file(&dropin_file) {
+                output.error(
+                    "Service Dependencies",
+                    &format!("Failed to remove drop-in file {dropin_file}: {e}"),
+                );
+                continue;
+            }
+            output.progress(&format!("Removed drop-in: {dropin_file}"));
+
+            // Try to remove the drop-in directory if it's empty
+            if let Ok(entries) = fs::read_dir(&dropin_dir) {
+                if entries.count() == 0 {
+                    let _ = fs::remove_dir(&dropin_dir);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Call systemctl daemon-reload to apply drop-in changes
+pub fn systemd_daemon_reload(output: &OutputManager) -> Result<(), HitlError> {
+    // Skip daemon-reload in test mode
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        output.progress("Skipping daemon-reload in test mode");
+        return Ok(());
+    }
+
+    output.step("Systemd", "Reloading systemd daemon to apply drop-in changes");
+
+    let result = ProcessCommand::new("systemctl")
+        .arg("daemon-reload")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| HitlError::Command {
+            command: "systemctl daemon-reload".to_string(),
+            source: e,
+        })?;
+
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
+        output.error("Systemd", &format!("daemon-reload failed: {stderr}"));
+        return Err(HitlError::DaemonReload {
+            error: stderr.to_string(),
+        });
+    }
+
+    output.progress("Systemd daemon reloaded successfully");
+    Ok(())
+}
+
 /// Errors related to HITL operations
 #[derive(Debug, thiserror::Error)]
 pub enum HitlError {
@@ -342,6 +596,9 @@ pub enum HitlError {
 
     #[error("Failed to unmount '{mount_point}': {error}")]
     Unmount { mount_point: String, error: String },
+
+    #[error("Failed to reload systemd daemon: {error}")]
+    DaemonReload { error: String },
 }
 
 #[cfg(test)]
@@ -392,5 +649,91 @@ mod tests {
         let arg_names: Vec<&str> = args.iter().map(|arg| arg.get_id().as_str()).collect();
 
         assert!(arg_names.contains(&"extension"));
+    }
+
+    #[test]
+    fn test_systemd_escape_mount_path() {
+        // Test basic path escaping
+        assert_eq!(
+            systemd_escape_mount_path("/run/avocado/hitl/myext"),
+            "run-avocado-hitl-myext.mount"
+        );
+
+        // Test path with dashes in component name (dashes are preserved, not escaped)
+        assert_eq!(
+            systemd_escape_mount_path("/run/avocado/hitl/my-extension"),
+            "run-avocado-hitl-my-extension.mount"
+        );
+
+        // Test path with multiple dashes
+        assert_eq!(
+            systemd_escape_mount_path("/run/avocado/hitl/my-cool-ext"),
+            "run-avocado-hitl-my-cool-ext.mount"
+        );
+
+        // Test path with leading slash removal
+        assert_eq!(
+            systemd_escape_mount_path("run/avocado/hitl/ext"),
+            "run-avocado-hitl-ext.mount"
+        );
+    }
+
+    #[test]
+    fn test_create_and_cleanup_service_dropins() {
+        use tempfile::TempDir;
+
+        // Set up test environment
+        let temp_dir = TempDir::new().unwrap();
+        let temp_path = temp_dir.path().to_string_lossy().to_string();
+
+        std::env::set_var("AVOCADO_TEST_MODE", "1");
+        std::env::set_var("TMPDIR", &temp_path);
+
+        let output = OutputManager::new(true);
+        let extension = "test-ext";
+        let mount_point = &format!("{temp_path}/avocado/hitl/test-ext");
+        let services = vec!["nginx".to_string(), "prometheus.service".to_string()];
+
+        // Create drop-ins
+        let result = create_service_dropins(extension, mount_point, &services, &output);
+        assert!(result.is_ok());
+
+        // Verify drop-ins were created
+        let systemd_dir = format!("{temp_path}/run/systemd/system");
+        let nginx_dropin = format!("{systemd_dir}/nginx.service.d/10-hitl-test-ext.conf");
+        let prometheus_dropin =
+            format!("{systemd_dir}/prometheus.service.d/10-hitl-test-ext.conf");
+
+        assert!(Path::new(&nginx_dropin).exists());
+        assert!(Path::new(&prometheus_dropin).exists());
+
+        // Verify drop-in content
+        let nginx_content = fs::read_to_string(&nginx_dropin).unwrap();
+        assert!(nginx_content.contains("[Unit]"));
+        assert!(nginx_content.contains("RequiresMountsFor="));
+        assert!(nginx_content.contains("BindsTo="));
+        assert!(nginx_content.contains("After="));
+
+        // Clean up drop-ins
+        let result = cleanup_service_dropins(extension, &services, &output);
+        assert!(result.is_ok());
+
+        // Verify drop-ins were removed
+        assert!(!Path::new(&nginx_dropin).exists());
+        assert!(!Path::new(&prometheus_dropin).exists());
+
+        // Clean up environment
+        std::env::remove_var("AVOCADO_TEST_MODE");
+        std::env::remove_var("TMPDIR");
+    }
+
+    #[test]
+    fn test_create_service_dropins_empty_services() {
+        let output = OutputManager::new(false);
+        let services: Vec<String> = vec![];
+
+        // Should return Ok without doing anything
+        let result = create_service_dropins("test-ext", "/run/test", &services, &output);
+        assert!(result.is_ok());
     }
 }
