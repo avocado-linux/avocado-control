@@ -189,7 +189,11 @@ pub enum ConfigError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::TempDir;
+
+    // Mutex to serialize tests that modify AVOCADO_EXTENSIONS_PATH environment variable
+    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_default_config() {
@@ -249,6 +253,12 @@ dir = "/custom/extensions/path"
 
     #[test]
     fn test_get_extensions_dir_with_env_var() {
+        // Lock the mutex to prevent env var interference from other tests
+        let _guard = ENV_VAR_MUTEX.lock().unwrap();
+
+        // Save original environment variable value for restoration
+        let original_value = std::env::var("AVOCADO_EXTENSIONS_PATH").ok();
+
         let config = Config::default();
 
         // Test without environment variable
@@ -259,8 +269,11 @@ dir = "/custom/extensions/path"
         std::env::set_var("AVOCADO_EXTENSIONS_PATH", "/env/override/path");
         assert_eq!(config.get_extensions_dir(), "/env/override/path");
 
-        // Clean up
-        std::env::remove_var("AVOCADO_EXTENSIONS_PATH");
+        // Restore original environment variable
+        match original_value {
+            Some(val) => std::env::set_var("AVOCADO_EXTENSIONS_PATH", val),
+            None => std::env::remove_var("AVOCADO_EXTENSIONS_PATH"),
+        }
     }
 
     #[test]

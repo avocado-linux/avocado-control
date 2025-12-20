@@ -85,7 +85,11 @@ fn mount_extensions(matches: &ArgMatches, output: &OutputManager) {
     );
 
     let extensions_base_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        // Use AVOCADO_TEST_TMPDIR if set (to avoid affecting TempDir::new()),
+        // otherwise fall back to TMPDIR, then /tmp
+        let temp_base = std::env::var("AVOCADO_TEST_TMPDIR")
+            .or_else(|_| std::env::var("TMPDIR"))
+            .unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/avocado/hitl")
     } else {
         "/run/avocado/hitl".to_string()
@@ -191,7 +195,9 @@ fn create_extension_directory(
     Ok(())
 }
 
-/// Mount NFS extension with proper error handling
+/// Mount NFS extension using systemd-mount for proper dependency tracking
+/// This ensures the mount is properly tracked by systemd and will be unmounted
+/// in the correct order during shutdown (before network teardown)
 fn mount_nfs_extension(
     server_ip: &str,
     server_port: &str,
@@ -204,18 +210,31 @@ fn mount_nfs_extension(
 
     output.step(
         "NFS Mount",
-        &format!("Mounting {nfs_source} to {mount_point}"),
+        &format!("Mounting {nfs_source} to {mount_point} via systemd-mount"),
     );
 
     // Check if we're in test mode and should use mock commands
     let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        "mock-mount"
+        "mock-systemd-mount"
     } else {
-        "mount"
+        "systemd-mount"
     };
 
-    let output = ProcessCommand::new(command_name)
-        .args(["-t", "nfs4", "-o", &mount_options, &nfs_source, mount_point])
+    // systemd-mount creates a transient mount unit that systemd tracks
+    // This ensures proper shutdown ordering (unmount before network goes down)
+    // --no-block allows the command to return immediately
+    // --collect removes the unit after unmounting
+    let result = ProcessCommand::new(command_name)
+        .args([
+            "--no-block",
+            "--collect",
+            "-t",
+            "nfs4",
+            "-o",
+            &mount_options,
+            &nfs_source,
+            mount_point,
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -224,8 +243,8 @@ fn mount_nfs_extension(
             source: e,
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(HitlError::Mount {
             extension: extension.to_string(),
             mount_point: mount_point.to_string(),
@@ -249,7 +268,11 @@ fn unmount_extensions(matches: &ArgMatches, output: &OutputManager) {
     );
 
     let extensions_base_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        // Use AVOCADO_TEST_TMPDIR if set (to avoid affecting TempDir::new()),
+        // otherwise fall back to TMPDIR, then /tmp
+        let temp_base = std::env::var("AVOCADO_TEST_TMPDIR")
+            .or_else(|_| std::env::var("TMPDIR"))
+            .unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/avocado/hitl")
     } else {
         "/run/avocado/hitl".to_string()
@@ -347,7 +370,8 @@ fn unmount_extensions(matches: &ArgMatches, output: &OutputManager) {
     }
 }
 
-/// Unmount NFS extension with proper error handling
+/// Unmount NFS extension using systemd-umount for proper cleanup
+/// This properly stops the transient mount unit created by systemd-mount
 fn unmount_nfs_extension(mount_point: &str, output: &OutputManager) -> Result<(), HitlError> {
     // Check if the directory is actually mounted
     if !Path::new(mount_point).exists() {
@@ -355,17 +379,21 @@ fn unmount_nfs_extension(mount_point: &str, output: &OutputManager) -> Result<()
         return Ok(());
     }
 
-    output.step("NFS Unmount", &format!("Unmounting {mount_point}"));
+    output.step(
+        "NFS Unmount",
+        &format!("Unmounting {mount_point} via systemd-umount"),
+    );
 
     // Check if we're in test mode and should use mock commands
     let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        "mock-umount"
+        "mock-systemd-umount"
     } else {
-        "umount"
+        "systemd-umount"
     };
 
-    let output = ProcessCommand::new(command_name)
-        .args(["-f", mount_point])
+    // systemd-umount stops the mount unit, which properly handles NFS unmounting
+    let result = ProcessCommand::new(command_name)
+        .arg(mount_point)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -374,8 +402,8 @@ fn unmount_nfs_extension(mount_point: &str, output: &OutputManager) -> Result<()
             source: e,
         })?;
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !result.status.success() {
+        let stderr = String::from_utf8_lossy(&result.stderr);
         return Err(HitlError::Unmount {
             mount_point: mount_point.to_string(),
             error: stderr.to_string(),
@@ -435,7 +463,11 @@ pub fn create_service_dropins(
 
     // Determine the base directory for drop-ins
     let systemd_run_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        // Use AVOCADO_TEST_TMPDIR if set (to avoid affecting TempDir::new()),
+        // otherwise fall back to TMPDIR, then /tmp
+        let temp_base = std::env::var("AVOCADO_TEST_TMPDIR")
+            .or_else(|_| std::env::var("TMPDIR"))
+            .unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/run/systemd/system")
     } else {
         "/run/systemd/system".to_string()
@@ -506,7 +538,11 @@ pub fn cleanup_service_dropins(
 
     // Determine the base directory for drop-ins
     let systemd_run_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        // Use AVOCADO_TEST_TMPDIR if set (to avoid affecting TempDir::new()),
+        // otherwise fall back to TMPDIR, then /tmp
+        let temp_base = std::env::var("AVOCADO_TEST_TMPDIR")
+            .or_else(|_| std::env::var("TMPDIR"))
+            .unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/run/systemd/system")
     } else {
         "/run/systemd/system".to_string()
@@ -554,7 +590,10 @@ pub fn systemd_daemon_reload(output: &OutputManager) -> Result<(), HitlError> {
         return Ok(());
     }
 
-    output.step("Systemd", "Reloading systemd daemon to apply drop-in changes");
+    output.step(
+        "Systemd",
+        "Reloading systemd daemon to apply drop-in changes",
+    );
 
     let result = ProcessCommand::new("systemctl")
         .arg("daemon-reload")
@@ -604,6 +643,10 @@ pub enum HitlError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    // Mutex to serialize tests that modify environment variables
+    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_create_command() {
@@ -682,12 +725,20 @@ mod tests {
     fn test_create_and_cleanup_service_dropins() {
         use tempfile::TempDir;
 
-        // Set up test environment
+        // Lock the mutex to prevent env var interference from other tests
+        let _guard = ENV_VAR_MUTEX.lock().unwrap();
+
+        // Save original environment variable values for restoration
+        let original_test_mode = std::env::var("AVOCADO_TEST_MODE").ok();
+        let original_test_tmpdir = std::env::var("AVOCADO_TEST_TMPDIR").ok();
+
+        // Set up test environment - create TempDir BEFORE modifying env vars
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path().to_string_lossy().to_string();
 
         std::env::set_var("AVOCADO_TEST_MODE", "1");
-        std::env::set_var("TMPDIR", &temp_path);
+        // Use AVOCADO_TEST_TMPDIR to avoid affecting TempDir::new() in other tests
+        std::env::set_var("AVOCADO_TEST_TMPDIR", &temp_path);
 
         let output = OutputManager::new(true);
         let extension = "test-ext";
@@ -701,8 +752,7 @@ mod tests {
         // Verify drop-ins were created
         let systemd_dir = format!("{temp_path}/run/systemd/system");
         let nginx_dropin = format!("{systemd_dir}/nginx.service.d/10-hitl-test-ext.conf");
-        let prometheus_dropin =
-            format!("{systemd_dir}/prometheus.service.d/10-hitl-test-ext.conf");
+        let prometheus_dropin = format!("{systemd_dir}/prometheus.service.d/10-hitl-test-ext.conf");
 
         assert!(Path::new(&nginx_dropin).exists());
         assert!(Path::new(&prometheus_dropin).exists());
@@ -722,9 +772,15 @@ mod tests {
         assert!(!Path::new(&nginx_dropin).exists());
         assert!(!Path::new(&prometheus_dropin).exists());
 
-        // Clean up environment
-        std::env::remove_var("AVOCADO_TEST_MODE");
-        std::env::remove_var("TMPDIR");
+        // Restore original environment variables
+        match original_test_mode {
+            Some(val) => std::env::set_var("AVOCADO_TEST_MODE", val),
+            None => std::env::remove_var("AVOCADO_TEST_MODE"),
+        }
+        match original_test_tmpdir {
+            Some(val) => std::env::set_var("AVOCADO_TEST_TMPDIR", val),
+            None => std::env::remove_var("AVOCADO_TEST_TMPDIR"),
+        }
     }
 
     #[test]

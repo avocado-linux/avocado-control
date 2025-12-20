@@ -111,7 +111,8 @@ The mock binaries simulate the behavior of real system tools:
 - `mock-systemd-sysext` and `mock-systemd-confext`: Support `merge` and `unmerge` actions with `--json=short` output format
 - `mock-depmod`: Simulates kernel module dependency updates
 - `mock-modprobe`: Simulates loading of kernel modules
-- `mock-mount`: Simulates NFS mounting operations for HITL testing
+- `mock-systemd-mount`: Simulates `systemd-mount` for HITL NFS mounting with proper systemd tracking
+- `mock-systemd-umount`: Simulates `systemd-umount` for HITL NFS unmounting
 - All mock binaries are activated when `AVOCADO_TEST_MODE` environment variable is set
 - Return appropriate output for testing assertions
 
@@ -133,10 +134,12 @@ Use the `AVOCADO_EXTENSION_RELEASE_DIR` environment variable to override the def
 #### HITL Testing
 
 The HITL (Hardware-in-the-loop) testing functionality allows mounting remote NFS extensions:
-- Uses `mock-mount` binary in test mode to simulate NFS mounting
+- Uses `systemd-mount` (or `mock-systemd-mount` in test mode) for proper systemd tracking
+- Creates transient mount units that systemd manages for correct shutdown ordering
+- Ensures NFS mounts are unmounted before network teardown during shutdown
 - Creates directories in the extensions path (configurable via `AVOCADO_EXTENSIONS_PATH`)
 - Supports multiple extensions with customizable server IP and port
-- Tests verify proper directory creation and mount command execution
+- Uses `systemd-umount` (or `mock-systemd-umount` in test mode) for proper cleanup
 
 #### HITL Service Dependencies
 

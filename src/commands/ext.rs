@@ -379,7 +379,9 @@ fn unmerge_extensions_internal_with_options(
     // Execute AVOCADO_ON_UNMERGE commands before unmerging extensions
     // These commands are executed while extensions are still merged
     if let Err(e) = process_pre_unmerge_tasks() {
-        output.progress(&format!("Warning: Failed to process pre-unmerge tasks: {e}"));
+        output.progress(&format!(
+            "Warning: Failed to process pre-unmerge tasks: {e}"
+        ));
         // Continue with unmerge even if pre-unmerge tasks fail
     }
 
@@ -2741,7 +2743,10 @@ fn scan_custom_release_directory_for_on_unmerge(
 }
 
 /// Scan a directory for AVOCADO_ON_UNMERGE commands in release files
-fn scan_directory_for_on_unmerge_commands(release_dir: &str, on_unmerge_commands: &mut Vec<String>) {
+fn scan_directory_for_on_unmerge_commands(
+    release_dir: &str,
+    on_unmerge_commands: &mut Vec<String>,
+) {
     if !Path::new(release_dir).exists() {
         return;
     }
@@ -3120,19 +3125,41 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use std::env;
+    use std::sync::Mutex;
+
+    // Mutex to serialize tests that modify AVOCADO_EXTENSIONS_PATH environment variable
+    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn test_config_integration() {
         // Test that config is used for extensions directory
+        // Lock the mutex to prevent env var interference from other tests
+        let _guard = ENV_VAR_MUTEX.lock().unwrap();
+
+        // Ensure no environment variable is set
+        let original_value = env::var("AVOCADO_EXTENSIONS_PATH").ok();
+        env::remove_var("AVOCADO_EXTENSIONS_PATH");
+
         let mut config = Config::default();
         config.avocado.ext.dir = "/test/config/path".to_string();
 
         let extensions_path = config.get_extensions_dir();
         assert_eq!(extensions_path, "/test/config/path");
+
+        // Restore original
+        if let Some(val) = original_value {
+            env::set_var("AVOCADO_EXTENSIONS_PATH", val);
+        }
     }
 
     #[test]
     fn test_environment_variable_precedence() {
+        // Lock the mutex to prevent env var interference from other tests
+        let _guard = ENV_VAR_MUTEX.lock().unwrap();
+
+        // Save original environment variable value for restoration
+        let original_value = env::var("AVOCADO_EXTENSIONS_PATH").ok();
+
         // Test that environment variable overrides config
         let mut config = Config::default();
         config.avocado.ext.dir = "/config/path".to_string();
@@ -3147,6 +3174,12 @@ mod tests {
         // Now should use config value
         let extensions_path = config.get_extensions_dir();
         assert_eq!(extensions_path, "/config/path");
+
+        // Restore original environment variable
+        match original_value {
+            Some(val) => env::set_var("AVOCADO_EXTENSIONS_PATH", val),
+            None => env::remove_var("AVOCADO_EXTENSIONS_PATH"),
+        }
     }
 
     #[test]

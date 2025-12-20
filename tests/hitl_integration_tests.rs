@@ -109,6 +109,7 @@ fn test_hitl_mount_with_mocks() {
     // Create a temporary directory to simulate /var/lib/avocado/extensions
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let temp_extensions_dir = temp_dir.path();
+    let temp_path = temp_dir.path().to_string_lossy();
 
     // Add fixtures path to PATH so mock binaries can be found
     let original_path = std::env::var("PATH").unwrap_or_default();
@@ -131,6 +132,7 @@ fn test_hitl_mount_with_mocks() {
         &[
             ("AVOCADO_TEST_MODE", "1"),
             ("PATH", &new_path),
+            ("TMPDIR", &temp_path),
             (
                 "AVOCADO_EXTENSIONS_PATH",
                 &temp_extensions_dir.to_string_lossy(),
@@ -245,6 +247,7 @@ fn test_hitl_mount_default_port() {
     // Create a temporary directory to simulate /var/lib/avocado/extensions
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let temp_extensions_dir = temp_dir.path();
+    let temp_path = temp_dir.path().to_string_lossy();
 
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
@@ -262,6 +265,7 @@ fn test_hitl_mount_default_port() {
         &[
             ("AVOCADO_TEST_MODE", "1"),
             ("PATH", &new_path),
+            ("TMPDIR", &temp_path),
             (
                 "AVOCADO_EXTENSIONS_PATH",
                 &temp_extensions_dir.to_string_lossy(),
@@ -311,6 +315,7 @@ fn test_hitl_unmount_with_mocks() {
     // Create a temporary directory to simulate /var/lib/avocado/extensions
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let temp_extensions_dir = temp_dir.path();
+    let temp_path = temp_dir.path().to_string_lossy();
 
     // Add fixtures path to PATH so mock binaries can be found
     let original_path = std::env::var("PATH").unwrap_or_default();
@@ -329,6 +334,7 @@ fn test_hitl_unmount_with_mocks() {
         &[
             ("AVOCADO_TEST_MODE", "1"),
             ("PATH", &new_path),
+            ("TMPDIR", &temp_path),
             (
                 "AVOCADO_EXTENSIONS_PATH",
                 &temp_extensions_dir.to_string_lossy(),
@@ -372,27 +378,16 @@ fn test_hitl_unmount_with_mocks() {
 /// Test hitl unmount with short options
 #[test]
 fn test_hitl_unmount_short_options() {
-    let current_dir = std::env::current_dir().expect("Failed to get current directory");
-    let fixtures_path = current_dir.join("tests/fixtures");
-
     // Create a temporary directory
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let temp_extensions_dir = temp_dir.path();
 
-    // Add fixtures path to PATH
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
-
-    let output = run_avocadoctl_with_env(
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
         &["hitl", "unmount", "-e", "foo", "--verbose"],
-        &[
-            ("AVOCADO_TEST_MODE", "1"),
-            ("PATH", &new_path),
-            (
-                "AVOCADO_EXTENSIONS_PATH",
-                &temp_extensions_dir.to_string_lossy(),
-            ),
-        ],
+        &[(
+            "AVOCADO_EXTENSIONS_PATH",
+            &temp_extensions_dir.to_string_lossy(),
+        )],
     );
 
     assert!(
@@ -444,16 +439,20 @@ fn test_hitl_mount_failure_cleanup() {
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let temp_extensions_dir = temp_dir.path().join("avocado/hitl");
 
-    // Create a failing mock-mount script in a temp directory
+    // Create a failing mock-systemd-mount script in a temp directory
     let temp_bin_dir = temp_dir.path().join("bin");
     std::fs::create_dir_all(&temp_bin_dir).expect("Failed to create temp bin directory");
 
-    let mock_mount_fail_path = temp_bin_dir.join("mock-mount");
-    std::fs::write(&mock_mount_fail_path, r#"#!/bin/bash
-# Mock mount command that fails
-echo "mount.nfs4: mounting 10.0.2.2:/test-extension failed, reason given by server: No such file or directory" >&2
+    let mock_mount_fail_path = temp_bin_dir.join("mock-systemd-mount");
+    std::fs::write(
+        &mock_mount_fail_path,
+        r#"#!/bin/bash
+# Mock systemd-mount command that fails
+echo "Failed to mount 10.0.2.2:/test-extension: No such file or directory" >&2
 exit 1
-"#).expect("Failed to write failing mock-mount");
+"#,
+    )
+    .expect("Failed to write failing mock-systemd-mount");
 
     // Make it executable
     use std::os::unix::fs::PermissionsExt;
@@ -530,7 +529,15 @@ AVOCADO_ENABLE_SERVICES="nginx prometheus"
 
     // Run a mock mount that just succeeds (the directory is already created)
     let output = run_avocadoctl_with_env(
-        &["hitl", "mount", "-s", "10.0.2.2", "-e", "test-ext", "--verbose"],
+        &[
+            "hitl",
+            "mount",
+            "-s",
+            "10.0.2.2",
+            "-e",
+            "test-ext",
+            "--verbose",
+        ],
         &[
             ("AVOCADO_TEST_MODE", "1"),
             ("PATH", &new_path),
@@ -569,14 +576,24 @@ AVOCADO_ENABLE_SERVICES="nginx prometheus"
     );
 
     // Verify drop-in content
-    let nginx_content = std::fs::read_to_string(&nginx_dropin).expect("Failed to read nginx drop-in");
-    assert!(nginx_content.contains("[Unit]"), "Drop-in should have [Unit] section");
+    let nginx_content =
+        std::fs::read_to_string(&nginx_dropin).expect("Failed to read nginx drop-in");
+    assert!(
+        nginx_content.contains("[Unit]"),
+        "Drop-in should have [Unit] section"
+    );
     assert!(
         nginx_content.contains("RequiresMountsFor="),
         "Drop-in should have RequiresMountsFor"
     );
-    assert!(nginx_content.contains("BindsTo="), "Drop-in should have BindsTo");
-    assert!(nginx_content.contains("After="), "Drop-in should have After");
+    assert!(
+        nginx_content.contains("BindsTo="),
+        "Drop-in should have BindsTo"
+    );
+    assert!(
+        nginx_content.contains("After="),
+        "Drop-in should have After"
+    );
 }
 
 /// Test that HITL unmount cleans up service drop-ins
@@ -610,8 +627,11 @@ AVOCADO_ENABLE_SERVICES="redis"
     let dropin_dir = systemd_dir.join("redis.service.d");
     std::fs::create_dir_all(&dropin_dir).expect("Failed to create drop-in directory");
     let dropin_file = dropin_dir.join("10-hitl-cleanup-ext.conf");
-    std::fs::write(&dropin_file, "[Unit]\nRequiresMountsFor=/run/avocado/hitl/cleanup-ext\n")
-        .expect("Failed to write drop-in");
+    std::fs::write(
+        &dropin_file,
+        "[Unit]\nRequiresMountsFor=/run/avocado/hitl/cleanup-ext\n",
+    )
+    .expect("Failed to write drop-in");
 
     assert!(dropin_file.exists(), "Drop-in should exist before unmount");
 

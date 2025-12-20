@@ -1,0 +1,10 @@
+#!/bin/bash
+# Mock systemd-umount command for testing
+
+MOUNT_POINT="$1"
+
+# Simulate systemd-umount operation
+echo "Mock systemd-umount: $MOUNT_POINT"
+
+# Simulate success
+exit 0

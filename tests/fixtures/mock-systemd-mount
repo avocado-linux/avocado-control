@@ -1,0 +1,45 @@
+#!/bin/bash
+# Mock systemd-mount command for testing
+
+# Parse arguments to extract key information
+FSTYPE=""
+OPTIONS=""
+SOURCE=""
+TARGET=""
+NO_BLOCK=false
+COLLECT=false
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --no-block)
+            NO_BLOCK=true
+            shift
+            ;;
+        --collect)
+            COLLECT=true
+            shift
+            ;;
+        -t)
+            FSTYPE="$2"
+            shift 2
+            ;;
+        -o)
+            OPTIONS="$2"
+            shift 2
+            ;;
+        *)
+            if [[ -z "$SOURCE" ]]; then
+                SOURCE="$1"
+            elif [[ -z "$TARGET" ]]; then
+                TARGET="$1"
+            fi
+            shift
+            ;;
+    esac
+done
+
+# Simulate systemd-mount operation
+echo "Mock systemd-mount: $SOURCE -> $TARGET (type: $FSTYPE, options: $OPTIONS, no-block: $NO_BLOCK, collect: $COLLECT)"
+
+# Simulate success
+exit 0
