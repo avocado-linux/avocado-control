@@ -376,8 +376,12 @@ fn unmerge_extensions_internal_with_options(
         &format!("Starting extension unmerge process in {environment_info}"),
     );
 
-    // Note: We don't execute AVOCADO_ON_MERGE commands during unmerge
-    // Those commands are only meant to be run during merge operations
+    // Execute AVOCADO_ON_UNMERGE commands before unmerging extensions
+    // These commands are executed while extensions are still merged
+    if let Err(e) = process_pre_unmerge_tasks() {
+        output.progress(&format!("Warning: Failed to process pre-unmerge tasks: {e}"));
+        // Continue with unmerge even if pre-unmerge tasks fail
+    }
 
     // Unmerge system extensions
     let sysext_result = run_systemd_command("systemd-sysext", &["unmerge", "--json=short"])?;
@@ -2631,12 +2635,148 @@ fn parse_avocado_on_merge_commands(content: &str) -> Vec<String> {
     commands
 }
 
+/// Parse all AVOCADO_ON_UNMERGE commands from release file content
+fn parse_avocado_on_unmerge_commands(content: &str) -> Vec<String> {
+    let mut commands = Vec::new();
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with("AVOCADO_ON_UNMERGE=") {
+            let value = line
+                .split_once('=')
+                .map(|x| x.1)
+                .unwrap_or("")
+                .trim_matches('"')
+                .trim();
+
+            if !value.is_empty() {
+                commands.push(value.to_string());
+            }
+        }
+    }
+
+    commands
+}
+
 /// Check if a release file content contains AVOCADO_ON_MERGE=depmod
 /// (Kept for backward compatibility with existing tests)
 #[allow(dead_code)]
 fn check_avocado_on_merge_depmod(content: &str) -> bool {
     let commands = parse_avocado_on_merge_commands(content);
     commands.contains(&"depmod".to_string())
+}
+
+/// Scan currently merged extensions for AVOCADO_ON_UNMERGE commands
+/// This scans the release files from the merged overlay paths before unmerge
+fn scan_merged_extensions_for_on_unmerge_commands() -> Result<Vec<String>, SystemdError> {
+    let mut on_unmerge_commands = Vec::new();
+
+    // Handle test mode with custom release directory (for backwards compatibility)
+    if let Ok(custom_dir) = std::env::var("AVOCADO_EXTENSION_RELEASE_DIR") {
+        return scan_custom_release_directory_for_on_unmerge(&custom_dir);
+    }
+
+    // When extensions are merged, their release files are overlayed to:
+    // - /usr/lib/extension-release.d/ for sysext
+    // - /etc/extension-release.d/ for confext
+    let release_dirs = ["/usr/lib/extension-release.d", "/etc/extension-release.d"];
+
+    for release_dir in &release_dirs {
+        let path = Path::new(release_dir);
+        if !path.exists() {
+            continue;
+        }
+
+        if let Ok(entries) = fs::read_dir(path) {
+            for entry in entries.flatten() {
+                let file_path = entry.path();
+                if file_path.is_file() {
+                    if let Ok(content) = fs::read_to_string(&file_path) {
+                        let mut commands = parse_avocado_on_unmerge_commands(&content);
+                        on_unmerge_commands.append(&mut commands);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(on_unmerge_commands)
+}
+
+/// Scan a custom release directory for AVOCADO_ON_UNMERGE commands (test mode)
+fn scan_custom_release_directory_for_on_unmerge(
+    custom_dir: &str,
+) -> Result<Vec<String>, SystemdError> {
+    let mut on_unmerge_commands = Vec::new();
+
+    let custom_path = Path::new(custom_dir);
+    let mut dirs = Vec::new();
+
+    // Check if it's a single directory with release files (legacy behavior)
+    if custom_path.join("extension-release.d").exists() {
+        dirs.push(custom_dir.to_string());
+    } else {
+        // Look for sysext and confext subdirectories
+        let sysext_dir = custom_path.join("usr/lib/extension-release.d");
+        let confext_dir = custom_path.join("etc/extension-release.d");
+
+        if sysext_dir.exists() {
+            dirs.push(sysext_dir.to_string_lossy().to_string());
+        }
+        if confext_dir.exists() {
+            dirs.push(confext_dir.to_string_lossy().to_string());
+        }
+
+        // If neither subdirectory structure exists, use the custom dir directly
+        if dirs.is_empty() {
+            dirs.push(custom_dir.to_string());
+        }
+    }
+
+    for release_dir in dirs {
+        scan_directory_for_on_unmerge_commands(&release_dir, &mut on_unmerge_commands);
+    }
+
+    Ok(on_unmerge_commands)
+}
+
+/// Scan a directory for AVOCADO_ON_UNMERGE commands in release files
+fn scan_directory_for_on_unmerge_commands(release_dir: &str, on_unmerge_commands: &mut Vec<String>) {
+    if !Path::new(release_dir).exists() {
+        return;
+    }
+
+    if let Ok(entries) = fs::read_dir(release_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let mut commands = parse_avocado_on_unmerge_commands(&content);
+                    on_unmerge_commands.append(&mut commands);
+                }
+            }
+        }
+    }
+}
+
+/// Process pre-unmerge tasks: execute AVOCADO_ON_UNMERGE commands
+fn process_pre_unmerge_tasks() -> Result<(), SystemdError> {
+    let on_unmerge_commands = scan_merged_extensions_for_on_unmerge_commands()?;
+
+    // Remove duplicates while preserving order
+    let mut unique_commands = Vec::new();
+    for command in on_unmerge_commands {
+        if !unique_commands.contains(&command) {
+            unique_commands.push(command);
+        }
+    }
+
+    // Execute accumulated AVOCADO_ON_UNMERGE commands
+    if !unique_commands.is_empty() {
+        run_avocado_on_unmerge_commands(&unique_commands)?;
+    }
+
+    Ok(())
 }
 
 /// Parse AVOCADO_MODPROBE modules from release file content
@@ -2857,6 +2997,41 @@ fn run_avocado_on_merge_commands(commands: &[String]) -> Result<(), SystemdError
     }
 
     print_colored_success("Post-merge command execution completed.");
+    Ok(())
+}
+
+/// Run accumulated AVOCADO_ON_UNMERGE commands
+fn run_avocado_on_unmerge_commands(commands: &[String]) -> Result<(), SystemdError> {
+    if commands.is_empty() {
+        return Ok(());
+    }
+
+    print_colored_info(&format!(
+        "Executing {} pre-unmerge commands",
+        commands.len()
+    ));
+
+    for command_str in commands {
+        print_colored_info(&format!("Running command: {command_str}"));
+
+        // Check if the command contains shell operators like semicolons
+        if command_str.contains(';') {
+            // Split the command by semicolons and execute each part sequentially
+            let sub_commands: Vec<&str> = command_str.split(';').map(|s| s.trim()).collect();
+
+            for sub_command in sub_commands {
+                if !sub_command.is_empty() {
+                    print_colored_info(&format!("Running sub-command: {sub_command}"));
+                    execute_single_command(sub_command)?;
+                }
+            }
+        } else {
+            // Execute as a single command
+            execute_single_command(command_str)?;
+        }
+    }
+
+    print_colored_success("Pre-unmerge command execution completed.");
     Ok(())
 }
 
@@ -3514,5 +3689,107 @@ OTHER_KEY=value
         legacy_config.avocado.ext.mutable = Some("import".to_string());
         assert_eq!(legacy_config.get_sysext_mutable().unwrap(), "import");
         assert_eq!(legacy_config.get_confext_mutable().unwrap(), "import");
+    }
+
+    #[test]
+    fn test_parse_avocado_on_unmerge_commands() {
+        // Test case with single AVOCADO_ON_UNMERGE command
+        let content_single = r#"
+VERSION_ID=1.0
+AVOCADO_ON_UNMERGE="systemctl stop some-service"
+OTHER_KEY=value
+"#;
+        let commands = parse_avocado_on_unmerge_commands(content_single);
+        assert_eq!(commands, vec!["systemctl stop some-service"]);
+
+        // Test case with multiple AVOCADO_ON_UNMERGE commands
+        let content_multiple = r#"
+VERSION_ID=1.0
+AVOCADO_ON_UNMERGE="systemctl stop service1"
+AVOCADO_ON_UNMERGE="systemctl stop service2"
+AVOCADO_ON_UNMERGE=cleanup-command
+"#;
+        let commands = parse_avocado_on_unmerge_commands(content_multiple);
+        assert_eq!(
+            commands,
+            vec![
+                "systemctl stop service1",
+                "systemctl stop service2",
+                "cleanup-command"
+            ]
+        );
+
+        // Test case with no AVOCADO_ON_UNMERGE commands
+        let content_none = r#"
+VERSION_ID=1.0
+AVOCADO_ON_MERGE=depmod
+OTHER_KEY=value
+"#;
+        let commands = parse_avocado_on_unmerge_commands(content_none);
+        assert!(commands.is_empty());
+
+        // Test case with empty AVOCADO_ON_UNMERGE
+        let content_empty = r#"
+VERSION_ID=1.0
+AVOCADO_ON_UNMERGE=
+OTHER_KEY=value
+"#;
+        let commands = parse_avocado_on_unmerge_commands(content_empty);
+        assert!(commands.is_empty());
+
+        // Test case with empty content
+        let commands = parse_avocado_on_unmerge_commands("");
+        assert!(commands.is_empty());
+    }
+
+    #[test]
+    fn test_parse_avocado_on_unmerge_commands_with_equals() {
+        // Test case with command containing equals signs in arguments
+        let content_with_equals = r#"
+VERSION_ID=1.0
+AVOCADO_ON_UNMERGE="systemctl set-property --runtime some.service CPUQuota=0%"
+AVOCADO_ON_UNMERGE=cleanup --option=value
+"#;
+        let commands = parse_avocado_on_unmerge_commands(content_with_equals);
+        assert_eq!(
+            commands,
+            vec![
+                "systemctl set-property --runtime some.service CPUQuota=0%",
+                "cleanup --option=value"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_avocado_on_unmerge_commands_with_semicolons() {
+        // Test case with semicolon-separated commands
+        let content_with_semicolons = r#"
+VERSION_ID=1.0
+AVOCADO_ON_UNMERGE="systemctl stop service1; systemctl stop service2"
+OTHER_KEY=value
+"#;
+        let commands = parse_avocado_on_unmerge_commands(content_with_semicolons);
+        assert_eq!(
+            commands,
+            vec!["systemctl stop service1; systemctl stop service2"]
+        );
+    }
+
+    #[test]
+    fn test_both_merge_and_unmerge_commands() {
+        // Test case with both AVOCADO_ON_MERGE and AVOCADO_ON_UNMERGE commands
+        let content = r#"
+VERSION_ID=1.0
+DESCRIPTION="Extension with both merge and unmerge commands"
+AVOCADO_ON_MERGE="systemctl start service"
+AVOCADO_ON_MERGE=depmod
+AVOCADO_ON_UNMERGE="systemctl stop service"
+OTHER_KEY=value
+"#;
+        let merge_commands = parse_avocado_on_merge_commands(content);
+        let unmerge_commands = parse_avocado_on_unmerge_commands(content);
+
+        assert_eq!(merge_commands, vec!["systemctl start service", "depmod"]);
+        assert_eq!(unmerge_commands, vec!["systemctl stop service"]);
     }
 }

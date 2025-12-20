@@ -123,8 +123,10 @@ The `tests/fixtures/extension-release.d/` directory contains sample extension re
 - `extension-release.utils`: Contains `AVOCADO_ON_MERGE=other_command` to test non-depmod values
 - `extension-release.gpu-driver`: Contains both `AVOCADO_ON_MERGE=depmod` and `AVOCADO_MODPROBE="nvidia i915 radeon"` to test combined functionality
 - `extension-release.sound-driver`: Contains `AVOCADO_MODPROBE=snd_hda_intel` to test single module loading
-- `extension-release.hitl-services`: Contains `AVOCADO_ENABLE_SERVICES="nginx.service prometheus.service"` to test service dependency creation
+- `extension-release.hitl-services`: Contains `AVOCADO_ENABLE_SERVICES="nginx.service prometheus.service"` and `AVOCADO_ON_UNMERGE` to test service dependency creation and cleanup
 - `extension-release.multi-services`: Contains multiple `AVOCADO_ENABLE_SERVICES` lines to test service accumulation
+- `extension-release.multi-commands`: Contains both `AVOCADO_ON_MERGE` and `AVOCADO_ON_UNMERGE` commands to test merge and unmerge lifecycle
+- `extension-release.unmerge-commands`: Contains `AVOCADO_ON_UNMERGE` commands to test pre-unmerge command execution
 
 Use the `AVOCADO_EXTENSION_RELEASE_DIR` environment variable to override the default `/usr/lib/extension-release.d` path for testing.
 
@@ -144,6 +146,26 @@ When HITL mounts an extension over NFS, the extension's release file may contain
 - **Dependencies**: Drop-ins add `RequiresMountsFor=`, `BindsTo=`, and `After=` directives to ensure proper shutdown ordering
 - **Cleanup**: Drop-ins are automatically removed when the HITL extension is unmounted
 - **Purpose**: Ensures services are stopped before NFS mounts are unmounted during system shutdown
+
+#### AVOCADO_ON_MERGE Commands
+
+The extension system supports executing custom commands after extensions are merged:
+- **After `ext merge`**: Executes all commands from `AVOCADO_ON_MERGE` directives in release files
+- **Deduplication**: Duplicate commands across multiple extensions are only executed once
+- **Order preservation**: Commands are executed in the order they are discovered
+- **Format**: `AVOCADO_ON_MERGE="command arg1 arg2"` or `AVOCADO_ON_MERGE=command`
+- **Semicolons**: Commands can include semicolons to chain multiple operations: `AVOCADO_ON_MERGE="cmd1; cmd2; cmd3"`
+
+#### AVOCADO_ON_UNMERGE Commands
+
+The extension system supports executing custom commands before extensions are unmerged:
+- **Before `ext unmerge`**: Executes all commands from `AVOCADO_ON_UNMERGE` directives in release files
+- **Before unmerge in `ext refresh`**: Also executed before the unmerge phase of refresh
+- **Deduplication**: Duplicate commands across multiple extensions are only executed once
+- **Order preservation**: Commands are executed in the order they are discovered
+- **Format**: `AVOCADO_ON_UNMERGE="command arg1 arg2"` or `AVOCADO_ON_UNMERGE=command`
+- **Semicolons**: Commands can include semicolons to chain multiple operations: `AVOCADO_ON_UNMERGE="cmd1; cmd2"`
+- **Purpose**: Cleanup operations before extensions are removed (e.g., stopping services, saving state)
 
 #### depmod Behavior
 

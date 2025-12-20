@@ -3,3 +3,4 @@ VERSION_ID=1.0
 DESCRIPTION="Configuration Extension with Services"
 AVOCADO_ENABLE_SERVICES="nginx redis"
 AVOCADO_ON_MERGE="systemctl reload nginx"
+AVOCADO_ON_UNMERGE="systemctl stop redis"

@@ -1,0 +1,6 @@
+ID=extension-release.unmerge-commands
+VERSION_ID=1.0
+DESCRIPTION="Extension with AVOCADO_ON_UNMERGE commands"
+AVOCADO_ON_MERGE="systemctl start test-service"
+AVOCADO_ON_UNMERGE="systemctl stop test-service"
+AVOCADO_ON_UNMERGE="touch /tmp/unmerge-executed"

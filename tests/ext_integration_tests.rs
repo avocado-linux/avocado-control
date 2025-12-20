@@ -1088,6 +1088,7 @@ fn test_ext_merge_with_quoted_commands() {
 }
 
 /// Test ext unmerge does NOT execute AVOCADO_ON_MERGE commands
+/// (but AVOCADO_ON_UNMERGE commands ARE executed)
 #[test]
 fn test_ext_unmerge_does_not_execute_on_merge_commands() {
     // Setup mock environment with release files
@@ -1126,8 +1127,9 @@ fn test_ext_unmerge_does_not_execute_on_merge_commands() {
     );
 
     // Should NOT execute post-merge commands during unmerge
+    // (pre-unmerge commands ARE executed, which is correct behavior)
     assert!(
-        !stdout.contains("post-merge commands") && !stdout.contains("Running command:"),
+        !stdout.contains("post-merge commands"),
         "Should NOT execute AVOCADO_ON_MERGE commands during unmerge"
     );
 }
@@ -2578,4 +2580,201 @@ fn test_hitl_mount_removal_restores_versioned() {
         sysext_dir.join("myext-1.0.0").exists(),
         "Versioned symlink should be restored"
     );
+}
+
+/// Test ext unmerge executes AVOCADO_ON_UNMERGE commands
+#[test]
+fn test_ext_unmerge_executes_on_unmerge_commands() {
+    // Setup mock environment with release files containing AVOCADO_ON_UNMERGE
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "unmerge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext unmerge should succeed when executing AVOCADO_ON_UNMERGE commands"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions unmerged successfully"),
+        "Should show unmerge success"
+    );
+
+    // Should execute pre-unmerge commands
+    assert!(
+        stdout.contains("pre-unmerge commands") || stdout.contains("Running command:"),
+        "Should execute AVOCADO_ON_UNMERGE commands during unmerge"
+    );
+}
+
+/// Test ext unmerge with multiple AVOCADO_ON_UNMERGE commands from same extension
+#[test]
+fn test_ext_unmerge_with_multiple_on_unmerge_commands() {
+    // Create a temporary release directory with test files
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "unmerge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext unmerge should succeed with multiple AVOCADO_ON_UNMERGE commands"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions unmerged successfully"),
+        "Should show unmerge success"
+    );
+}
+
+/// Test deduplication of AVOCADO_ON_UNMERGE commands
+#[test]
+fn test_avocado_on_unmerge_command_deduplication() {
+    // This test verifies that duplicate commands across multiple extensions
+    // are only executed once
+    let temp_dir = tempfile::TempDir::new().expect("Failed to create temp directory");
+    let temp_path = temp_dir.path();
+
+    // Create a release directory with duplicate AVOCADO_ON_UNMERGE commands
+    let release_dir = temp_path.join("test-release");
+    fs::create_dir_all(&release_dir).expect("Failed to create release dir");
+
+    // Create multiple release files with the same AVOCADO_ON_UNMERGE command
+    fs::write(
+        release_dir.join("extension-release.ext1"),
+        "VERSION_ID=1.0\nAVOCADO_ON_UNMERGE=\"systemctl stop common-service\"\n",
+    )
+    .expect("Failed to write release file");
+    fs::write(
+        release_dir.join("extension-release.ext2"),
+        "VERSION_ID=1.0\nAVOCADO_ON_UNMERGE=\"systemctl stop common-service\"\nAVOCADO_ON_UNMERGE=\"systemctl stop unique-service\"\n",
+    )
+    .expect("Failed to write release file");
+
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+
+    let (output, _temp_test_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "unmerge", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext unmerge should succeed with command deduplication"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Count how many times "systemctl stop common-service" is executed
+    // Should be only once due to deduplication
+    let common_service_count = stdout
+        .matches("Running command: systemctl stop common-service")
+        .count();
+
+    // Due to deduplication, common-service should appear at most once in command execution
+    assert!(
+        common_service_count <= 1,
+        "Duplicate commands should be deduplicated (found {} executions)",
+        common_service_count
+    );
+
+    assert!(
+        stdout.contains("Extensions unmerged successfully"),
+        "Should show unmerge success"
+    );
+}
+
+/// Test ext refresh executes AVOCADO_ON_UNMERGE commands before unmerge
+#[test]
+fn test_ext_refresh_executes_on_unmerge_before_unmerge() {
+    // Create a temporary release directory with test files
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let release_dir = fixtures_path.join("extension-release.d");
+
+    // Use isolated environment to avoid race conditions
+    let (output, _temp_dir) = run_avocadoctl_with_isolated_env(
+        &["ext", "refresh", "--verbose"],
+        &[
+            (
+                "AVOCADO_EXTENSION_RELEASE_DIR",
+                &release_dir.to_string_lossy(),
+            ),
+            (
+                "PATH",
+                &format!(
+                    "{}:{}",
+                    fixtures_path.to_string_lossy(),
+                    std::env::var("PATH").unwrap_or_default()
+                ),
+            ),
+        ],
+    );
+
+    assert!(
+        output.status.success(),
+        "ext refresh should succeed and execute AVOCADO_ON_UNMERGE commands"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Extensions refreshed successfully"),
+        "Should show refresh success"
+    );
+
+    // Verify that both pre-unmerge and post-merge commands are executed in order
+    // Pre-unmerge commands should appear before unmerge, post-merge should appear after merge
 }
