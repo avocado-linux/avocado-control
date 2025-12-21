@@ -659,3 +659,107 @@ AVOCADO_ENABLE_SERVICES="redis"
         "Drop-in file should be removed after unmount"
     );
 }
+
+/// Test that ext refresh invalidates HITL NFS caches
+/// This verifies that when HITL-mounted extensions exist, refresh will
+/// attempt to invalidate the NFS cache for each mount before merging.
+#[test]
+fn test_ext_refresh_invalidates_hitl_caches() {
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    // Create a temporary directory
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let temp_path = temp_dir.path().to_string_lossy().to_string();
+
+    // Create HITL mount directory with a mock extension
+    let hitl_dir = temp_dir.path().join("avocado/hitl");
+    let extension_dir = hitl_dir.join("my-hitl-ext");
+    let release_dir = extension_dir.join("usr/lib/extension-release.d");
+    std::fs::create_dir_all(&release_dir).expect("Failed to create release directory");
+
+    let release_file = release_dir.join("extension-release.my-hitl-ext");
+    std::fs::write(
+        &release_file,
+        r#"ID=avocado
+VERSION_ID=1.0
+"#,
+    )
+    .expect("Failed to write release file");
+
+    // Create extensions directory (required for merge)
+    let extensions_dir = temp_dir.path().join("extensions");
+    std::fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Create os-releases directory (required for enable/disable)
+    let os_releases_dir = temp_dir.path().join("os-releases");
+    std::fs::create_dir_all(&os_releases_dir).expect("Failed to create os-releases directory");
+
+    // Run refresh with verbose output
+    let output = run_avocadoctl_with_env(
+        &["ext", "refresh", "--verbose"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            ("TMPDIR", &temp_path),
+            ("AVOCADO_TEST_TMPDIR", &temp_path),
+            ("AVOCADO_EXTENSIONS_DIR", &extensions_dir.to_string_lossy()),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // In test mode, we should see the cache invalidation message
+    assert!(
+        stdout.contains("Invalidating NFS cache for extension: my-hitl-ext")
+            || stdout.contains("Skipping remount in test mode"),
+        "Should attempt to invalidate HITL cache. stdout: {stdout}, stderr: {stderr}"
+    );
+}
+
+/// Test that ext refresh works normally when no HITL mounts exist
+#[test]
+fn test_ext_refresh_no_hitl_mounts() {
+    let current_dir = std::env::current_dir().expect("Failed to get current directory");
+    let fixtures_path = current_dir.join("tests/fixtures");
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{}:{}", fixtures_path.to_string_lossy(), original_path);
+
+    // Create a temporary directory WITHOUT any HITL mounts
+    let temp_dir = TempDir::new().expect("Failed to create temp directory");
+    let temp_path = temp_dir.path().to_string_lossy().to_string();
+
+    // Create extensions directory (required for merge)
+    let extensions_dir = temp_dir.path().join("extensions");
+    std::fs::create_dir_all(&extensions_dir).expect("Failed to create extensions directory");
+
+    // Run refresh
+    let output = run_avocadoctl_with_env(
+        &["ext", "refresh", "--verbose"],
+        &[
+            ("AVOCADO_TEST_MODE", "1"),
+            ("PATH", &new_path),
+            ("TMPDIR", &temp_path),
+            ("AVOCADO_TEST_TMPDIR", &temp_path),
+            ("AVOCADO_EXTENSIONS_DIR", &extensions_dir.to_string_lossy()),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should NOT have any HITL cache invalidation messages
+    assert!(
+        !stdout.contains("Invalidating NFS cache"),
+        "Should not attempt cache invalidation when no HITL mounts exist. stdout: {stdout}"
+    );
+
+    // But refresh should still succeed
+    assert!(
+        stdout.contains("Extensions refreshed successfully")
+            || stdout.contains("Extensions merged"),
+        "Refresh should complete successfully. stdout: {stdout}"
+    );
+}

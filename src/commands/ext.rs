@@ -773,6 +773,90 @@ pub fn disable_extensions(
     }
 }
 
+/// Invalidate NFS caches for HITL-mounted extensions
+///
+/// When extensions are mounted via NFS from a HITL server, the client may have
+/// stale cached data after the host rebuilds the extension. This function forces
+/// a remount of each HITL mount to invalidate the NFS client cache, ensuring
+/// fresh data is fetched from the server on the next access.
+fn invalidate_hitl_caches(output: &OutputManager) {
+    let hitl_dir = std::path::Path::new("/run/avocado/hitl");
+
+    // Skip if not in test mode and no HITL directory exists
+    if std::env::var("AVOCADO_TEST_MODE").is_err() && !hitl_dir.exists() {
+        return;
+    }
+
+    // In test mode, use the test directory
+    let hitl_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("AVOCADO_TEST_TMPDIR")
+            .or_else(|_| std::env::var("TMPDIR"))
+            .unwrap_or_else(|_| "/tmp".to_string());
+        std::path::PathBuf::from(format!("{temp_base}/avocado/hitl"))
+    } else {
+        hitl_dir.to_path_buf()
+    };
+
+    if !hitl_dir.exists() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&hitl_dir) {
+        Ok(entries) => entries,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            let extension_name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unknown");
+
+            output.step(
+                "HITL",
+                &format!("Invalidating NFS cache for extension: {extension_name}"),
+            );
+
+            // Skip actual remount in test mode
+            if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+                output.progress(&format!(
+                    "Skipping remount in test mode for: {}",
+                    path.display()
+                ));
+                continue;
+            }
+
+            // Remount to invalidate NFS client cache
+            let result = std::process::Command::new("mount")
+                .args(["-o", "remount"])
+                .arg(&path)
+                .output();
+
+            match result {
+                Ok(output_result) => {
+                    if !output_result.status.success() {
+                        let stderr = String::from_utf8_lossy(&output_result.stderr);
+                        output.progress(&format!(
+                            "Warning: Failed to remount {}: {}",
+                            path.display(),
+                            stderr.trim()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    output.progress(&format!(
+                        "Warning: Could not execute remount for {}: {}",
+                        path.display(),
+                        e
+                    ));
+                }
+            }
+        }
+    }
+}
+
 /// Refresh extensions (unmerge then merge)
 pub fn refresh_extensions(config: &Config, output: &OutputManager) {
     let environment_info = if is_running_in_initrd() {
@@ -794,6 +878,10 @@ pub fn refresh_extensions(config: &Config, output: &OutputManager) {
         std::process::exit(1);
     }
     output.step("Refresh", "Extensions unmerged");
+
+    // Invalidate NFS caches for any HITL-mounted extensions
+    // This ensures fresh data is fetched from the server after a host rebuild
+    invalidate_hitl_caches(output);
 
     // Then merge (this will call depmod via post-merge processing)
     if let Err(e) = merge_extensions_internal(config, output) {
