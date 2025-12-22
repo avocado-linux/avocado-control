@@ -4,3 +4,4 @@ DESCRIPTION="Extension with Multiple Service Lines"
 AVOCADO_ENABLE_SERVICES="app-server"
 AVOCADO_ENABLE_SERVICES="database worker"
 AVOCADO_ON_MERGE=depmod
+

@@ -4,3 +4,4 @@ DESCRIPTION="HITL Extension with Enabled Services"
 AVOCADO_ENABLE_SERVICES="nginx.service prometheus.service"
 AVOCADO_ON_MERGE="systemctl restart nginx"
 AVOCADO_ON_UNMERGE="systemctl stop nginx"
+

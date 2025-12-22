@@ -43,3 +43,4 @@ echo "Mock systemd-mount: $SOURCE -> $TARGET (type: $FSTYPE, options: $OPTIONS, 
 
 # Simulate success
 exit 0
+

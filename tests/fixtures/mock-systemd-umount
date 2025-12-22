@@ -8,3 +8,4 @@ echo "Mock systemd-umount: $MOUNT_POINT"
 
 # Simulate success
 exit 0
+

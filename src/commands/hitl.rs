@@ -637,7 +637,9 @@ pub fn cleanup_service_dropins(
                     if let Err(e) = fs::remove_file(&mount_dropin_file) {
                         output.error(
                             "Service Dependencies",
-                            &format!("Failed to remove mount drop-in file {mount_dropin_file}: {e}"),
+                            &format!(
+                                "Failed to remove mount drop-in file {mount_dropin_file}: {e}"
+                            ),
                         );
                     } else {
                         output.progress(&format!("Removed drop-in: {mount_dropin_file}"));
