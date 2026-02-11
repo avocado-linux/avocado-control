@@ -3,7 +3,7 @@ mod config;
 mod output;
 
 use clap::{Arg, Command};
-use commands::{ext, hitl};
+use commands::{boot, ext, hitl};
 use config::Config;
 use output::OutputManager;
 
@@ -28,6 +28,7 @@ fn main() {
                 .action(clap::ArgAction::SetTrue)
                 .global(true),
         )
+        .subcommand(boot::create_command())
         .subcommand(ext::create_command())
         .subcommand(hitl::create_command())
         .subcommand(
@@ -113,6 +114,9 @@ fn main() {
     };
 
     match matches.subcommand() {
+        Some(("boot", boot_matches)) => {
+            boot::handle_command(boot_matches, &config, &output);
+        }
         Some(("ext", ext_matches)) => {
             ext::handle_command(ext_matches, &config, &output);
         }

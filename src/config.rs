@@ -17,6 +17,24 @@ pub struct Config {
 pub struct AvocadoConfig {
     /// Extension configuration
     pub ext: ExtConfig,
+    /// Boot configuration
+    #[serde(default)]
+    pub boot: BootConfig,
+}
+
+/// Boot configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BootConfig {
+    /// Directory where runtime manifests and rootfs images are stored
+    pub runtimes_dir: String,
+}
+
+impl Default for BootConfig {
+    fn default() -> Self {
+        Self {
+            runtimes_dir: "/var/lib/avocado/runtimes".to_string(),
+        }
+    }
 }
 
 /// Extension configuration
@@ -43,6 +61,7 @@ impl Default for Config {
                     confext_mutable: None,
                     mutable: None,
                 },
+                boot: BootConfig::default(),
             },
         }
     }
@@ -81,6 +100,13 @@ impl Config {
     pub fn get_extensions_dir(&self) -> String {
         // Environment variable takes precedence (for testing)
         std::env::var("AVOCADO_EXTENSIONS_PATH").unwrap_or_else(|_| self.avocado.ext.dir.clone())
+    }
+
+    /// Get the runtimes directory, checking environment variable first
+    pub fn get_runtimes_dir(&self) -> String {
+        // Environment variable takes precedence (for testing)
+        std::env::var("AVOCADO_RUNTIMES_PATH")
+            .unwrap_or_else(|_| self.avocado.boot.runtimes_dir.clone())
     }
 
     /// Get the sysext mutable mode, defaulting to "ephemeral" if not set
