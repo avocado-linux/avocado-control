@@ -150,6 +150,19 @@ fn is_confext_enabled_for_current_environment(extension_path: &Path, extension_n
     true
 }
 
+/// Check if a release file's scope allows it to run in the current environment.
+/// This checks a specific scope key (SYSEXT_SCOPE or CONFEXT_SCOPE) in the content
+/// and returns true if the current environment (initrd or system) is permitted.
+fn is_scope_enabled_for_current_environment(content: &str, scope_key: &str) -> bool {
+    let in_initrd = is_running_in_initrd();
+    let required_scope = if in_initrd { "initrd" } else { "system" };
+    let scopes = parse_scope_from_release_content(content, scope_key);
+    if scopes.is_empty() {
+        return true;
+    }
+    scopes.contains(&required_scope.to_string())
+}
+
 /// Create the ext subcommand definition
 pub fn create_command() -> Command {
     Command::new("ext")
@@ -2088,15 +2101,22 @@ fn analyze_raw_extension_with_loop(
         is_confext = true;
     }
 
+    // For scope checking, use the versioned name to match the release file naming convention
+    let scope_check_name = if let Some(ref ver) = version {
+        format!("{name}-{ver}")
+    } else {
+        name.to_string()
+    };
+
     // Check scope requirements for current environment (initrd vs system)
     let sysext_enabled = if is_sysext {
-        is_sysext_enabled_for_current_environment(&mount_path, name)
+        is_sysext_enabled_for_current_environment(&mount_path, &scope_check_name)
     } else {
         false
     };
 
     let confext_enabled = if is_confext {
-        is_confext_enabled_for_current_environment(&mount_path, name)
+        is_confext_enabled_for_current_environment(&mount_path, &scope_check_name)
     } else {
         false
     };
@@ -2566,114 +2586,140 @@ fn scan_custom_release_directory(
     let mut modprobe_modules = Vec::new();
 
     let custom_path = Path::new(custom_dir);
-    let mut dirs = Vec::new();
+    let mut dirs: Vec<(String, Option<&str>)> = Vec::new();
 
     // Check if it's a single directory with release files (legacy behavior)
     if custom_path.join("extension-release.d").exists() {
-        dirs.push(custom_dir.to_string());
+        dirs.push((custom_dir.to_string(), None));
     } else {
         // Look for sysext and confext subdirectories
         let sysext_dir = custom_path.join("usr/lib/extension-release.d");
         let confext_dir = custom_path.join("etc/extension-release.d");
 
         if sysext_dir.exists() {
-            dirs.push(sysext_dir.to_string_lossy().to_string());
+            dirs.push((sysext_dir.to_string_lossy().to_string(), Some("SYSEXT_SCOPE")));
         }
         if confext_dir.exists() {
-            dirs.push(confext_dir.to_string_lossy().to_string());
+            dirs.push((confext_dir.to_string_lossy().to_string(), Some("CONFEXT_SCOPE")));
         }
 
         // If neither subdirectory structure exists, use the custom dir directly
         if dirs.is_empty() {
-            dirs.push(custom_dir.to_string());
+            dirs.push((custom_dir.to_string(), None));
         }
     }
 
-    for release_dir in dirs {
+    for (release_dir, scope_key) in &dirs {
         scan_directory_for_release_files(
-            &release_dir,
+            release_dir,
             &mut on_merge_commands,
             &mut modprobe_modules,
+            *scope_key,
         );
     }
 
     Ok((on_merge_commands, modprobe_modules))
 }
 
-/// Scan release files from a specific extension's trusted mount point
+/// Scan release files from a specific extension's trusted mount point.
+/// Only processes sysext release files if the extension is enabled as sysext for the
+/// current scope, and confext release files if enabled as confext for the current scope.
+/// Also verifies scope from the release file content as defense in depth.
 fn scan_extension_release_files(
     extension: &Extension,
     on_merge_commands: &mut Vec<String>,
     modprobe_modules: &mut Vec<String>,
 ) -> Result<(), SystemdError> {
-    // Check for sysext release file - try both versioned and non-versioned
-    let sysext_release_path = extension
-        .path
-        .join("usr/lib/extension-release.d")
-        .join(format!("extension-release.{}", extension.name));
+    if extension.is_sysext {
+        // Check for sysext release file - try both versioned and non-versioned
+        let sysext_release_path = extension
+            .path
+            .join("usr/lib/extension-release.d")
+            .join(format!("extension-release.{}", extension.name));
 
-    if sysext_release_path.exists() {
-        if let Ok(content) = fs::read_to_string(&sysext_release_path) {
-            let mut commands = parse_avocado_on_merge_commands(&content);
-            on_merge_commands.append(&mut commands);
+        if sysext_release_path.exists() {
+            if let Ok(content) = fs::read_to_string(&sysext_release_path) {
+                if is_scope_enabled_for_current_environment(&content, "SYSEXT_SCOPE") {
+                    let mut commands = parse_avocado_on_merge_commands(&content);
+                    on_merge_commands.append(&mut commands);
 
-            let mut modules = parse_avocado_modprobe(&content);
-            modprobe_modules.append(&mut modules);
-        }
-    } else {
-        // Try to find versioned release file
-        let sysext_dir = extension.path.join("usr/lib/extension-release.d");
-        if sysext_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&sysext_dir) {
-                for entry in entries.flatten() {
-                    let filename = entry.file_name();
-                    let filename_str = filename.to_string_lossy();
-                    if filename_str.starts_with(&format!("extension-release.{}-", extension.name)) {
-                        if let Ok(content) = fs::read_to_string(entry.path()) {
-                            let mut commands = parse_avocado_on_merge_commands(&content);
-                            on_merge_commands.append(&mut commands);
+                    let mut modules = parse_avocado_modprobe(&content);
+                    modprobe_modules.append(&mut modules);
+                }
+            }
+        } else {
+            // Try to find versioned release file
+            let sysext_dir = extension.path.join("usr/lib/extension-release.d");
+            if sysext_dir.exists() {
+                if let Ok(entries) = fs::read_dir(&sysext_dir) {
+                    for entry in entries.flatten() {
+                        let filename = entry.file_name();
+                        let filename_str = filename.to_string_lossy();
+                        if filename_str
+                            .starts_with(&format!("extension-release.{}-", extension.name))
+                        {
+                            if let Ok(content) = fs::read_to_string(entry.path()) {
+                                if is_scope_enabled_for_current_environment(
+                                    &content,
+                                    "SYSEXT_SCOPE",
+                                ) {
+                                    let mut commands = parse_avocado_on_merge_commands(&content);
+                                    on_merge_commands.append(&mut commands);
 
-                            let mut modules = parse_avocado_modprobe(&content);
-                            modprobe_modules.append(&mut modules);
+                                    let mut modules = parse_avocado_modprobe(&content);
+                                    modprobe_modules.append(&mut modules);
+                                }
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
             }
         }
     }
 
-    // Check for confext release file - try both versioned and non-versioned
-    let confext_release_path = extension
-        .path
-        .join("etc/extension-release.d")
-        .join(format!("extension-release.{}", extension.name));
+    if extension.is_confext {
+        // Check for confext release file - try both versioned and non-versioned
+        let confext_release_path = extension
+            .path
+            .join("etc/extension-release.d")
+            .join(format!("extension-release.{}", extension.name));
 
-    if confext_release_path.exists() {
-        if let Ok(content) = fs::read_to_string(&confext_release_path) {
-            let mut commands = parse_avocado_on_merge_commands(&content);
-            on_merge_commands.append(&mut commands);
+        if confext_release_path.exists() {
+            if let Ok(content) = fs::read_to_string(&confext_release_path) {
+                if is_scope_enabled_for_current_environment(&content, "CONFEXT_SCOPE") {
+                    let mut commands = parse_avocado_on_merge_commands(&content);
+                    on_merge_commands.append(&mut commands);
 
-            let mut modules = parse_avocado_modprobe(&content);
-            modprobe_modules.append(&mut modules);
-        }
-    } else {
-        // Try to find versioned release file
-        let confext_dir = extension.path.join("etc/extension-release.d");
-        if confext_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&confext_dir) {
-                for entry in entries.flatten() {
-                    let filename = entry.file_name();
-                    let filename_str = filename.to_string_lossy();
-                    if filename_str.starts_with(&format!("extension-release.{}-", extension.name)) {
-                        if let Ok(content) = fs::read_to_string(entry.path()) {
-                            let mut commands = parse_avocado_on_merge_commands(&content);
-                            on_merge_commands.append(&mut commands);
+                    let mut modules = parse_avocado_modprobe(&content);
+                    modprobe_modules.append(&mut modules);
+                }
+            }
+        } else {
+            // Try to find versioned release file
+            let confext_dir = extension.path.join("etc/extension-release.d");
+            if confext_dir.exists() {
+                if let Ok(entries) = fs::read_dir(&confext_dir) {
+                    for entry in entries.flatten() {
+                        let filename = entry.file_name();
+                        let filename_str = filename.to_string_lossy();
+                        if filename_str
+                            .starts_with(&format!("extension-release.{}-", extension.name))
+                        {
+                            if let Ok(content) = fs::read_to_string(entry.path()) {
+                                if is_scope_enabled_for_current_environment(
+                                    &content,
+                                    "CONFEXT_SCOPE",
+                                ) {
+                                    let mut commands = parse_avocado_on_merge_commands(&content);
+                                    on_merge_commands.append(&mut commands);
 
-                            let mut modules = parse_avocado_modprobe(&content);
-                            modprobe_modules.append(&mut modules);
+                                    let mut modules = parse_avocado_modprobe(&content);
+                                    modprobe_modules.append(&mut modules);
+                                }
+                            }
+                            break;
                         }
-                        break;
                     }
                 }
             }
@@ -2770,11 +2816,13 @@ pub fn scan_extension_for_enable_services(
     services
 }
 
-/// Scan a directory for release files (used in test mode)
+/// Scan a directory for release files (used in test mode).
+/// Only includes commands from release files whose scope matches the current environment.
 fn scan_directory_for_release_files(
     release_dir: &str,
     on_merge_commands: &mut Vec<String>,
     modprobe_modules: &mut Vec<String>,
+    scope_key: Option<&str>,
 ) {
     if !Path::new(release_dir).exists() {
         return;
@@ -2785,6 +2833,11 @@ fn scan_directory_for_release_files(
             let path = entry.path();
             if path.is_file() {
                 if let Ok(content) = fs::read_to_string(&path) {
+                    if let Some(key) = scope_key {
+                        if !is_scope_enabled_for_current_environment(&content, key) {
+                            continue;
+                        }
+                    }
                     let mut commands = parse_avocado_on_merge_commands(&content);
                     on_merge_commands.append(&mut commands);
 
@@ -2878,8 +2931,8 @@ fn check_avocado_on_merge_depmod(content: &str) -> bool {
     commands.contains(&"depmod".to_string())
 }
 
-/// Scan currently merged extensions for AVOCADO_ON_UNMERGE commands
-/// This scans the release files from the merged overlay paths before unmerge
+/// Scan currently merged extensions for AVOCADO_ON_UNMERGE commands.
+/// Only includes commands from extensions whose scope matches the current environment.
 fn scan_merged_extensions_for_on_unmerge_commands() -> Result<Vec<String>, SystemdError> {
     let mut on_unmerge_commands = Vec::new();
 
@@ -2889,11 +2942,14 @@ fn scan_merged_extensions_for_on_unmerge_commands() -> Result<Vec<String>, Syste
     }
 
     // When extensions are merged, their release files are overlayed to:
-    // - /usr/lib/extension-release.d/ for sysext
-    // - /etc/extension-release.d/ for confext
-    let release_dirs = ["/usr/lib/extension-release.d", "/etc/extension-release.d"];
+    // - /usr/lib/extension-release.d/ for sysext (scope key: SYSEXT_SCOPE)
+    // - /etc/extension-release.d/ for confext (scope key: CONFEXT_SCOPE)
+    let release_dirs: [(&str, &str); 2] = [
+        ("/usr/lib/extension-release.d", "SYSEXT_SCOPE"),
+        ("/etc/extension-release.d", "CONFEXT_SCOPE"),
+    ];
 
-    for release_dir in &release_dirs {
+    for (release_dir, scope_key) in &release_dirs {
         let path = Path::new(release_dir);
         if !path.exists() {
             continue;
@@ -2904,6 +2960,9 @@ fn scan_merged_extensions_for_on_unmerge_commands() -> Result<Vec<String>, Syste
                 let file_path = entry.path();
                 if file_path.is_file() {
                     if let Ok(content) = fs::read_to_string(&file_path) {
+                        if !is_scope_enabled_for_current_environment(&content, scope_key) {
+                            continue;
+                        }
                         let mut commands = parse_avocado_on_unmerge_commands(&content);
                         on_unmerge_commands.append(&mut commands);
                     }
@@ -2922,40 +2981,42 @@ fn scan_custom_release_directory_for_on_unmerge(
     let mut on_unmerge_commands = Vec::new();
 
     let custom_path = Path::new(custom_dir);
-    let mut dirs = Vec::new();
+    let mut dirs: Vec<(String, Option<&str>)> = Vec::new();
 
     // Check if it's a single directory with release files (legacy behavior)
     if custom_path.join("extension-release.d").exists() {
-        dirs.push(custom_dir.to_string());
+        dirs.push((custom_dir.to_string(), None));
     } else {
         // Look for sysext and confext subdirectories
         let sysext_dir = custom_path.join("usr/lib/extension-release.d");
         let confext_dir = custom_path.join("etc/extension-release.d");
 
         if sysext_dir.exists() {
-            dirs.push(sysext_dir.to_string_lossy().to_string());
+            dirs.push((sysext_dir.to_string_lossy().to_string(), Some("SYSEXT_SCOPE")));
         }
         if confext_dir.exists() {
-            dirs.push(confext_dir.to_string_lossy().to_string());
+            dirs.push((confext_dir.to_string_lossy().to_string(), Some("CONFEXT_SCOPE")));
         }
 
         // If neither subdirectory structure exists, use the custom dir directly
         if dirs.is_empty() {
-            dirs.push(custom_dir.to_string());
+            dirs.push((custom_dir.to_string(), None));
         }
     }
 
-    for release_dir in dirs {
-        scan_directory_for_on_unmerge_commands(&release_dir, &mut on_unmerge_commands);
+    for (release_dir, scope_key) in &dirs {
+        scan_directory_for_on_unmerge_commands(release_dir, &mut on_unmerge_commands, *scope_key);
     }
 
     Ok(on_unmerge_commands)
 }
 
-/// Scan a directory for AVOCADO_ON_UNMERGE commands in release files
+/// Scan a directory for AVOCADO_ON_UNMERGE commands in release files.
+/// Only includes commands from release files whose scope matches the current environment.
 fn scan_directory_for_on_unmerge_commands(
     release_dir: &str,
     on_unmerge_commands: &mut Vec<String>,
+    scope_key: Option<&str>,
 ) {
     if !Path::new(release_dir).exists() {
         return;
@@ -2966,6 +3027,11 @@ fn scan_directory_for_on_unmerge_commands(
             let path = entry.path();
             if path.is_file() {
                 if let Ok(content) = fs::read_to_string(&path) {
+                    if let Some(key) = scope_key {
+                        if !is_scope_enabled_for_current_environment(&content, key) {
+                            continue;
+                        }
+                    }
                     let mut commands = parse_avocado_on_unmerge_commands(&content);
                     on_unmerge_commands.append(&mut commands);
                 }
