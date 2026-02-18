@@ -125,7 +125,7 @@ fn main() {
             runtime::handle_command(runtime_matches, &config, &output);
         }
         Some(("status", _)) => {
-            show_system_status(&output);
+            show_system_status(&config, &output);
         }
         // Top-level command aliases
         Some(("merge", _)) => {
@@ -171,7 +171,7 @@ fn main() {
 }
 
 /// Show overall system status including extensions
-fn show_system_status(output: &OutputManager) {
+fn show_system_status(config: &Config, output: &OutputManager) {
     output.info("System Status", "Checking overall system status");
-    ext::status_extensions(output);
+    ext::status_extensions(config, output);
 }

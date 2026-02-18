@@ -192,7 +192,7 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
             refresh_extensions(config, output);
         }
         Some(("status", _)) => {
-            status_extensions(output);
+            status_extensions(config, output);
         }
         _ => {
             println!("Use 'avocadoctl ext --help' for available extension commands");
@@ -909,8 +909,8 @@ pub fn refresh_extensions(config: &Config, output: &OutputManager) {
 }
 
 /// Show status of merged extensions
-pub fn status_extensions(output: &OutputManager) {
-    match show_enhanced_status(output) {
+pub fn status_extensions(config: &Config, output: &OutputManager) {
+    match show_enhanced_status(config, output) {
         Ok(_) => {}
         Err(e) => {
             output.error("Extension Status", &format!("Failed to show status: {e}"));
@@ -921,11 +921,15 @@ pub fn status_extensions(output: &OutputManager) {
 }
 
 /// Show enhanced status with extension origins and HITL information
-fn show_enhanced_status(output: &OutputManager) -> Result<(), SystemdError> {
+fn show_enhanced_status(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
     output.status_header("Avocado Extension Status");
 
+    // Display active runtime info
+    display_active_runtime(config, output);
+
     // Get our view of available extensions
-    let available_extensions = scan_extensions_from_all_sources()?;
+    let available_extensions =
+        scan_extensions_from_all_sources_with_verbosity(output.is_verbose())?;
 
     // Get systemd's view of mounted extensions
     let mounted_sysext = get_mounted_systemd_extensions("systemd-sysext")?;
@@ -935,6 +939,40 @@ fn show_enhanced_status(output: &OutputManager) -> Result<(), SystemdError> {
     display_extension_status(&available_extensions, &mounted_sysext, &mounted_confext)?;
 
     Ok(())
+}
+
+/// Display the active runtime configuration
+fn display_active_runtime(config: &Config, output: &OutputManager) {
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = std::path::Path::new(&base_dir);
+
+    match crate::manifest::RuntimeManifest::load_active(base_path) {
+        Some(manifest) => {
+            let short_id = if manifest.id.len() >= 8 {
+                &manifest.id[..8]
+            } else {
+                &manifest.id
+            };
+            println!("Active Runtime:");
+            println!(
+                "  {} v{} (build {short_id})",
+                manifest.runtime.name, manifest.runtime.version
+            );
+            println!("  Built: {}", manifest.built_at);
+            println!("  Extensions: {}", manifest.extensions.len());
+            if output.is_verbose() {
+                println!("  Build ID: {}", manifest.id);
+                for ext in &manifest.extensions {
+                    println!("    - {} v{} ({})", ext.name, ext.version, ext.filename);
+                }
+            }
+            println!();
+        }
+        None => {
+            println!("Active Runtime: none (using legacy extension discovery)");
+            println!();
+        }
+    }
 }
 
 /// Legacy status display for fallback
@@ -1185,14 +1223,19 @@ fn display_status_summary(
         .count();
     let loop_count = available.iter().filter(|e| !e.is_directory).count();
 
+    let unique_sysext: std::collections::HashSet<&str> =
+        mounted_sysext.iter().map(|e| e.name.as_str()).collect();
+    let unique_confext: std::collections::HashSet<&str> =
+        mounted_confext.iter().map(|e| e.name.as_str()).collect();
+
     println!("Summary:");
     println!("  Available Extensions: {} total", available.len());
     println!("    - HITL mounted: {hitl_count}");
     println!("    - Local directories: {directory_count}");
     println!("    - Loop devices: {loop_count}");
     println!("  Mounted Extensions:");
-    println!("    - System extensions: {}", mounted_sysext.len());
-    println!("    - Configuration extensions: {}", mounted_confext.len());
+    println!("    - System extensions: {}", unique_sysext.len());
+    println!("    - Configuration extensions: {}", unique_confext.len());
 
     if hitl_count > 0 {
         print_colored_info("HITL extensions are active - development mode");
@@ -1433,11 +1476,6 @@ fn cleanup_stale_extension_symlinks(
     }
 
     Ok(())
-}
-
-/// Scan all extension sources in priority order (legacy)
-fn scan_extensions_from_all_sources() -> Result<Vec<Extension>, SystemdError> {
-    scan_extensions_from_all_sources_with_verbosity(true)
 }
 
 /// Read VERSION_ID from /etc/os-release
