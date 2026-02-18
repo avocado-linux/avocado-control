@@ -17,6 +17,9 @@ pub struct Config {
 pub struct AvocadoConfig {
     /// Extension configuration
     pub ext: ExtConfig,
+    /// Override for the avocado base directory (default: /var/lib/avocado)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtimes_dir: Option<String>,
 }
 
 /// Extension configuration
@@ -43,6 +46,7 @@ impl Default for Config {
                     confext_mutable: None,
                     mutable: None,
                 },
+                runtimes_dir: None,
             },
         }
     }
@@ -81,6 +85,17 @@ impl Config {
     pub fn get_extensions_dir(&self) -> String {
         // Environment variable takes precedence (for testing)
         std::env::var("AVOCADO_EXTENSIONS_PATH").unwrap_or_else(|_| self.avocado.ext.dir.clone())
+    }
+
+    /// Get the avocado base directory (parent of extensions/, runtimes/, active).
+    /// Checks AVOCADO_BASE_DIR env var first, then config, then default.
+    pub fn get_avocado_base_dir(&self) -> String {
+        std::env::var("AVOCADO_BASE_DIR").unwrap_or_else(|_| {
+            self.avocado
+                .runtimes_dir
+                .clone()
+                .unwrap_or_else(|| crate::manifest::DEFAULT_AVOCADO_DIR.to_string())
+        })
     }
 
     /// Get the sysext mutable mode, defaulting to "ephemeral" if not set

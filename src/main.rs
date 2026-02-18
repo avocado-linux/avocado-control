@@ -1,9 +1,10 @@
 mod commands;
 mod config;
+pub mod manifest;
 mod output;
 
 use clap::{Arg, Command};
-use commands::{ext, hitl};
+use commands::{ext, hitl, runtime};
 use config::Config;
 use output::OutputManager;
 
@@ -30,6 +31,7 @@ fn main() {
         )
         .subcommand(ext::create_command())
         .subcommand(hitl::create_command())
+        .subcommand(runtime::create_command())
         .subcommand(
             Command::new("status").about("Show overall system status including extensions"),
         )
@@ -118,6 +120,9 @@ fn main() {
         }
         Some(("hitl", hitl_matches)) => {
             hitl::handle_command(hitl_matches, &output);
+        }
+        Some(("runtime", runtime_matches)) => {
+            runtime::handle_command(runtime_matches, &config, &output);
         }
         Some(("status", _)) => {
             show_system_status(&output);

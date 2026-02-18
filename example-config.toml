@@ -19,6 +19,10 @@ confext_mutable = "ephemeral"
 # If specified, applies to both sysext and confext unless overridden
 # mutable = "ephemeral"
 
+# Base directory for runtime manifests and the active symlink
+# Default: /var/lib/avocado
+# runtimes_dir = "/var/lib/avocado"
+
 # Examples of different configurations:
 # sysext_mutable = "no"           # Force immutable mode for /usr, /opt
 # confext_mutable = "yes"         # Force mutable mode for /etc, create write routing directories

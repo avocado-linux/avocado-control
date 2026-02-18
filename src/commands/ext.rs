@@ -437,6 +437,12 @@ pub fn enable_extensions(
     config: &Config,
     output: &OutputManager,
 ) {
+    // Warn if an active runtime manifest is present
+    let base_dir = config.get_avocado_base_dir();
+    if crate::manifest::RuntimeManifest::load_active(std::path::Path::new(&base_dir)).is_some() {
+        eprintln!("Warning: An active runtime manifest is present. The manifest takes precedence over symlink-based extension discovery during merge/refresh.");
+    }
+
     // Determine the OS release version to use
     let version_id = if let Some(version) = os_release_version {
         version.to_string()
@@ -592,9 +598,15 @@ pub fn disable_extensions(
     os_release_version: Option<&str>,
     extensions: Option<&[&str]>,
     all: bool,
-    _config: &Config,
+    config: &Config,
     output: &OutputManager,
 ) {
+    // Warn if an active runtime manifest is present
+    let base_dir = config.get_avocado_base_dir();
+    if crate::manifest::RuntimeManifest::load_active(std::path::Path::new(&base_dir)).is_some() {
+        eprintln!("Warning: An active runtime manifest is present. The manifest takes precedence over symlink-based extension discovery during merge/refresh.");
+    }
+
     // Determine the OS release version to use
     let version_id = if let Some(version) = os_release_version {
         version.to_string()
@@ -1488,8 +1500,95 @@ fn scan_extensions_from_all_sources_with_verbosity(
         }
     }
 
-    // 2. Second priority: OS release-specific extensions (/var/lib/avocado/os-releases/<VERSION_ID>)
-    // Check os-releases directory to see which extensions are explicitly enabled
+    // 2. Second priority: Active runtime manifest
+    // If a manifest exists, use it to determine extensions and skip legacy os-releases scanning
+    let base_dir = crate::manifest::RuntimeManifest::base_dir();
+    let base_path = Path::new(&base_dir);
+    let active_manifest = crate::manifest::RuntimeManifest::load_active(base_path);
+    let used_manifest = if let Some(ref manifest) = active_manifest {
+        if verbose {
+            println!(
+                "Found active runtime manifest: {} v{} (build {})",
+                manifest.runtime.name, manifest.runtime.version, manifest.id
+            );
+        }
+
+        for mext in &manifest.extensions {
+            if extension_map.contains_key(&mext.name) {
+                if verbose {
+                    println!(
+                        "Skipping manifest extension {} (HITL version preferred)",
+                        mext.name
+                    );
+                }
+                continue;
+            }
+
+            let raw_path = Path::new(&extensions_dir).join(&mext.filename);
+            if raw_path.exists() {
+                if raw_path.is_dir() {
+                    if let Ok(dir_exts) =
+                        scan_directory_extensions(raw_path.to_str().unwrap_or_default())
+                    {
+                        for ext in dir_exts {
+                            if !extension_map.contains_key(&ext.name) {
+                                if verbose {
+                                    println!(
+                                        "Found manifest extension: {} at {}",
+                                        ext.name,
+                                        ext.path.display()
+                                    );
+                                }
+                                extension_map.insert(ext.name.clone(), ext);
+                            }
+                        }
+                    }
+                } else {
+                    // .raw file extension
+                    match analyze_raw_extension_with_loop(
+                        &mext.name,
+                        &Some(mext.version.clone()),
+                        &raw_path,
+                        verbose,
+                    ) {
+                        Ok(ext) => {
+                            if verbose {
+                                println!(
+                                    "Found manifest extension: {} at {}",
+                                    ext.name,
+                                    ext.path.display()
+                                );
+                            }
+                            extension_map.insert(ext.name.clone(), ext);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: Failed to analyze manifest extension '{}': {e}",
+                                mext.name
+                            );
+                        }
+                    }
+                }
+            } else if verbose {
+                eprintln!(
+                    "Warning: Extension file '{}' from manifest not found at {}",
+                    mext.filename,
+                    raw_path.display()
+                );
+            }
+        }
+
+        true
+    } else {
+        if verbose {
+            println!("No active runtime manifest found, using legacy extension discovery");
+        }
+        false
+    };
+
+    // Legacy extension discovery: only used when no manifest is present
+    if !used_manifest {
+    // 2b. Legacy: OS release-specific extensions (/var/lib/avocado/os-releases/<VERSION_ID>)
     let os_releases_extensions_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
         let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         format!("{temp_base}/avocado/os-releases/{version_id}")
@@ -1503,17 +1602,14 @@ fn scan_extensions_from_all_sources_with_verbosity(
         );
     }
 
-    // Check if os-releases directory exists
     if !Path::new(&os_releases_extensions_dir).exists() {
         if verbose {
             println!("OS releases directory {os_releases_extensions_dir} does not exist, skipping");
         }
-        // Only warn in non-test mode
         if std::env::var("AVOCADO_TEST_MODE").is_err() {
             eprintln!("Warning: No extensions are enabled for VERSION_ID '{version_id}'. Directory not found: {os_releases_extensions_dir}");
         }
     } else {
-        // Scan os-releases directory for symlinks or extensions
         if let Ok(os_releases_extensions) = scan_directory_extensions(&os_releases_extensions_dir) {
             for ext in os_releases_extensions {
                 if !extension_map.contains_key(&ext.name) {
@@ -1534,13 +1630,11 @@ fn scan_extensions_from_all_sources_with_verbosity(
             }
         }
 
-        // Also scan for .raw files in os-releases directory (symlinks to actual extensions)
         if let Ok(os_releases_raw_files) = scan_raw_files(&os_releases_extensions_dir) {
             for (ext_name, ext_version, ext_path) in os_releases_raw_files {
                 use std::collections::hash_map::Entry;
                 match extension_map.entry(ext_name.clone()) {
                     Entry::Vacant(entry) => {
-                        // Analyze the raw file
                         if let Ok(ext) = analyze_raw_extension_with_loop(
                             &ext_name,
                             &ext_version,
@@ -1569,9 +1663,6 @@ fn scan_extensions_from_all_sources_with_verbosity(
         }
     }
 
-    // 3. Third priority: Regular directory extensions (skip if already have HITL or OS release version)
-    // IMPORTANT: If an os-releases directory exists, we do NOT fall back to the base extensions directory
-    // This ensures that explicitly disabled extensions (removed from os-releases) are not merged
     let os_releases_dir_exists = Path::new(&os_releases_extensions_dir).exists();
 
     if verbose {
@@ -1579,7 +1670,6 @@ fn scan_extensions_from_all_sources_with_verbosity(
     }
 
     if !os_releases_dir_exists {
-        // Only scan base directory if no os-releases directory exists (backward compatibility)
         if verbose {
             println!("No OS releases directory found, scanning base extensions directory");
         }
@@ -1606,8 +1696,6 @@ fn scan_extensions_from_all_sources_with_verbosity(
         println!("OS releases directory exists, skipping base extensions directory (use enable/disable to manage extensions)");
     }
 
-    // 4. Fourth priority: Raw file extensions (skip if already have directory version)
-    // IMPORTANT: Same as above - only scan if no os-releases directory exists
     if verbose {
         println!("Scanning raw file extensions in {extensions_dir}");
     }
@@ -1618,11 +1706,8 @@ fn scan_extensions_from_all_sources_with_verbosity(
         }
         let raw_files = scan_raw_files(&extensions_dir)?;
 
-        // Cleanup stale loops before processing new ones
-        // Build list of all valid loop names (with versions for versioned extensions)
         let mut available_loop_names: Vec<String> = Vec::new();
 
-        // Add extensions already in the map (these might have versioned loop names)
         for ext in extension_map.values() {
             if let Some(ver) = &ext.version {
                 available_loop_names.push(format!("{}-{}", ext.name, ver));
@@ -1631,7 +1716,6 @@ fn scan_extensions_from_all_sources_with_verbosity(
             }
         }
 
-        // Add versioned names for raw files we're about to process
         for (name, version, _path) in &raw_files {
             if let Some(ver) = version {
                 available_loop_names.push(format!("{name}-{ver}"));
@@ -1642,7 +1726,6 @@ fn scan_extensions_from_all_sources_with_verbosity(
 
         cleanup_stale_loops(&available_loop_names)?;
 
-        // Process .raw files with persistent loops (only if not already found)
         for (ext_name, ext_version, path) in raw_files {
             match extension_map.entry(ext_name.clone()) {
                 std::collections::hash_map::Entry::Vacant(entry) => {
@@ -1665,6 +1748,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
     } else if verbose {
         println!("OS releases directory exists, skipping base raw files (use enable/disable to manage extensions)");
     }
+    } // end !used_manifest
 
     // Convert map to vector
     extensions.extend(extension_map.into_values());
@@ -2572,7 +2656,7 @@ pub fn scan_extension_for_enable_services(
     // Check for sysext release file - try both versioned and non-versioned
     let sysext_release_path = extension_path
         .join("usr/lib/extension-release.d")
-        .join(format!("extension-release.{}", extension_name));
+        .join(format!("extension-release.{extension_name}"));
 
     if sysext_release_path.exists() {
         if let Ok(content) = fs::read_to_string(&sysext_release_path) {
@@ -2591,7 +2675,7 @@ pub fn scan_extension_for_enable_services(
                 for entry in entries.flatten() {
                     let filename = entry.file_name();
                     let filename_str = filename.to_string_lossy();
-                    if filename_str.starts_with(&format!("extension-release.{}-", extension_name)) {
+                    if filename_str.starts_with(&format!("extension-release.{extension_name}-")) {
                         if let Ok(content) = fs::read_to_string(entry.path()) {
                             let mut svc = parse_avocado_enable_services(&content);
                             for s in svc.drain(..) {
@@ -2610,7 +2694,7 @@ pub fn scan_extension_for_enable_services(
     // Check for confext release file - try both versioned and non-versioned
     let confext_release_path = extension_path
         .join("etc/extension-release.d")
-        .join(format!("extension-release.{}", extension_name));
+        .join(format!("extension-release.{extension_name}"));
 
     if confext_release_path.exists() {
         if let Ok(content) = fs::read_to_string(&confext_release_path) {
@@ -2629,7 +2713,7 @@ pub fn scan_extension_for_enable_services(
                 for entry in entries.flatten() {
                     let filename = entry.file_name();
                     let filename_str = filename.to_string_lossy();
-                    if filename_str.starts_with(&format!("extension-release.{}-", extension_name)) {
+                    if filename_str.starts_with(&format!("extension-release.{extension_name}-")) {
                         if let Ok(content) = fs::read_to_string(entry.path()) {
                             let mut svc = parse_avocado_enable_services(&content);
                             for s in svc.drain(..) {
