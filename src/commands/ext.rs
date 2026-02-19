@@ -926,8 +926,14 @@ pub fn status_extensions(config: &Config, output: &OutputManager) {
     match show_enhanced_status(config, output) {
         Ok(_) => {}
         Err(e) => {
+            if output.is_json() {
+                println!(
+                    "{}",
+                    serde_json::json!({"error": format!("Failed to show status: {e}")})
+                );
+                return;
+            }
             output.error("Extension Status", &format!("Failed to show status: {e}"));
-            // Fall back to legacy status display
             show_legacy_status(output);
         }
     }
@@ -935,10 +941,14 @@ pub fn status_extensions(config: &Config, output: &OutputManager) {
 
 /// Show enhanced status with extension origins and HITL information
 fn show_enhanced_status(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
-    output.status_header("Avocado Extension Status");
-
-    // Display active runtime info
-    display_active_runtime(config, output);
+    // Load active manifest
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = std::path::Path::new(&base_dir);
+    let active_manifest = crate::manifest::RuntimeManifest::load_active(base_path);
+    let manifest_extensions = active_manifest
+        .as_ref()
+        .map(|m| m.extensions.as_slice())
+        .unwrap_or(&[]);
 
     // Get our view of available extensions
     let available_extensions =
@@ -948,8 +958,45 @@ fn show_enhanced_status(config: &Config, output: &OutputManager) -> Result<(), S
     let mounted_sysext = get_mounted_systemd_extensions("systemd-sysext")?;
     let mounted_confext = get_mounted_systemd_extensions("systemd-confext")?;
 
+    if output.is_json() {
+        let runtime_json = match &active_manifest {
+            Some(m) => serde_json::json!({
+                "name": m.runtime.name,
+                "version": m.runtime.version,
+                "id": m.id,
+                "built_at": m.built_at,
+                "manifest_version": m.manifest_version,
+            }),
+            None => serde_json::Value::Null,
+        };
+
+        let extensions_json: Vec<serde_json::Value> = build_extension_json_list(
+            &available_extensions,
+            &mounted_sysext,
+            &mounted_confext,
+            manifest_extensions,
+        );
+
+        let status_json = serde_json::json!({
+            "runtime": runtime_json,
+            "extensions": extensions_json,
+        });
+        println!("{}", serde_json::to_string_pretty(&status_json).unwrap());
+        return Ok(());
+    }
+
+    output.status_header("Avocado Extension Status");
+
+    // Display active runtime info
+    display_active_runtime(config, output);
+
     // Create comprehensive status
-    display_extension_status(&available_extensions, &mounted_sysext, &mounted_confext)?;
+    display_extension_status(
+        &available_extensions,
+        &mounted_sysext,
+        &mounted_confext,
+        manifest_extensions,
+    )?;
 
     Ok(())
 }
@@ -1097,11 +1144,92 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
     Ok(mounted)
 }
 
+/// Build a JSON representation of all extensions for machine-readable output
+fn build_extension_json_list(
+    available: &[Extension],
+    mounted_sysext: &[MountedExtension],
+    mounted_confext: &[MountedExtension],
+    manifest_extensions: &[crate::manifest::ManifestExtension],
+) -> Vec<serde_json::Value> {
+    let mut all_extensions = std::collections::HashSet::new();
+
+    for ext in available {
+        if let Some(ver) = &ext.version {
+            all_extensions.insert(format!("{}-{}", ext.name, ver));
+        } else {
+            all_extensions.insert(ext.name.clone());
+        }
+    }
+    for ext in mounted_sysext {
+        all_extensions.insert(ext.name.clone());
+    }
+    for ext in mounted_confext {
+        all_extensions.insert(ext.name.clone());
+    }
+
+    let mut sorted: Vec<_> = all_extensions.into_iter().collect();
+    sorted.sort();
+
+    sorted
+        .iter()
+        .map(|ext_name| {
+            let available_ext = available.iter().find(|e| {
+                if let Some(ver) = &e.version {
+                    format!("{}-{}", e.name, ver) == *ext_name
+                } else {
+                    e.name == *ext_name
+                }
+            });
+
+            let is_sysext = mounted_sysext.iter().any(|e| e.name == *ext_name);
+            let is_confext = mounted_confext.iter().any(|e| e.name == *ext_name);
+
+            let status = match (is_sysext, is_confext) {
+                (true, true) => "MERGED",
+                (true, false) => "SYSEXT",
+                (false, true) => "CONFEXT",
+                (false, false) => {
+                    if available_ext.is_some() {
+                        "READY"
+                    } else {
+                        "UNKNOWN"
+                    }
+                }
+            };
+
+            let mut types = Vec::new();
+            if let Some(ext) = available_ext {
+                if ext.is_sysext {
+                    types.push("sys");
+                }
+                if ext.is_confext {
+                    types.push("conf");
+                }
+            }
+
+            let origin = available_ext
+                .map(get_extension_origin_short)
+                .unwrap_or_else(|| "?".to_string());
+
+            let short_id = lookup_extension_short_id(ext_name, manifest_extensions);
+
+            serde_json::json!({
+                "name": ext_name,
+                "id": if short_id == "-" { serde_json::Value::Null } else { serde_json::Value::String(short_id) },
+                "status": status,
+                "type": if types.is_empty() { vec!["?"] } else { types },
+                "origin": origin,
+            })
+        })
+        .collect()
+}
+
 /// Display comprehensive extension status
 fn display_extension_status(
     available: &[Extension],
     mounted_sysext: &[MountedExtension],
     mounted_confext: &[MountedExtension],
+    manifest_extensions: &[crate::manifest::ManifestExtension],
 ) -> Result<(), SystemdError> {
     // Collect all unique extension names (with versions if present)
     let mut all_extensions = std::collections::HashSet::new();
@@ -1128,16 +1256,39 @@ fn display_extension_status(
         return Ok(());
     }
 
-    // Display header - optimized for 80 columns
-    println!("{:<24} {:<10} {:<12} Origin", "Extension", "Status", "Type");
-    println!("{}", "=".repeat(79));
-
     // Sort extensions for consistent display
     let mut sorted_extensions: Vec<_> = all_extensions.into_iter().collect();
     sorted_extensions.sort();
 
-    for ext_name in sorted_extensions {
-        display_extension_info(&ext_name, available, mounted_sysext, mounted_confext);
+    // Compute dynamic column width from the longest extension name
+    let name_width = sorted_extensions
+        .iter()
+        .map(|n| n.len())
+        .max()
+        .unwrap_or(9)
+        .max(9); // at least as wide as "Extension"
+
+    // Display header with dynamic name column
+    println!(
+        "{:<nw$} {:<10} {:<10} {:<12} Origin",
+        "Extension",
+        "ID",
+        "Status",
+        "Type",
+        nw = name_width
+    );
+    let total_width = name_width + 1 + 10 + 1 + 10 + 1 + 12 + 1 + 10;
+    println!("{}", "=".repeat(total_width));
+
+    for ext_name in &sorted_extensions {
+        display_extension_info(
+            ext_name,
+            available,
+            mounted_sysext,
+            mounted_confext,
+            manifest_extensions,
+            name_width,
+        );
     }
 
     // Display summary
@@ -1153,6 +1304,8 @@ fn display_extension_info(
     available: &[Extension],
     mounted_sysext: &[MountedExtension],
     mounted_confext: &[MountedExtension],
+    manifest_extensions: &[crate::manifest::ManifestExtension],
+    name_width: usize,
 ) {
     // Find extension in available list (match by full versioned name or base name)
     let available_ext = available.iter().find(|e| {
@@ -1196,15 +1349,37 @@ fn display_extension_info(
         types.join("+")
     };
 
-    // Determine origin - shortened for 80 columns
+    // Determine origin
     let origin = if let Some(ext) = available_ext {
         get_extension_origin_short(ext)
     } else {
         "?".to_string()
     };
 
-    // For 80 columns: name(24) status(10) type(12) origin(remaining ~33)
-    println!("{ext_name:<24} {status:<10} {type_str:<12} {origin}");
+    // Look up short image ID from manifest extensions
+    let short_id = lookup_extension_short_id(ext_name, manifest_extensions);
+
+    println!("{ext_name:<name_width$} {short_id:<10} {status:<10} {type_str:<12} {origin}");
+}
+
+/// Look up the short image ID (first 8 chars) for an extension by matching
+/// the versioned name (e.g. "app-0.2.0") against manifest extension entries.
+fn lookup_extension_short_id(
+    ext_name: &str,
+    manifest_extensions: &[crate::manifest::ManifestExtension],
+) -> String {
+    let matched = manifest_extensions.iter().find(|me| {
+        let versioned = format!("{}-{}", me.name, me.version);
+        versioned == ext_name || me.name == ext_name
+    });
+    match matched {
+        Some(me) => match &me.image_id {
+            Some(id) if id.len() >= 8 => id[..8].to_string(),
+            Some(id) => id.clone(),
+            None => "-".to_string(),
+        },
+        None => "-".to_string(),
+    }
 }
 
 /// Get short extension origin description (for 80-column display)

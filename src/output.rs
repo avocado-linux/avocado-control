@@ -9,12 +9,18 @@ use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 /// Output manager that handles verbosity and formatting consistently
 pub struct OutputManager {
     verbose: bool,
+    json: bool,
 }
 
 impl OutputManager {
-    /// Create a new output manager with the specified verbosity level
-    pub fn new(verbose: bool) -> Self {
-        Self { verbose }
+    /// Create a new output manager with the specified verbosity and format level
+    pub fn new(verbose: bool, json: bool) -> Self {
+        Self { verbose, json }
+    }
+
+    /// Whether output should be machine-readable JSON
+    pub fn is_json(&self) -> bool {
+        self.json
     }
 
     /// Print a colored prefix with message
@@ -72,7 +78,11 @@ impl OutputManager {
     /// Print a success message
     /// In non-verbose mode: shows brief success
     /// In verbose mode: shows detailed success with context
+    /// Suppressed in JSON mode (structured output only)
     pub fn success(&self, operation: &str, message: &str) {
+        if self.json {
+            return;
+        }
         if self.verbose {
             self.print_colored_prefix_with_op("SUCCESS", Color::Green, operation, message);
         } else {
@@ -108,30 +118,41 @@ impl OutputManager {
     }
 
     /// Print an informational message
-    /// In non-verbose mode: only shows important info
-    /// In verbose mode: shows all info
+    /// Suppressed in JSON mode
     pub fn info(&self, operation: &str, message: &str) {
+        if self.json {
+            return;
+        }
         if self.verbose {
             self.print_colored_prefix_with_op("INFO", Color::Blue, operation, message);
         }
     }
 
-    /// Print detailed progress information (verbose only)
+    /// Print detailed progress information (verbose only, suppressed in JSON mode)
     pub fn progress(&self, message: &str) {
+        if self.json {
+            return;
+        }
         if self.verbose {
             println!("   {message}");
         }
     }
 
-    /// Print a step in a process (verbose only)
+    /// Print a step in a process (verbose only, suppressed in JSON mode)
     pub fn step(&self, step: &str, description: &str) {
+        if self.json {
+            return;
+        }
         if self.verbose {
             println!("   → {step}: {description}");
         }
     }
 
-    /// Print raw output (like command results)
+    /// Print raw output (like command results, suppressed in JSON mode)
     pub fn raw(&self, content: &str) {
+        if self.json {
+            return;
+        }
         if self.verbose {
             println!("{content}");
         }
@@ -142,8 +163,11 @@ impl OutputManager {
         self.verbose
     }
 
-    /// Print a status header
+    /// Print a status header (suppressed in JSON mode)
     pub fn status_header(&self, title: &str) {
+        if self.json {
+            return;
+        }
         if self.verbose {
             println!("\n{title}");
             println!("{}", "=".repeat(title.len()));
@@ -153,8 +177,11 @@ impl OutputManager {
         }
     }
 
-    /// Print a brief status (always shown)
+    /// Print a brief status (suppressed in JSON mode)
     pub fn status(&self, message: &str) {
+        if self.json {
+            return;
+        }
         println!("{message}");
     }
 }

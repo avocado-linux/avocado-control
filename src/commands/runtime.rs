@@ -44,6 +44,15 @@ pub fn create_command() -> Command {
                         .help("Runtime build ID (full or prefix)"),
                 ),
         )
+        .subcommand(
+            Command::new("inspect")
+                .about("Inspect a runtime's details and extensions")
+                .arg(
+                    Arg::new("id")
+                        .required(true)
+                        .help("Runtime build ID (full or prefix)"),
+                ),
+        )
 }
 
 pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputManager) {
@@ -59,6 +68,9 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
         }
         Some(("activate", activate_matches)) => {
             handle_activate(activate_matches, config, output);
+        }
+        Some(("inspect", inspect_matches)) => {
+            handle_inspect(inspect_matches, config, output);
         }
         _ => {
             println!("Use 'runtime list' to see available runtimes.");
@@ -216,6 +228,97 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
     );
 }
 
+fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let id_prefix = matches.get_one::<String>("id").expect("id is required");
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+
+    let runtimes = RuntimeManifest::list_all(base_path);
+    let (matched, is_active) = match resolve_runtime_id(id_prefix, &runtimes, output) {
+        Some(m) => m,
+        None => return,
+    };
+
+    if output.is_json() {
+        match serde_json::to_string_pretty(matched) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                output.error("Runtime Inspect", &format!("Failed to serialize: {e}"));
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    let short_id = if matched.id.len() >= 8 {
+        &matched.id[..8]
+    } else {
+        &matched.id
+    };
+
+    let active_marker = if is_active { " (active)" } else { "" };
+
+    println!();
+    println!(
+        "  Runtime: {} v{}{active_marker}",
+        matched.runtime.name, matched.runtime.version
+    );
+    println!("  Build ID: {} ({short_id})", matched.id);
+    println!("  Built:    {}", matched.built_at);
+    println!("  Manifest: v{}", matched.manifest_version);
+    println!();
+
+    if matched.extensions.is_empty() {
+        println!("  No extensions.");
+    } else {
+        let name_width = matched
+            .extensions
+            .iter()
+            .map(|e| e.name.len())
+            .max()
+            .unwrap_or(4)
+            .max(4); // at least as wide as "NAME"
+
+        println!(
+            "  {:<nw$} {:<12} {:<10}",
+            "NAME",
+            "VERSION",
+            "IMAGE ID",
+            nw = name_width
+        );
+
+        for ext in &matched.extensions {
+            let short_image_id = match &ext.image_id {
+                Some(id) if id.len() >= 8 => &id[..8],
+                Some(id) => id.as_str(),
+                None => "-",
+            };
+            println!(
+                "  {:<nw$} {:<12} {:<10}",
+                ext.name,
+                ext.version,
+                short_image_id,
+                nw = name_width
+            );
+        }
+    }
+
+    println!();
+
+    if output.is_verbose() {
+        println!("  Full image IDs:");
+        for ext in &matched.extensions {
+            let id_display = ext
+                .image_id
+                .as_deref()
+                .or(ext.filename.as_deref())
+                .unwrap_or("-");
+            println!("    {} v{}: {}", ext.name, ext.version, id_display);
+        }
+        println!();
+    }
+}
+
 /// Resolve a runtime ID prefix to a unique runtime from the list.
 /// Returns the matched runtime manifest and its active status, or None on error.
 fn resolve_runtime_id<'a>(
@@ -268,6 +371,25 @@ fn list_runtimes(config: &Config, output: &OutputManager) {
     let base_path = Path::new(&base_dir);
 
     let runtimes = RuntimeManifest::list_all(base_path);
+
+    if output.is_json() {
+        let json_runtimes: Vec<serde_json::Value> = runtimes
+            .iter()
+            .map(|(m, is_active)| {
+                serde_json::json!({
+                    "id": m.id,
+                    "name": m.runtime.name,
+                    "version": m.runtime.version,
+                    "built_at": m.built_at,
+                    "active": is_active,
+                    "manifest_version": m.manifest_version,
+                    "extensions": m.extensions.len(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&json_runtimes).unwrap());
+        return;
+    }
 
     if runtimes.is_empty() {
         output.info(
@@ -347,7 +469,7 @@ mod tests {
                 false,
             ),
         ];
-        let output = OutputManager::new(false);
+        let output = OutputManager::new(false, false);
         let result = resolve_runtime_id("abcd1234-5678", &runtimes, &output);
         assert!(result.is_some());
         let (m, active) = result.unwrap();
@@ -367,7 +489,7 @@ mod tests {
                 true,
             ),
         ];
-        let output = OutputManager::new(false);
+        let output = OutputManager::new(false, false);
         let result = resolve_runtime_id("abcd", &runtimes, &output);
         assert!(result.is_some());
         assert_eq!(result.unwrap().0.id, "abcd1234-5678");

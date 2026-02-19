@@ -818,7 +818,7 @@ mod tests {
         // Use AVOCADO_TEST_TMPDIR to avoid affecting TempDir::new() in other tests
         std::env::set_var("AVOCADO_TEST_TMPDIR", &temp_path);
 
-        let output = OutputManager::new(true);
+        let output = OutputManager::new(true, false);
         let extension = "test-ext";
         let mount_point = &format!("{temp_path}/avocado/hitl/test-ext");
         let services = vec!["nginx".to_string(), "prometheus.service".to_string()];
@@ -888,7 +888,7 @@ mod tests {
 
     #[test]
     fn test_create_service_dropins_empty_services() {
-        let output = OutputManager::new(false);
+        let output = OutputManager::new(false, false);
         let services: Vec<String> = vec![];
 
         // Should return Ok without doing anything

@@ -31,6 +31,15 @@ fn main() {
                 .action(clap::ArgAction::SetTrue)
                 .global(true),
         )
+        .arg(
+            Arg::new("output")
+                .short('o')
+                .long("output")
+                .value_name("FORMAT")
+                .help("Output format: table (default) or json")
+                .global(true)
+                .default_value("table"),
+        )
         .subcommand(ext::create_command())
         .subcommand(hitl::create_command())
         .subcommand(root_authority::create_command())
@@ -100,9 +109,13 @@ fn main() {
 
     let matches = app.get_matches();
 
-    // Initialize output manager with global verbose setting
+    // Initialize output manager with global verbose and format settings
     let verbose = matches.get_flag("verbose");
-    let output = OutputManager::new(verbose);
+    let json_output = matches
+        .get_one::<String>("output")
+        .map(|s| s == "json")
+        .unwrap_or(false);
+    let output = OutputManager::new(verbose, json_output);
 
     // Load configuration
     let config_path = matches.get_one::<String>("config").map(|s| s.as_str());
@@ -136,13 +149,16 @@ fn main() {
         // Top-level command aliases
         Some(("merge", _)) => {
             ext::merge_extensions_direct(&output);
+            json_ok(&output);
         }
         Some(("unmerge", unmerge_matches)) => {
             let unmount = unmerge_matches.get_flag("unmount");
             ext::unmerge_extensions_direct(unmount, &output);
+            json_ok(&output);
         }
         Some(("refresh", _)) => {
             ext::refresh_extensions_direct(&output);
+            json_ok(&output);
         }
         Some(("enable", enable_matches)) => {
             let os_release = enable_matches
@@ -154,6 +170,7 @@ fn main() {
                 .map(|s| s.as_str())
                 .collect();
             ext::enable_extensions(os_release, &extensions, &config, &output);
+            json_ok(&output);
         }
         Some(("disable", disable_matches)) => {
             let os_release = disable_matches
@@ -164,6 +181,7 @@ fn main() {
                 .get_many::<String>("extensions")
                 .map(|values| values.map(|s| s.as_str()).collect());
             ext::disable_extensions(os_release, extensions.as_deref(), all, &config, &output);
+            json_ok(&output);
         }
         _ => {
             println!(
@@ -180,4 +198,13 @@ fn main() {
 fn show_system_status(config: &Config, output: &OutputManager) {
     output.info("System Status", "Checking overall system status");
     ext::status_extensions(config, output);
+}
+
+/// Emit a JSON success result when in JSON mode (no-op otherwise).
+/// Action commands that exit(1) on failure never reach this,
+/// so it only runs on success.
+fn json_ok(output: &OutputManager) {
+    if output.is_json() {
+        println!("{{\"status\":\"ok\"}}");
+    }
 }
