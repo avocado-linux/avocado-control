@@ -55,6 +55,7 @@ fn handle_update(matches: &ArgMatches, config: &Config, output: &OutputManager) 
 
     match update::perform_update(url, base_path, output.is_verbose()) {
         Ok(()) => {
+            crate::commands::ext::refresh_extensions(config, output);
             println!();
             output.success("Runtime Update", "Update applied successfully.");
         }

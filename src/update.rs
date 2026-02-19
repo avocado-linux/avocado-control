@@ -287,11 +287,7 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     // Clean up staging directory
     let _ = fs::remove_dir_all(&staging_dir);
 
-    // 5. Refresh extensions
-    println!("  Refreshing extensions...");
-    refresh_sysext(verbose);
-
-    println!("  Update complete.");
+    println!("  Update staged successfully.");
     Ok(())
 }
 
@@ -479,25 +475,6 @@ fn create_os_release_symlinks(base_dir: &Path, manifest: &RuntimeManifest, verbo
 
         if verbose {
             println!("    Updated os-releases/{vid} symlinks");
-        }
-    }
-}
-
-fn refresh_sysext(verbose: bool) {
-    for cmd_name in &["systemd-sysext", "systemd-confext"] {
-        if verbose {
-            println!("    Running {cmd_name} refresh...");
-        }
-        match std::process::Command::new(cmd_name).arg("refresh").output() {
-            Ok(output) => {
-                if !output.status.success() {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    eprintln!("    Warning: {cmd_name} refresh failed: {stderr}");
-                }
-            }
-            Err(e) => {
-                eprintln!("    Warning: Failed to run {cmd_name}: {e}");
-            }
         }
     }
 }
