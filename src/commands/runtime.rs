@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::manifest::RuntimeManifest;
 use crate::output::OutputManager;
-use clap::{ArgMatches, Command};
+use crate::update;
+use clap::{Arg, ArgMatches, Command};
 use std::path::Path;
 
 pub fn create_command() -> Command {
@@ -11,6 +12,16 @@ pub fn create_command() -> Command {
         .subcommand(
             Command::new("update-authority")
                 .about("Show update authority (trusted signing keys) for this device"),
+        )
+        .subcommand(
+            Command::new("update")
+                .about("Check for and apply runtime updates from a TUF repository")
+                .arg(
+                    Arg::new("url")
+                        .long("url")
+                        .required(true)
+                        .help("URL of the TUF update repository"),
+                ),
         )
 }
 
@@ -22,9 +33,37 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
         Some(("update-authority", _)) => {
             show_update_authority(config, output);
         }
+        Some(("update", update_matches)) => {
+            handle_update(update_matches, config, output);
+        }
         _ => {
             println!("Use 'runtime list' to see available runtimes.");
             println!("Run 'avocadoctl runtime --help' for more information.");
+        }
+    }
+}
+
+fn handle_update(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let url = matches
+        .get_one::<String>("url")
+        .expect("url is required");
+
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+
+    println!();
+    println!("  Checking for runtime update from {url}");
+    println!();
+
+    match update::perform_update(url, base_path, output.is_verbose()) {
+        Ok(()) => {
+            println!();
+            output.success("Runtime Update", "Update applied successfully.");
+        }
+        Err(e) => {
+            println!();
+            output.error("Runtime Update", &format!("{e}"));
+            std::process::exit(1);
         }
     }
 }

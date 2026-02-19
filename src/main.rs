@@ -2,6 +2,7 @@ mod commands;
 mod config;
 pub mod manifest;
 mod output;
+pub mod update;
 
 use clap::{Arg, Command};
 use commands::{ext, hitl, runtime};
