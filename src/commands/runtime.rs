@@ -1,8 +1,8 @@
 use crate::config::Config;
 use crate::manifest::RuntimeManifest;
 use crate::output::OutputManager;
-use crate::update;
-use clap::{Arg, ArgMatches, Command};
+use crate::{staging, update};
+use clap::{Arg, ArgGroup, ArgMatches, Command};
 use std::path::Path;
 
 pub fn create_command() -> Command {
@@ -10,17 +10,38 @@ pub fn create_command() -> Command {
         .about("Manage runtimes")
         .subcommand(Command::new("list").about("List available runtimes"))
         .subcommand(
-            Command::new("update-authority")
-                .about("Show update authority (trusted signing keys) for this device"),
-        )
-        .subcommand(
-            Command::new("update")
-                .about("Check for and apply runtime updates from a TUF repository")
+            Command::new("add")
+                .about("Add a runtime from a TUF repository or local manifest")
                 .arg(
                     Arg::new("url")
                         .long("url")
+                        .help("URL of a TUF update repository"),
+                )
+                .arg(
+                    Arg::new("manifest")
+                        .long("manifest")
+                        .help("Path to a local manifest.json file"),
+                )
+                .group(
+                    ArgGroup::new("source")
+                        .args(["url", "manifest"])
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("remove").about("Remove a staged runtime").arg(
+                Arg::new("id")
+                    .required(true)
+                    .help("Runtime build ID (full or prefix)"),
+            ),
+        )
+        .subcommand(
+            Command::new("activate")
+                .about("Activate a staged runtime")
+                .arg(
+                    Arg::new("id")
                         .required(true)
-                        .help("URL of the TUF update repository"),
+                        .help("Runtime build ID (full or prefix)"),
                 ),
         )
 }
@@ -30,11 +51,14 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
         Some(("list", _)) => {
             list_runtimes(config, output);
         }
-        Some(("update-authority", _)) => {
-            show_update_authority(config, output);
+        Some(("add", add_matches)) => {
+            handle_add(add_matches, config, output);
         }
-        Some(("update", update_matches)) => {
-            handle_update(update_matches, config, output);
+        Some(("remove", remove_matches)) => {
+            handle_remove(remove_matches, config, output);
+        }
+        Some(("activate", activate_matches)) => {
+            handle_activate(activate_matches, config, output);
         }
         _ => {
             println!("Use 'runtime list' to see available runtimes.");
@@ -43,148 +67,200 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
     }
 }
 
-fn handle_update(matches: &ArgMatches, config: &Config, output: &OutputManager) {
-    let url = matches.get_one::<String>("url").expect("url is required");
-
+fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
 
-    println!();
-    println!("  Checking for runtime update from {url}");
-    println!();
+    if let Some(url) = matches.get_one::<String>("url") {
+        println!();
+        println!("  Adding runtime from {url}");
+        println!();
 
-    match update::perform_update(url, base_path, output.is_verbose()) {
-        Ok(()) => {
-            crate::commands::ext::refresh_extensions(config, output);
-            println!();
-            output.success("Runtime Update", "Update applied successfully.");
+        match update::perform_update(url, base_path, output.is_verbose()) {
+            Ok(()) => {
+                crate::commands::ext::refresh_extensions(config, output);
+                println!();
+                output.success("Runtime Add", "Runtime added successfully.");
+            }
+            Err(e) => {
+                println!();
+                output.error("Runtime Add", &format!("{e}"));
+                std::process::exit(1);
+            }
         }
-        Err(e) => {
-            println!();
-            output.error("Runtime Update", &format!("{e}"));
+    } else if let Some(manifest_path) = matches.get_one::<String>("manifest") {
+        println!();
+        println!("  Adding runtime from manifest: {manifest_path}");
+        println!();
+
+        let manifest_content = match std::fs::read_to_string(manifest_path) {
+            Ok(c) => c,
+            Err(e) => {
+                output.error("Runtime Add", &format!("Failed to read manifest: {e}"));
+                std::process::exit(1);
+            }
+        };
+
+        let manifest: RuntimeManifest = match serde_json::from_str(&manifest_content) {
+            Ok(m) => m,
+            Err(e) => {
+                output.error("Runtime Add", &format!("Invalid manifest.json: {e}"));
+                std::process::exit(1);
+            }
+        };
+
+        if let Err(e) = staging::validate_manifest_images(&manifest, base_path) {
+            output.error("Runtime Add", &format!("{e}"));
+            std::process::exit(1);
+        }
+
+        if let Err(e) =
+            staging::stage_manifest(&manifest, &manifest_content, base_path, output.is_verbose())
+        {
+            output.error("Runtime Add", &format!("{e}"));
+            std::process::exit(1);
+        }
+
+        if let Err(e) = staging::activate_runtime(&manifest.id, base_path) {
+            output.error("Runtime Add", &format!("{e}"));
+            std::process::exit(1);
+        }
+
+        println!(
+            "  Activated runtime: {} v{} ({})",
+            manifest.runtime.name,
+            manifest.runtime.version,
+            &manifest.id[..8.min(manifest.id.len())]
+        );
+
+        crate::commands::ext::refresh_extensions(config, output);
+        println!();
+        output.success("Runtime Add", "Runtime added successfully.");
+    }
+}
+
+fn handle_remove(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let id_prefix = matches.get_one::<String>("id").expect("id is required");
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+
+    let runtimes = RuntimeManifest::list_all(base_path);
+    let (matched, _is_active) = match resolve_runtime_id(id_prefix, &runtimes, output) {
+        Some(m) => m,
+        None => return,
+    };
+
+    if let Err(e) = staging::remove_runtime(&matched.id, base_path) {
+        output.error("Runtime Remove", &format!("{e}"));
+        std::process::exit(1);
+    }
+
+    println!();
+    output.success(
+        "Runtime Remove",
+        &format!(
+            "Removed runtime: {} v{} ({})",
+            matched.runtime.name,
+            matched.runtime.version,
+            &matched.id[..8.min(matched.id.len())]
+        ),
+    );
+}
+
+fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let id_prefix = matches.get_one::<String>("id").expect("id is required");
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+
+    let runtimes = RuntimeManifest::list_all(base_path);
+    let (matched, is_active) = match resolve_runtime_id(id_prefix, &runtimes, output) {
+        Some(m) => m,
+        None => return,
+    };
+
+    if is_active {
+        output.info(
+            "Runtime Activate",
+            &format!(
+                "Runtime {} v{} ({}) is already active.",
+                matched.runtime.name,
+                matched.runtime.version,
+                &matched.id[..8.min(matched.id.len())]
+            ),
+        );
+        return;
+    }
+
+    if let Err(e) = staging::activate_runtime(&matched.id, base_path) {
+        output.error("Runtime Activate", &format!("{e}"));
+        std::process::exit(1);
+    }
+
+    println!(
+        "  Activated runtime: {} v{} ({})",
+        matched.runtime.name,
+        matched.runtime.version,
+        &matched.id[..8.min(matched.id.len())]
+    );
+
+    crate::commands::ext::refresh_extensions(config, output);
+    println!();
+    output.success(
+        "Runtime Activate",
+        &format!(
+            "Switched to runtime: {} v{} ({})",
+            matched.runtime.name,
+            matched.runtime.version,
+            &matched.id[..8.min(matched.id.len())]
+        ),
+    );
+}
+
+/// Resolve a runtime ID prefix to a unique runtime from the list.
+/// Returns the matched runtime manifest and its active status, or None on error.
+fn resolve_runtime_id<'a>(
+    id_prefix: &str,
+    runtimes: &'a [(RuntimeManifest, bool)],
+    output: &OutputManager,
+) -> Option<(&'a RuntimeManifest, bool)> {
+    let matches: Vec<&(RuntimeManifest, bool)> = runtimes
+        .iter()
+        .filter(|(m, _)| m.id.starts_with(id_prefix))
+        .collect();
+
+    match matches.len() {
+        0 => {
+            output.error(
+                "Runtime",
+                &format!("No runtime found with ID starting with '{id_prefix}'."),
+            );
+            std::process::exit(1);
+        }
+        1 => Some((&matches[0].0, matches[0].1)),
+        _ => {
+            let ids: Vec<String> = matches
+                .iter()
+                .map(|(m, active)| {
+                    let marker = if *active { " (active)" } else { "" };
+                    format!(
+                        "  {} {} v{}{}",
+                        &m.id[..8.min(m.id.len())],
+                        m.runtime.name,
+                        m.runtime.version,
+                        marker
+                    )
+                })
+                .collect();
+            output.error(
+                "Runtime",
+                &format!(
+                    "Ambiguous runtime ID '{id_prefix}', matches:\n{}",
+                    ids.join("\n")
+                ),
+            );
             std::process::exit(1);
         }
     }
-}
-
-const METADATA_DIR_NAME: &str = "metadata";
-const ROOT_JSON_FILENAME: &str = "root.json";
-
-fn show_update_authority(config: &Config, output: &OutputManager) {
-    let base_dir = config.get_avocado_base_dir();
-    let root_path = Path::new(&base_dir)
-        .join(METADATA_DIR_NAME)
-        .join(ROOT_JSON_FILENAME);
-
-    let content = match std::fs::read_to_string(&root_path) {
-        Ok(c) => c,
-        Err(_) => {
-            output.info(
-                "Update Authority",
-                "No update authority configured. Build and provision a runtime with avocado build to enable verified updates.",
-            );
-            return;
-        }
-    };
-
-    let signed_root: tough::schema::Signed<tough::schema::Root> =
-        match serde_json::from_str(&content) {
-            Ok(r) => r,
-            Err(e) => {
-                output.error(
-                    "Update Authority",
-                    &format!("Failed to parse {}: {e}", root_path.display()),
-                );
-                return;
-            }
-        };
-
-    let root = &signed_root.signed;
-
-    println!();
-    println!("  Update authority:");
-    println!();
-    println!("    Version:  {}", root.version);
-    println!(
-        "    Expires:  {}",
-        root.expires.format("%Y-%m-%d %H:%M:%S UTC")
-    );
-    println!();
-
-    println!("    Trusted signing keys:");
-    println!();
-    println!("      {:<18} {:<12} ROLES", "KEY ID", "TYPE");
-
-    for (key_id_decoded, key) in &root.keys {
-        let key_id_hex = hex_encode(key_id_decoded.as_ref());
-        let short_id = &key_id_hex[..std::cmp::min(16, key_id_hex.len())];
-
-        let key_type = match key {
-            tough::schema::key::Key::Ed25519 { .. } => "ed25519",
-            tough::schema::key::Key::Rsa { .. } => "rsa",
-            tough::schema::key::Key::Ecdsa { .. } | tough::schema::key::Key::EcdsaOld { .. } => {
-                "ecdsa"
-            }
-        };
-
-        let mut roles_for_key = Vec::new();
-        for (role_type, role_keys) in &root.roles {
-            let role_key_ids: Vec<String> = role_keys
-                .keyids
-                .iter()
-                .map(|id| hex_encode(id.as_ref()))
-                .collect();
-            if role_key_ids.contains(&key_id_hex) {
-                roles_for_key.push(role_type_display(role_type));
-            }
-        }
-
-        let all_roles = ["signing", "authority", "metadata", "freshness"];
-        let roles_str = if roles_for_key.len() == all_roles.len() {
-            "all".to_string()
-        } else {
-            roles_for_key.join(", ")
-        };
-
-        println!("      {short_id:<18} {key_type:<12} {roles_str}");
-    }
-
-    println!();
-
-    if output.is_verbose() {
-        println!("    Full key IDs:");
-        for key_id_decoded in root.keys.keys() {
-            println!("      {}", hex_encode(key_id_decoded.as_ref()));
-        }
-        println!();
-        println!("    Metadata path: {}", root_path.display());
-        println!();
-    }
-}
-
-fn role_type_display(role_type: &tough::schema::RoleType) -> &'static str {
-    match role_type {
-        tough::schema::RoleType::Root => "authority",
-        tough::schema::RoleType::Targets => "signing",
-        tough::schema::RoleType::Snapshot => "metadata",
-        tough::schema::RoleType::Timestamp => "freshness",
-        _ => "other",
-    }
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    use std::fmt::Write;
-    bytes
-        .iter()
-        .fold(String::with_capacity(bytes.len() * 2), |mut acc, b| {
-            let _ = write!(acc, "{b:02x}");
-            acc
-        })
-}
-
-#[cfg(test)]
-fn parse_root_json(content: &str) -> Result<tough::schema::Signed<tough::schema::Root>, String> {
-    serde_json::from_str(content).map_err(|e| format!("Failed to parse root.json: {e}"))
 }
 
 fn list_runtimes(config: &Config, output: &OutputManager) {
@@ -239,139 +315,61 @@ fn list_runtimes(config: &Config, output: &OutputManager) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::{ManifestExtension, RuntimeInfo};
 
-    /// A root.json generated by avocado-cli's update_signing module (ed25519, all roles, version 1).
-    fn sample_root_json() -> &'static str {
-        r#"{
-  "signatures": [
-    {
-      "keyid": "47d8c89a68ff5a42a3810a50a9223689604657e75f603b84e21c6dc5de49533d",
-      "sig": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
-    }
-  ],
-  "signed": {
-    "_type": "root",
-    "consistent_snapshot": false,
-    "expires": "2027-02-18T00:00:00Z",
-    "keys": {
-      "47d8c89a68ff5a42a3810a50a9223689604657e75f603b84e21c6dc5de49533d": {
-        "keytype": "ed25519",
-        "keyval": {
-          "public": "a4b3c2d1e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7"
-        },
-        "scheme": "ed25519"
-      }
-    },
-    "roles": {
-      "root": {
-        "keyids": ["47d8c89a68ff5a42a3810a50a9223689604657e75f603b84e21c6dc5de49533d"],
-        "threshold": 1
-      },
-      "snapshot": {
-        "keyids": ["47d8c89a68ff5a42a3810a50a9223689604657e75f603b84e21c6dc5de49533d"],
-        "threshold": 1
-      },
-      "targets": {
-        "keyids": ["47d8c89a68ff5a42a3810a50a9223689604657e75f603b84e21c6dc5de49533d"],
-        "threshold": 1
-      },
-      "timestamp": {
-        "keyids": ["47d8c89a68ff5a42a3810a50a9223689604657e75f603b84e21c6dc5de49533d"],
-        "threshold": 1
-      }
-    },
-    "spec_version": "1.0.0",
-    "version": 1
-  }
-}"#
-    }
-
-    #[test]
-    fn test_parse_root_json_valid() {
-        let result = parse_root_json(sample_root_json());
-        assert!(
-            result.is_ok(),
-            "Failed to parse valid root.json: {:?}",
-            result.err()
-        );
-
-        let signed_root = result.unwrap();
-        let root = &signed_root.signed;
-
-        assert_eq!(root.version.get(), 1);
-        assert_eq!(root.spec_version, "1.0.0");
-        assert!(!root.consistent_snapshot);
-    }
-
-    #[test]
-    fn test_parse_root_json_has_all_roles() {
-        let signed_root = parse_root_json(sample_root_json()).unwrap();
-        let root = &signed_root.signed;
-
-        assert!(root.roles.contains_key(&tough::schema::RoleType::Root));
-        assert!(root.roles.contains_key(&tough::schema::RoleType::Targets));
-        assert!(root.roles.contains_key(&tough::schema::RoleType::Snapshot));
-        assert!(root.roles.contains_key(&tough::schema::RoleType::Timestamp));
-    }
-
-    #[test]
-    fn test_parse_root_json_key_info() {
-        let signed_root = parse_root_json(sample_root_json()).unwrap();
-        let root = &signed_root.signed;
-
-        assert_eq!(root.keys.len(), 1);
-
-        for (_, key) in &root.keys {
-            assert!(matches!(key, tough::schema::key::Key::Ed25519 { .. }));
+    fn make_runtime(id: &str, name: &str, version: &str, built_at: &str) -> RuntimeManifest {
+        RuntimeManifest {
+            manifest_version: 2,
+            id: id.to_string(),
+            built_at: built_at.to_string(),
+            runtime: RuntimeInfo {
+                name: name.to_string(),
+                version: version.to_string(),
+            },
+            extensions: vec![ManifestExtension {
+                name: "app".to_string(),
+                version: "0.1.0".to_string(),
+                filename: None,
+                image_id: Some("img-id".to_string()),
+            }],
         }
     }
 
     #[test]
-    fn test_parse_root_json_thresholds() {
-        let signed_root = parse_root_json(sample_root_json()).unwrap();
-        let root = &signed_root.signed;
-
-        for (_, role_keys) in &root.roles {
-            assert_eq!(role_keys.threshold.get(), 1);
-        }
+    fn test_resolve_runtime_id_exact_match() {
+        let runtimes = vec![
+            (
+                make_runtime("abcd1234-5678", "dev", "0.1.0", "2026-02-19T00:00:00Z"),
+                true,
+            ),
+            (
+                make_runtime("efgh5678-1234", "prod", "1.0.0", "2026-02-18T00:00:00Z"),
+                false,
+            ),
+        ];
+        let output = OutputManager::new(false);
+        let result = resolve_runtime_id("abcd1234-5678", &runtimes, &output);
+        assert!(result.is_some());
+        let (m, active) = result.unwrap();
+        assert_eq!(m.id, "abcd1234-5678");
+        assert!(active);
     }
 
     #[test]
-    fn test_role_type_display_mapping() {
-        assert_eq!(
-            role_type_display(&tough::schema::RoleType::Root),
-            "authority"
-        );
-        assert_eq!(
-            role_type_display(&tough::schema::RoleType::Targets),
-            "signing"
-        );
-        assert_eq!(
-            role_type_display(&tough::schema::RoleType::Snapshot),
-            "metadata"
-        );
-        assert_eq!(
-            role_type_display(&tough::schema::RoleType::Timestamp),
-            "freshness"
-        );
-    }
-
-    #[test]
-    fn test_parse_root_json_invalid() {
-        let result = parse_root_json("not json");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_hex_encode() {
-        assert_eq!(hex_encode(&[0xab, 0xcd, 0xef]), "abcdef");
-        assert_eq!(hex_encode(&[0x00, 0xff]), "00ff");
-        assert_eq!(hex_encode(&[]), "");
-    }
-
-    #[test]
-    fn test_parse_root_json_signature_present() {
-        let signed_root = parse_root_json(sample_root_json()).unwrap();
-        assert_eq!(signed_root.signatures.len(), 1);
+    fn test_resolve_runtime_id_prefix_match() {
+        let runtimes = vec![
+            (
+                make_runtime("abcd1234-5678", "dev", "0.1.0", "2026-02-19T00:00:00Z"),
+                false,
+            ),
+            (
+                make_runtime("efgh5678-1234", "prod", "1.0.0", "2026-02-18T00:00:00Z"),
+                true,
+            ),
+        ];
+        let output = OutputManager::new(false);
+        let result = resolve_runtime_id("abcd", &runtimes, &output);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().0.id, "abcd1234-5678");
     }
 }

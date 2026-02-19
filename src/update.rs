@@ -1,4 +1,5 @@
-use crate::manifest::{RuntimeManifest, IMAGES_DIR_NAME, MANIFEST_FILENAME};
+use crate::manifest::{RuntimeManifest, IMAGES_DIR_NAME};
+use crate::staging;
 use ed25519_compact::PublicKey;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -208,71 +209,14 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         );
     }
 
-    // Create the new runtime directory
-    let runtime_dir = base_dir.join("runtimes").join(&new_manifest.id);
-    fs::create_dir_all(&runtime_dir).map_err(|e| {
-        UpdateError::StagingFailed(format!("Failed to create runtime directory: {e}"))
-    })?;
+    staging::install_images_from_staging(&new_manifest, &staging_dir, base_dir, verbose)
+        .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
 
-    // Write manifest
-    fs::write(runtime_dir.join(MANIFEST_FILENAME), &manifest_content)
-        .map_err(|e| UpdateError::StagingFailed(format!("Failed to write manifest: {e}")))?;
+    staging::stage_manifest(&new_manifest, &manifest_content, base_dir, verbose)
+        .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
 
-    // Install extension images to the shared images pool.
-    // v2 manifests use image_id (content-addressable); v1 use filename.
-    for ext in &new_manifest.extensions {
-        if let Some(ref image_id) = ext.image_id {
-            let dest = images_dir.join(format!("{image_id}.raw"));
-            if dest.exists() {
-                if verbose {
-                    println!("    Image already present: {} ({})", ext.name, image_id);
-                }
-                continue;
-            }
-            let staged_file = staging_dir.join(format!("{image_id}.raw"));
-            if staged_file.exists() {
-                fs::copy(&staged_file, &dest).map_err(|e| {
-                    UpdateError::StagingFailed(format!(
-                        "Failed to install image for {}: {e}",
-                        ext.name
-                    ))
-                })?;
-                if verbose {
-                    println!("    Installed image: {} -> {}.raw", ext.name, image_id);
-                }
-            }
-        } else if let Some(ref filename) = ext.filename {
-            // v1 backward compatibility: use extensions/ directory
-            let extensions_dir = base_dir.join("extensions");
-            let _ = fs::create_dir_all(&extensions_dir);
-            let staged_file = staging_dir.join(filename);
-            if staged_file.exists() {
-                let dest = extensions_dir.join(filename);
-                if !dest.exists() || files_differ(&staged_file, &dest) {
-                    fs::copy(&staged_file, &dest).map_err(|e| {
-                        UpdateError::StagingFailed(format!(
-                            "Failed to copy extension {filename}: {e}"
-                        ))
-                    })?;
-                    if verbose {
-                        println!("    Installed extension: {filename}");
-                    }
-                } else if verbose {
-                    println!("    Extension already up to date: {filename}");
-                }
-            }
-        }
-    }
-
-    // Atomically switch the active symlink
-    let active_link = base_dir.join("active");
-    let active_target = format!("runtimes/{}", new_manifest.id);
-
-    // Remove existing symlink first (ln -sfn equivalent)
-    let _ = fs::remove_file(&active_link);
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(&active_target, &active_link)
-        .map_err(|e| UpdateError::StagingFailed(format!("Failed to switch active runtime: {e}")))?;
+    staging::activate_runtime(&new_manifest.id, base_dir)
+        .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
 
     println!(
         "  Activated runtime: {} v{} ({})",
@@ -425,32 +369,6 @@ fn parse_metadata<T: serde::de::DeserializeOwned>(
         .map_err(|e| UpdateError::MetadataError(format!("Failed to parse {name}: {e}")))
 }
 
-fn files_differ(a: &Path, b: &Path) -> bool {
-    let size_a = fs::metadata(a).map(|m| m.len()).unwrap_or(0);
-    let size_b = fs::metadata(b).map(|m| m.len()).unwrap_or(0);
-    if size_a != size_b {
-        return true;
-    }
-
-    let hash_a = file_sha256(a).unwrap_or_default();
-    let hash_b = file_sha256(b).unwrap_or_default();
-    hash_a != hash_b
-}
-
-fn file_sha256(path: &Path) -> Option<String> {
-    let mut file = fs::File::open(path).ok()?;
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 8192];
-    loop {
-        let n = file.read(&mut buf).ok()?;
-        if n == 0 {
-            break;
-        }
-        hasher.update(&buf[..n]);
-    }
-    Some(hex_encode(&hasher.finalize()))
-}
-
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -561,26 +479,6 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let result = perform_update("http://localhost:9999", tmp.path(), false);
         assert!(matches!(result, Err(UpdateError::NoTrustAnchor)));
-    }
-
-    #[test]
-    fn test_files_differ_same() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let f1 = tmp.path().join("a");
-        let f2 = tmp.path().join("b");
-        fs::write(&f1, b"hello").unwrap();
-        fs::write(&f2, b"hello").unwrap();
-        assert!(!files_differ(&f1, &f2));
-    }
-
-    #[test]
-    fn test_files_differ_different() {
-        let tmp = tempfile::TempDir::new().unwrap();
-        let f1 = tmp.path().join("a");
-        let f2 = tmp.path().join("b");
-        fs::write(&f1, b"hello").unwrap();
-        fs::write(&f2, b"world").unwrap();
-        assert!(files_differ(&f1, &f2));
     }
 
     #[test]
