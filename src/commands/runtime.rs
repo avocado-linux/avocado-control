@@ -44,9 +44,7 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
 }
 
 fn handle_update(matches: &ArgMatches, config: &Config, output: &OutputManager) {
-    let url = matches
-        .get_one::<String>("url")
-        .expect("url is required");
+    let url = matches.get_one::<String>("url").expect("url is required");
 
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
@@ -88,16 +86,17 @@ fn show_update_authority(config: &Config, output: &OutputManager) {
         }
     };
 
-    let signed_root: tough::schema::Signed<tough::schema::Root> = match serde_json::from_str(&content) {
-        Ok(r) => r,
-        Err(e) => {
-            output.error(
-                "Update Authority",
-                &format!("Failed to parse {}: {e}", root_path.display()),
-            );
-            return;
-        }
-    };
+    let signed_root: tough::schema::Signed<tough::schema::Root> =
+        match serde_json::from_str(&content) {
+            Ok(r) => r,
+            Err(e) => {
+                output.error(
+                    "Update Authority",
+                    &format!("Failed to parse {}: {e}", root_path.display()),
+                );
+                return;
+            }
+        };
 
     let root = &signed_root.signed;
 
@@ -105,7 +104,10 @@ fn show_update_authority(config: &Config, output: &OutputManager) {
     println!("  Update authority:");
     println!();
     println!("    Version:  {}", root.version);
-    println!("    Expires:  {}", root.expires.format("%Y-%m-%d %H:%M:%S UTC"));
+    println!(
+        "    Expires:  {}",
+        root.expires.format("%Y-%m-%d %H:%M:%S UTC")
+    );
     println!();
 
     println!("    Trusted signing keys:");
@@ -119,7 +121,9 @@ fn show_update_authority(config: &Config, output: &OutputManager) {
         let key_type = match key {
             tough::schema::key::Key::Ed25519 { .. } => "ed25519",
             tough::schema::key::Key::Rsa { .. } => "rsa",
-            tough::schema::key::Key::Ecdsa { .. } | tough::schema::key::Key::EcdsaOld { .. } => "ecdsa",
+            tough::schema::key::Key::Ecdsa { .. } | tough::schema::key::Key::EcdsaOld { .. } => {
+                "ecdsa"
+            }
         };
 
         let mut roles_for_key = Vec::new();
@@ -225,10 +229,7 @@ fn list_runtimes(config: &Config, output: &OutputManager) {
         println!("  Full build IDs:");
         for (manifest, is_active) in &runtimes {
             let marker = if *is_active { " (active)" } else { "" };
-            println!(
-                "    {} {}{marker}",
-                manifest.id, manifest.runtime.name,
-            );
+            println!("    {} {}{marker}", manifest.id, manifest.runtime.name,);
         }
         println!();
     }
@@ -287,7 +288,11 @@ mod tests {
     #[test]
     fn test_parse_root_json_valid() {
         let result = parse_root_json(sample_root_json());
-        assert!(result.is_ok(), "Failed to parse valid root.json: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Failed to parse valid root.json: {:?}",
+            result.err()
+        );
 
         let signed_root = result.unwrap();
         let root = &signed_root.signed;
@@ -332,10 +337,22 @@ mod tests {
 
     #[test]
     fn test_role_type_display_mapping() {
-        assert_eq!(role_type_display(&tough::schema::RoleType::Root), "authority");
-        assert_eq!(role_type_display(&tough::schema::RoleType::Targets), "signing");
-        assert_eq!(role_type_display(&tough::schema::RoleType::Snapshot), "metadata");
-        assert_eq!(role_type_display(&tough::schema::RoleType::Timestamp), "freshness");
+        assert_eq!(
+            role_type_display(&tough::schema::RoleType::Root),
+            "authority"
+        );
+        assert_eq!(
+            role_type_display(&tough::schema::RoleType::Targets),
+            "signing"
+        );
+        assert_eq!(
+            role_type_display(&tough::schema::RoleType::Snapshot),
+            "metadata"
+        );
+        assert_eq!(
+            role_type_display(&tough::schema::RoleType::Timestamp),
+            "freshness"
+        );
     }
 
     #[test]

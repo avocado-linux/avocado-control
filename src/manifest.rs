@@ -1,11 +1,16 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub const DEFAULT_AVOCADO_DIR: &str = "/var/lib/avocado";
 pub const ACTIVE_LINK_NAME: &str = "active";
 pub const RUNTIMES_DIR_NAME: &str = "runtimes";
 pub const MANIFEST_FILENAME: &str = "manifest.json";
+pub const IMAGES_DIR_NAME: &str = "images";
+
+/// Fixed namespace UUID for generating content-addressable image IDs.
+/// Must match the constant used in avocado-cli.
+pub const AVOCADO_IMAGE_NAMESPACE: uuid::Uuid = uuid::uuid!("7488fa35-6390-425b-bbbf-b156cfe1eed2");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeManifest {
@@ -26,7 +31,29 @@ pub struct RuntimeInfo {
 pub struct ManifestExtension {
     pub name: String,
     pub version: String,
-    pub filename: String,
+    /// v1 manifests: human-readable filename like "app-0.1.0.raw"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    /// v2 manifests: UUIDv5 content-addressable image identifier
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_id: Option<String>,
+}
+
+impl ManifestExtension {
+    /// Resolve the on-disk path for this extension image.
+    /// v2 (image_id present): `<base_dir>/images/<image_id>.raw`
+    /// v1 (filename only):    `<base_dir>/extensions/<filename>`
+    pub fn resolve_path(&self, base_dir: &Path) -> PathBuf {
+        if let Some(ref id) = self.image_id {
+            base_dir.join(IMAGES_DIR_NAME).join(format!("{id}.raw"))
+        } else if let Some(ref fname) = self.filename {
+            base_dir.join("extensions").join(fname)
+        } else {
+            base_dir
+                .join(IMAGES_DIR_NAME)
+                .join(format!("{}-{}.raw", self.name, self.version))
+        }
+    }
 }
 
 impl RuntimeManifest {
@@ -83,11 +110,7 @@ impl RuntimeManifest {
                 continue;
             }
             if let Some(manifest) = Self::load_from(&path) {
-                let dir_name = entry
-                    .file_name()
-                    .to_str()
-                    .unwrap_or_default()
-                    .to_string();
+                let dir_name = entry.file_name().to_str().unwrap_or_default().to_string();
                 let is_active = active_id.as_deref() == Some(&dir_name);
                 results.push((manifest, is_active));
             }
@@ -129,7 +152,26 @@ mod tests {
             extensions: vec![ManifestExtension {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
-                filename: "app-0.1.0.raw".to_string(),
+                filename: Some("app-0.1.0.raw".to_string()),
+                image_id: None,
+            }],
+        }
+    }
+
+    fn make_manifest_v2(id: &str, name: &str, version: &str, built_at: &str) -> RuntimeManifest {
+        RuntimeManifest {
+            manifest_version: 2,
+            id: id.to_string(),
+            built_at: built_at.to_string(),
+            runtime: RuntimeInfo {
+                name: name.to_string(),
+                version: version.to_string(),
+            },
+            extensions: vec![ManifestExtension {
+                name: "app".to_string(),
+                version: "0.1.0".to_string(),
+                filename: None,
+                image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             }],
         }
     }
@@ -217,5 +259,119 @@ mod tests {
         assert_eq!(parsed.runtime.name, "prod");
         assert_eq!(parsed.runtime.version, "1.2.3");
         assert_eq!(parsed.built_at, "2026-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_v1_manifest_deserialize_filename() {
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "v1-id",
+            "built_at": "2026-01-01T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.1.0" },
+            "extensions": [
+                { "name": "app", "version": "0.1.0", "filename": "app-0.1.0.raw" }
+            ]
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.manifest_version, 1);
+        let ext = &parsed.extensions[0];
+        assert_eq!(ext.filename, Some("app-0.1.0.raw".to_string()));
+        assert_eq!(ext.image_id, None);
+    }
+
+    #[test]
+    fn test_v2_manifest_deserialize_image_id() {
+        let json = r#"{
+            "manifest_version": 2,
+            "id": "v2-id",
+            "built_at": "2026-02-19T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.2.0" },
+            "extensions": [
+                { "name": "app", "version": "0.1.0", "image_id": "a1b2c3d4-e5f6-5789-abcd-ef0123456789" }
+            ]
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.manifest_version, 2);
+        let ext = &parsed.extensions[0];
+        assert_eq!(ext.filename, None);
+        assert_eq!(
+            ext.image_id,
+            Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string())
+        );
+    }
+
+    #[test]
+    fn test_v2_manifest_serialization_omits_filename() {
+        let manifest = make_manifest_v2("v2-id", "dev", "0.2.0", "2026-02-19T00:00:00Z");
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(
+            !json.contains("filename"),
+            "v2 manifest should not contain filename"
+        );
+        assert!(
+            json.contains("image_id"),
+            "v2 manifest should contain image_id"
+        );
+    }
+
+    #[test]
+    fn test_resolve_path_v2_image_id() {
+        let ext = ManifestExtension {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            filename: None,
+            image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
+        };
+        let base = Path::new("/var/lib/avocado");
+        let path = ext.resolve_path(base);
+        assert_eq!(
+            path,
+            Path::new("/var/lib/avocado/images/a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw")
+        );
+    }
+
+    #[test]
+    fn test_resolve_path_v1_filename() {
+        let ext = ManifestExtension {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            filename: Some("app-0.1.0.raw".to_string()),
+            image_id: None,
+        };
+        let base = Path::new("/var/lib/avocado");
+        let path = ext.resolve_path(base);
+        assert_eq!(path, Path::new("/var/lib/avocado/extensions/app-0.1.0.raw"));
+    }
+
+    #[test]
+    fn test_resolve_path_image_id_takes_priority() {
+        let ext = ManifestExtension {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            filename: Some("app-0.1.0.raw".to_string()),
+            image_id: Some("deadbeef-1234-5678-9abc-def012345678".to_string()),
+        };
+        let base = Path::new("/var/lib/avocado");
+        let path = ext.resolve_path(base);
+        assert_eq!(
+            path,
+            Path::new("/var/lib/avocado/images/deadbeef-1234-5678-9abc-def012345678.raw")
+        );
+    }
+
+    #[test]
+    fn test_load_v2_manifest_from_disk() {
+        let tmp = TempDir::new().unwrap();
+        let rt_dir = tmp.path().join("runtimes").join("v2-uuid");
+        let manifest = make_manifest_v2("v2-uuid", "dev", "0.2.0", "2026-02-19T00:00:00Z");
+        write_manifest(&rt_dir, &manifest);
+
+        let loaded = RuntimeManifest::load_from(&rt_dir).unwrap();
+        assert_eq!(loaded.manifest_version, 2);
+        assert_eq!(
+            loaded.extensions[0].image_id.as_deref(),
+            Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789")
+        );
+        assert_eq!(loaded.extensions[0].filename, None);
     }
 }

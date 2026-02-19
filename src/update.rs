@@ -1,4 +1,4 @@
-use crate::manifest::{RuntimeManifest, MANIFEST_FILENAME};
+use crate::manifest::{RuntimeManifest, IMAGES_DIR_NAME, MANIFEST_FILENAME};
 use ed25519_compact::PublicKey;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -71,7 +71,10 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     )?;
 
     if verbose {
-        println!("  Verified timestamp.json (version {})", timestamp.signed.version);
+        println!(
+            "  Verified timestamp.json (version {})",
+            timestamp.signed.version
+        );
     }
 
     let snapshot_url = format!("{url}/metadata/snapshot.json");
@@ -88,7 +91,10 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     )?;
 
     if verbose {
-        println!("  Verified snapshot.json (version {})", snapshot.signed.version);
+        println!(
+            "  Verified snapshot.json (version {})",
+            snapshot.signed.version
+        );
     }
 
     let targets_url = format!("{url}/metadata/targets.json");
@@ -105,7 +111,10 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     )?;
 
     if verbose {
-        println!("  Verified targets.json (version {})", targets.signed.version);
+        println!(
+            "  Verified targets.json (version {})",
+            targets.signed.version
+        );
     }
 
     // 3. Enumerate and download targets
@@ -117,8 +126,35 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         UpdateError::StagingFailed(format!("Failed to create staging directory: {e}"))
     })?;
 
+    let images_dir = base_dir.join(IMAGES_DIR_NAME);
+    fs::create_dir_all(&images_dir).map_err(|e| {
+        UpdateError::StagingFailed(format!("Failed to create images directory: {e}"))
+    })?;
+
+    // Build a set of image files already present on disk so we can skip
+    // downloading targets that match a content-addressable image_id.
+    let existing_images: std::collections::HashSet<String> = fs::read_dir(&images_dir)
+        .ok()
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
     for (target_name, target_info) in target_map {
         let name_str = target_name.raw();
+
+        // Content-addressable skip: if this target is an image that already
+        // exists locally, the UUIDv5 name guarantees identical content.
+        if name_str != "manifest.json" && existing_images.contains(name_str) {
+            if verbose {
+                println!("    Already present, skipping: {name_str}");
+            }
+            continue;
+        }
+
         let target_url = format!("{url}/targets/{name_str}");
 
         if verbose {
@@ -148,9 +184,8 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         }
 
         let target_path = staging_dir.join(name_str);
-        fs::write(&target_path, &data).map_err(|e| {
-            UpdateError::StagingFailed(format!("Failed to write {name_str}: {e}"))
-        })?;
+        fs::write(&target_path, &data)
+            .map_err(|e| UpdateError::StagingFailed(format!("Failed to write {name_str}: {e}")))?;
     }
 
     // 4. Parse the downloaded manifest and stage the update
@@ -161,14 +196,15 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         UpdateError::StagingFailed(format!("No manifest.json in update targets: {e}"))
     })?;
 
-    let new_manifest: RuntimeManifest = serde_json::from_str(&manifest_content).map_err(|e| {
-        UpdateError::StagingFailed(format!("Invalid manifest.json: {e}"))
-    })?;
+    let new_manifest: RuntimeManifest = serde_json::from_str(&manifest_content)
+        .map_err(|e| UpdateError::StagingFailed(format!("Invalid manifest.json: {e}")))?;
 
     if verbose {
         println!(
             "  New runtime: {} v{} (build {})",
-            new_manifest.runtime.name, new_manifest.runtime.version, &new_manifest.id[..8.min(new_manifest.id.len())]
+            new_manifest.runtime.name,
+            new_manifest.runtime.version,
+            &new_manifest.id[..8.min(new_manifest.id.len())]
         );
     }
 
@@ -179,32 +215,51 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     })?;
 
     // Write manifest
-    fs::write(runtime_dir.join(MANIFEST_FILENAME), &manifest_content).map_err(|e| {
-        UpdateError::StagingFailed(format!("Failed to write manifest: {e}"))
-    })?;
+    fs::write(runtime_dir.join(MANIFEST_FILENAME), &manifest_content)
+        .map_err(|e| UpdateError::StagingFailed(format!("Failed to write manifest: {e}")))?;
 
-    // Copy extension images to the shared pool
-    let extensions_dir = base_dir.join("extensions");
-    fs::create_dir_all(&extensions_dir).map_err(|e| {
-        UpdateError::StagingFailed(format!("Failed to create extensions directory: {e}"))
-    })?;
-
+    // Install extension images to the shared images pool.
+    // v2 manifests use image_id (content-addressable); v1 use filename.
     for ext in &new_manifest.extensions {
-        let staged_file = staging_dir.join(&ext.filename);
-        if staged_file.exists() {
-            let dest = extensions_dir.join(&ext.filename);
-            if !dest.exists() || files_differ(&staged_file, &dest) {
+        if let Some(ref image_id) = ext.image_id {
+            let dest = images_dir.join(format!("{image_id}.raw"));
+            if dest.exists() {
+                if verbose {
+                    println!("    Image already present: {} ({})", ext.name, image_id);
+                }
+                continue;
+            }
+            let staged_file = staging_dir.join(format!("{image_id}.raw"));
+            if staged_file.exists() {
                 fs::copy(&staged_file, &dest).map_err(|e| {
                     UpdateError::StagingFailed(format!(
-                        "Failed to copy extension {}: {e}",
-                        ext.filename
+                        "Failed to install image for {}: {e}",
+                        ext.name
                     ))
                 })?;
                 if verbose {
-                    println!("    Installed extension: {}", ext.filename);
+                    println!("    Installed image: {} -> {}.raw", ext.name, image_id);
                 }
-            } else if verbose {
-                println!("    Extension already up to date: {}", ext.filename);
+            }
+        } else if let Some(ref filename) = ext.filename {
+            // v1 backward compatibility: use extensions/ directory
+            let extensions_dir = base_dir.join("extensions");
+            let _ = fs::create_dir_all(&extensions_dir);
+            let staged_file = staging_dir.join(filename);
+            if staged_file.exists() {
+                let dest = extensions_dir.join(filename);
+                if !dest.exists() || files_differ(&staged_file, &dest) {
+                    fs::copy(&staged_file, &dest).map_err(|e| {
+                        UpdateError::StagingFailed(format!(
+                            "Failed to copy extension {filename}: {e}"
+                        ))
+                    })?;
+                    if verbose {
+                        println!("    Installed extension: {filename}");
+                    }
+                } else if verbose {
+                    println!("    Extension already up to date: {filename}");
+                }
             }
         }
     }
@@ -219,9 +274,8 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     // Remove existing symlink first (ln -sfn equivalent)
     let _ = fs::remove_file(&active_link);
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&active_target, &active_link).map_err(|e| {
-        UpdateError::StagingFailed(format!("Failed to switch active runtime: {e}"))
-    })?;
+    std::os::unix::fs::symlink(&active_target, &active_link)
+        .map_err(|e| UpdateError::StagingFailed(format!("Failed to switch active runtime: {e}")))?;
 
     println!(
         "  Activated runtime: {} v{} ({})",
@@ -295,9 +349,8 @@ fn verify_signatures(
     // Extract the raw "signed" portion from the JSON string for verification.
     // We must use the exact bytes from the original JSON to match the signature,
     // so we extract the substring rather than re-serializing.
-    let canonical = extract_signed_canonical(raw_json).map_err(|e| {
-        UpdateError::SignatureVerification(name.to_string(), e)
-    })?;
+    let canonical = extract_signed_canonical(raw_json)
+        .map_err(|e| UpdateError::SignatureVerification(name.to_string(), e))?;
 
     let mut valid_count = 0;
 
@@ -320,9 +373,7 @@ fn verify_signatures(
     if valid_count < threshold {
         return Err(UpdateError::SignatureVerification(
             name.to_string(),
-            format!(
-                "Insufficient valid signatures: got {valid_count}, need {threshold}"
-            ),
+            format!("Insufficient valid signatures: got {valid_count}, need {threshold}"),
         ));
     }
 
@@ -377,9 +428,8 @@ fn parse_metadata<T: serde::de::DeserializeOwned>(
     name: &str,
     raw: &str,
 ) -> Result<tough::schema::Signed<T>, UpdateError> {
-    serde_json::from_str(raw).map_err(|e| {
-        UpdateError::MetadataError(format!("Failed to parse {name}: {e}"))
-    })
+    serde_json::from_str(raw)
+        .map_err(|e| UpdateError::MetadataError(format!("Failed to parse {name}: {e}")))
 }
 
 fn create_os_release_symlinks(base_dir: &Path, manifest: &RuntimeManifest, verbose: bool) {
@@ -391,7 +441,11 @@ fn create_os_release_symlinks(base_dir: &Path, manifest: &RuntimeManifest, verbo
                 content
                     .lines()
                     .find(|l| l.starts_with("VERSION_ID="))
-                    .map(|l| l.trim_start_matches("VERSION_ID=").trim_matches('"').to_string())
+                    .map(|l| {
+                        l.trim_start_matches("VERSION_ID=")
+                            .trim_matches('"')
+                            .to_string()
+                    })
             })
     } else {
         None
@@ -402,8 +456,20 @@ fn create_os_release_symlinks(base_dir: &Path, manifest: &RuntimeManifest, verbo
         let _ = fs::create_dir_all(&os_release_dir);
 
         for ext in &manifest.extensions {
-            let link_path = os_release_dir.join(&ext.filename);
-            let target = format!("../../extensions/{}", ext.filename);
+            // v2 manifests use image_id, v1 use filename
+            let symlink_name = if let Some(ref image_id) = ext.image_id {
+                format!("{image_id}.raw")
+            } else if let Some(ref filename) = ext.filename {
+                filename.clone()
+            } else {
+                continue;
+            };
+            let link_path = os_release_dir.join(&symlink_name);
+            let target = if ext.image_id.is_some() {
+                format!("../../images/{symlink_name}")
+            } else {
+                format!("../../extensions/{symlink_name}")
+            };
             let _ = fs::remove_file(&link_path);
             #[cfg(unix)]
             {
@@ -422,10 +488,7 @@ fn refresh_sysext(verbose: bool) {
         if verbose {
             println!("    Running {cmd_name} refresh...");
         }
-        match std::process::Command::new(cmd_name)
-            .arg("refresh")
-            .output()
-        {
+        match std::process::Command::new(cmd_name).arg("refresh").output() {
             Ok(output) => {
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -652,6 +715,9 @@ mod tests {
             &tough::schema::RoleType::Targets,
         );
 
-        assert!(result.is_ok(), "Signature verification should succeed: {result:?}");
+        assert!(
+            result.is_ok(),
+            "Signature verification should succeed: {result:?}"
+        );
     }
 }

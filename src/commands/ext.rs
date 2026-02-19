@@ -976,7 +976,12 @@ fn display_active_runtime(config: &Config, output: &OutputManager) {
             if output.is_verbose() {
                 println!("  Build ID: {}", manifest.id);
                 for ext in &manifest.extensions {
-                    println!("    - {} v{} ({})", ext.name, ext.version, ext.filename);
+                    let id_display = ext
+                        .image_id
+                        .as_deref()
+                        .or(ext.filename.as_deref())
+                        .unwrap_or("?");
+                    println!("    - {} v{} ({})", ext.name, ext.version, id_display);
                 }
             }
             println!();
@@ -1575,7 +1580,9 @@ fn scan_extensions_from_all_sources_with_verbosity(
                 continue;
             }
 
-            let raw_path = Path::new(&extensions_dir).join(&mext.filename);
+            // Resolve the on-disk path: v2 uses images/<image_id>.raw,
+            // v1 falls back to extensions/<filename>
+            let raw_path = mext.resolve_path(base_path);
             if raw_path.exists() {
                 if raw_path.is_dir() {
                     if let Ok(dir_exts) =
@@ -1621,9 +1628,14 @@ fn scan_extensions_from_all_sources_with_verbosity(
                     }
                 }
             } else if verbose {
+                let display_name = mext
+                    .image_id
+                    .as_deref()
+                    .or(mext.filename.as_deref())
+                    .unwrap_or(&mext.name);
                 eprintln!(
-                    "Warning: Extension file '{}' from manifest not found at {}",
-                    mext.filename,
+                    "Warning: Extension image '{}' from manifest not found at {}",
+                    display_name,
                     raw_path.display()
                 );
             }
@@ -1639,166 +1651,174 @@ fn scan_extensions_from_all_sources_with_verbosity(
 
     // Legacy extension discovery: only used when no manifest is present
     if !used_manifest {
-    // 2b. Legacy: OS release-specific extensions (/var/lib/avocado/os-releases/<VERSION_ID>)
-    let os_releases_extensions_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-        format!("{temp_base}/avocado/os-releases/{version_id}")
-    } else {
-        format!("/var/lib/avocado/os-releases/{version_id}")
-    };
+        // 2b. Legacy: OS release-specific extensions (/var/lib/avocado/os-releases/<VERSION_ID>)
+        let os_releases_extensions_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+            let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+            format!("{temp_base}/avocado/os-releases/{version_id}")
+        } else {
+            format!("/var/lib/avocado/os-releases/{version_id}")
+        };
 
-    if verbose {
-        println!(
+        if verbose {
+            println!(
             "Scanning OS release extensions in {os_releases_extensions_dir} (VERSION_ID: {version_id})"
         );
-    }
+        }
 
-    if !Path::new(&os_releases_extensions_dir).exists() {
-        if verbose {
-            println!("OS releases directory {os_releases_extensions_dir} does not exist, skipping");
-        }
-        if std::env::var("AVOCADO_TEST_MODE").is_err() {
-            eprintln!("Warning: No extensions are enabled for VERSION_ID '{version_id}'. Directory not found: {os_releases_extensions_dir}");
-        }
-    } else {
-        if let Ok(os_releases_extensions) = scan_directory_extensions(&os_releases_extensions_dir) {
-            for ext in os_releases_extensions {
-                if !extension_map.contains_key(&ext.name) {
-                    if verbose {
-                        println!(
-                            "Found OS release extension: {} at {}",
-                            ext.name,
-                            ext.path.display()
-                        );
-                    }
-                    extension_map.insert(ext.name.clone(), ext);
-                } else if verbose {
-                    println!(
-                        "Skipping runtime extension {} (higher priority version preferred)",
-                        ext.name
-                    );
-                }
+        if !Path::new(&os_releases_extensions_dir).exists() {
+            if verbose {
+                println!(
+                    "OS releases directory {os_releases_extensions_dir} does not exist, skipping"
+                );
             }
-        }
-
-        if let Ok(os_releases_raw_files) = scan_raw_files(&os_releases_extensions_dir) {
-            for (ext_name, ext_version, ext_path) in os_releases_raw_files {
-                use std::collections::hash_map::Entry;
-                match extension_map.entry(ext_name.clone()) {
-                    Entry::Vacant(entry) => {
-                        if let Ok(ext) = analyze_raw_extension_with_loop(
-                            &ext_name,
-                            &ext_version,
-                            &ext_path,
-                            verbose,
-                        ) {
-                            if verbose {
-                                println!(
-                                    "Found OS release raw extension: {} at {}",
-                                    ext.name,
-                                    ext.path.display()
-                                );
-                            }
-                            entry.insert(ext);
-                        }
-                    }
-                    Entry::Occupied(_) => {
+            if std::env::var("AVOCADO_TEST_MODE").is_err() {
+                eprintln!("Warning: No extensions are enabled for VERSION_ID '{version_id}'. Directory not found: {os_releases_extensions_dir}");
+            }
+        } else {
+            if let Ok(os_releases_extensions) =
+                scan_directory_extensions(&os_releases_extensions_dir)
+            {
+                for ext in os_releases_extensions {
+                    if !extension_map.contains_key(&ext.name) {
                         if verbose {
                             println!(
+                                "Found OS release extension: {} at {}",
+                                ext.name,
+                                ext.path.display()
+                            );
+                        }
+                        extension_map.insert(ext.name.clone(), ext);
+                    } else if verbose {
+                        println!(
+                            "Skipping runtime extension {} (higher priority version preferred)",
+                            ext.name
+                        );
+                    }
+                }
+            }
+
+            if let Ok(os_releases_raw_files) = scan_raw_files(&os_releases_extensions_dir) {
+                for (ext_name, ext_version, ext_path) in os_releases_raw_files {
+                    use std::collections::hash_map::Entry;
+                    match extension_map.entry(ext_name.clone()) {
+                        Entry::Vacant(entry) => {
+                            if let Ok(ext) = analyze_raw_extension_with_loop(
+                                &ext_name,
+                                &ext_version,
+                                &ext_path,
+                                verbose,
+                            ) {
+                                if verbose {
+                                    println!(
+                                        "Found OS release raw extension: {} at {}",
+                                        ext.name,
+                                        ext.path.display()
+                                    );
+                                }
+                                entry.insert(ext);
+                            }
+                        }
+                        Entry::Occupied(_) => {
+                            if verbose {
+                                println!(
                         "Skipping OS release raw extension {ext_name} (higher priority version preferred)"
                     );
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    let os_releases_dir_exists = Path::new(&os_releases_extensions_dir).exists();
+        let os_releases_dir_exists = Path::new(&os_releases_extensions_dir).exists();
 
-    if verbose {
-        println!("Scanning directory extensions in {extensions_dir}");
-    }
-
-    if !os_releases_dir_exists {
         if verbose {
-            println!("No OS releases directory found, scanning base extensions directory");
+            println!("Scanning directory extensions in {extensions_dir}");
         }
-        if let Ok(dir_extensions) = scan_directory_extensions(&extensions_dir) {
-            for ext in dir_extensions {
-                if !extension_map.contains_key(&ext.name) {
-                    if verbose {
+
+        if !os_releases_dir_exists {
+            if verbose {
+                println!("No OS releases directory found, scanning base extensions directory");
+            }
+            if let Ok(dir_extensions) = scan_directory_extensions(&extensions_dir) {
+                for ext in dir_extensions {
+                    if !extension_map.contains_key(&ext.name) {
+                        if verbose {
+                            println!(
+                                "Found directory extension: {} at {}",
+                                ext.name,
+                                ext.path.display()
+                            );
+                        }
+                        extension_map.insert(ext.name.clone(), ext);
+                    } else if verbose {
                         println!(
-                            "Found directory extension: {} at {}",
-                            ext.name,
-                            ext.path.display()
+                            "Skipping directory extension {} (HITL or runtime version preferred)",
+                            ext.name
                         );
                     }
-                    extension_map.insert(ext.name.clone(), ext);
-                } else if verbose {
-                    println!(
-                        "Skipping directory extension {} (HITL or runtime version preferred)",
-                        ext.name
-                    );
                 }
             }
+        } else if verbose {
+            println!("OS releases directory exists, skipping base extensions directory (use enable/disable to manage extensions)");
         }
-    } else if verbose {
-        println!("OS releases directory exists, skipping base extensions directory (use enable/disable to manage extensions)");
-    }
 
-    if verbose {
-        println!("Scanning raw file extensions in {extensions_dir}");
-    }
-
-    if !os_releases_dir_exists {
         if verbose {
-            println!("No OS releases directory found, scanning base raw files");
+            println!("Scanning raw file extensions in {extensions_dir}");
         }
-        let raw_files = scan_raw_files(&extensions_dir)?;
 
-        let mut available_loop_names: Vec<String> = Vec::new();
-
-        for ext in extension_map.values() {
-            if let Some(ver) = &ext.version {
-                available_loop_names.push(format!("{}-{}", ext.name, ver));
-            } else {
-                available_loop_names.push(ext.name.clone());
+        if !os_releases_dir_exists {
+            if verbose {
+                println!("No OS releases directory found, scanning base raw files");
             }
-        }
+            let raw_files = scan_raw_files(&extensions_dir)?;
 
-        for (name, version, _path) in &raw_files {
-            if let Some(ver) = version {
-                available_loop_names.push(format!("{name}-{ver}"));
-            } else {
-                available_loop_names.push(name.clone());
-            }
-        }
+            let mut available_loop_names: Vec<String> = Vec::new();
 
-        cleanup_stale_loops(&available_loop_names)?;
-
-        for (ext_name, ext_version, path) in raw_files {
-            match extension_map.entry(ext_name.clone()) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    if verbose {
-                        println!("Found raw file extension: {ext_name} at {}", path.display());
-                    }
-                    let extension =
-                        analyze_raw_extension_with_loop(&ext_name, &ext_version, &path, verbose)?;
-                    entry.insert(extension);
+            for ext in extension_map.values() {
+                if let Some(ver) = &ext.version {
+                    available_loop_names.push(format!("{}-{}", ext.name, ver));
+                } else {
+                    available_loop_names.push(ext.name.clone());
                 }
-                std::collections::hash_map::Entry::Occupied(_) => {
-                    if verbose {
-                        println!(
+            }
+
+            for (name, version, _path) in &raw_files {
+                if let Some(ver) = version {
+                    available_loop_names.push(format!("{name}-{ver}"));
+                } else {
+                    available_loop_names.push(name.clone());
+                }
+            }
+
+            cleanup_stale_loops(&available_loop_names)?;
+
+            for (ext_name, ext_version, path) in raw_files {
+                match extension_map.entry(ext_name.clone()) {
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        if verbose {
+                            println!("Found raw file extension: {ext_name} at {}", path.display());
+                        }
+                        let extension = analyze_raw_extension_with_loop(
+                            &ext_name,
+                            &ext_version,
+                            &path,
+                            verbose,
+                        )?;
+                        entry.insert(extension);
+                    }
+                    std::collections::hash_map::Entry::Occupied(_) => {
+                        if verbose {
+                            println!(
                             "Skipping raw file extension {ext_name} (higher priority version preferred)"
                         );
+                        }
                     }
                 }
             }
+        } else if verbose {
+            println!("OS releases directory exists, skipping base raw files (use enable/disable to manage extensions)");
         }
-    } else if verbose {
-        println!("OS releases directory exists, skipping base raw files (use enable/disable to manage extensions)");
-    }
     } // end !used_manifest
 
     // Convert map to vector
@@ -2597,10 +2617,16 @@ fn scan_custom_release_directory(
         let confext_dir = custom_path.join("etc/extension-release.d");
 
         if sysext_dir.exists() {
-            dirs.push((sysext_dir.to_string_lossy().to_string(), Some("SYSEXT_SCOPE")));
+            dirs.push((
+                sysext_dir.to_string_lossy().to_string(),
+                Some("SYSEXT_SCOPE"),
+            ));
         }
         if confext_dir.exists() {
-            dirs.push((confext_dir.to_string_lossy().to_string(), Some("CONFEXT_SCOPE")));
+            dirs.push((
+                confext_dir.to_string_lossy().to_string(),
+                Some("CONFEXT_SCOPE"),
+            ));
         }
 
         // If neither subdirectory structure exists, use the custom dir directly
@@ -2992,10 +3018,16 @@ fn scan_custom_release_directory_for_on_unmerge(
         let confext_dir = custom_path.join("etc/extension-release.d");
 
         if sysext_dir.exists() {
-            dirs.push((sysext_dir.to_string_lossy().to_string(), Some("SYSEXT_SCOPE")));
+            dirs.push((
+                sysext_dir.to_string_lossy().to_string(),
+                Some("SYSEXT_SCOPE"),
+            ));
         }
         if confext_dir.exists() {
-            dirs.push((confext_dir.to_string_lossy().to_string(), Some("CONFEXT_SCOPE")));
+            dirs.push((
+                confext_dir.to_string_lossy().to_string(),
+                Some("CONFEXT_SCOPE"),
+            ));
         }
 
         // If neither subdirectory structure exists, use the custom dir directly
