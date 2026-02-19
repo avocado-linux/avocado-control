@@ -264,9 +264,6 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         }
     }
 
-    // Create os-releases symlinks for backward compatibility
-    create_os_release_symlinks(base_dir, &new_manifest, verbose);
-
     // Atomically switch the active symlink
     let active_link = base_dir.join("active");
     let active_target = format!("runtimes/{}", new_manifest.id);
@@ -426,57 +423,6 @@ fn parse_metadata<T: serde::de::DeserializeOwned>(
 ) -> Result<tough::schema::Signed<T>, UpdateError> {
     serde_json::from_str(raw)
         .map_err(|e| UpdateError::MetadataError(format!("Failed to parse {name}: {e}")))
-}
-
-fn create_os_release_symlinks(base_dir: &Path, manifest: &RuntimeManifest, verbose: bool) {
-    let os_release_path = Path::new("/etc/os-release");
-    let version_id = if os_release_path.exists() {
-        fs::read_to_string(os_release_path)
-            .ok()
-            .and_then(|content| {
-                content
-                    .lines()
-                    .find(|l| l.starts_with("VERSION_ID="))
-                    .map(|l| {
-                        l.trim_start_matches("VERSION_ID=")
-                            .trim_matches('"')
-                            .to_string()
-                    })
-            })
-    } else {
-        None
-    };
-
-    if let Some(vid) = version_id {
-        let os_release_dir = base_dir.join("os-releases").join(&vid);
-        let _ = fs::create_dir_all(&os_release_dir);
-
-        for ext in &manifest.extensions {
-            // v2 manifests use image_id, v1 use filename
-            let symlink_name = if let Some(ref image_id) = ext.image_id {
-                format!("{image_id}.raw")
-            } else if let Some(ref filename) = ext.filename {
-                filename.clone()
-            } else {
-                continue;
-            };
-            let link_path = os_release_dir.join(&symlink_name);
-            let target = if ext.image_id.is_some() {
-                format!("../../images/{symlink_name}")
-            } else {
-                format!("../../extensions/{symlink_name}")
-            };
-            let _ = fs::remove_file(&link_path);
-            #[cfg(unix)]
-            {
-                let _ = std::os::unix::fs::symlink(&target, &link_path);
-            }
-        }
-
-        if verbose {
-            println!("    Updated os-releases/{vid} symlinks");
-        }
-    }
 }
 
 fn files_differ(a: &Path, b: &Path) -> bool {
