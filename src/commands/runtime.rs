@@ -441,7 +441,7 @@ mod tests {
 
     fn make_runtime(id: &str, name: &str, version: &str, built_at: &str) -> RuntimeManifest {
         RuntimeManifest {
-            manifest_version: 2,
+            manifest_version: 1,
             id: id.to_string(),
             built_at: built_at.to_string(),
             runtime: RuntimeInfo {

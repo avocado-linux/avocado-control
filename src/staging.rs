@@ -225,7 +225,7 @@ mod tests {
 
     fn make_manifest(id: &str, name: &str, version: &str) -> RuntimeManifest {
         RuntimeManifest {
-            manifest_version: 2,
+            manifest_version: 1,
             id: id.to_string(),
             built_at: "2026-02-19T00:00:00Z".to_string(),
             runtime: RuntimeInfo {
