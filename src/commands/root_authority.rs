@@ -212,7 +212,7 @@ mod tests {
 
         assert_eq!(root.keys.len(), 1);
 
-        for (_, key) in &root.keys {
+        for key in root.keys.values() {
             assert!(matches!(key, tough::schema::key::Key::Ed25519 { .. }));
         }
     }
@@ -222,7 +222,7 @@ mod tests {
         let signed_root = parse_root_json(sample_root_json()).unwrap();
         let root = &signed_root.signed;
 
-        for (_, role_keys) in &root.roles {
+        for role_keys in root.roles.values() {
             assert_eq!(role_keys.threshold.get(), 1);
         }
     }
