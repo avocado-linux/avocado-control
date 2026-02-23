@@ -1023,11 +1023,7 @@ fn display_active_runtime(config: &Config, output: &OutputManager) {
             if output.is_verbose() {
                 println!("  Build ID: {}", manifest.id);
                 for ext in &manifest.extensions {
-                    let id_display = ext
-                        .image_id
-                        .as_deref()
-                        .or(ext.filename.as_deref())
-                        .unwrap_or("?");
+                    let id_display = ext.image_id.as_deref().unwrap_or("?");
                     println!("    - {} v{} ({})", ext.name, ext.version, id_display);
                 }
             }
@@ -1755,8 +1751,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
                 continue;
             }
 
-            // Resolve the on-disk path: v2 uses images/<image_id>.raw,
-            // v1 falls back to extensions/<filename>
+            // Resolve the on-disk path for this extension image
             let raw_path = mext.resolve_path(base_path);
             if raw_path.exists() {
                 if raw_path.is_dir() {
@@ -1803,11 +1798,7 @@ fn scan_extensions_from_all_sources_with_verbosity(
                     }
                 }
             } else if verbose {
-                let display_name = mext
-                    .image_id
-                    .as_deref()
-                    .or(mext.filename.as_deref())
-                    .unwrap_or(&mext.name);
+                let display_name = mext.image_id.as_deref().unwrap_or(&mext.name);
                 eprintln!(
                     "Warning: Extension image '{}' from manifest not found at {}",
                     display_name,

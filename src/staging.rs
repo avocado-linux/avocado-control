@@ -117,25 +117,6 @@ pub fn install_images_from_staging(
                     println!("    Installed image: {} -> {}.raw", ext.name, image_id);
                 }
             }
-        } else if let Some(ref filename) = ext.filename {
-            let extensions_dir = base_dir.join("extensions");
-            let _ = fs::create_dir_all(&extensions_dir);
-            let staged_file = staging_dir.join(filename);
-            if staged_file.exists() {
-                let dest = extensions_dir.join(filename);
-                if !dest.exists() || files_differ(&staged_file, &dest) {
-                    fs::copy(&staged_file, &dest).map_err(|e| {
-                        StagingError::StagingFailed(format!(
-                            "Failed to copy extension {filename}: {e}"
-                        ))
-                    })?;
-                    if verbose {
-                        println!("    Installed extension: {filename}");
-                    }
-                } else if verbose {
-                    println!("    Extension already up to date: {filename}");
-                }
-            }
         }
     }
 
@@ -189,33 +170,6 @@ fn resolve_active_id(base_dir: &Path) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn files_differ(a: &Path, b: &Path) -> bool {
-    use sha2::{Digest, Sha256};
-    use std::io::Read;
-
-    let size_a = fs::metadata(a).map(|m| m.len()).unwrap_or(0);
-    let size_b = fs::metadata(b).map(|m| m.len()).unwrap_or(0);
-    if size_a != size_b {
-        return true;
-    }
-
-    let hash = |path: &Path| -> Option<Vec<u8>> {
-        let mut file = fs::File::open(path).ok()?;
-        let mut hasher = Sha256::new();
-        let mut buf = [0u8; 8192];
-        loop {
-            let n = file.read(&mut buf).ok()?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
-        }
-        Some(hasher.finalize().to_vec())
-    };
-
-    hash(a) != hash(b)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,7 +189,6 @@ mod tests {
             extensions: vec![ManifestExtension {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
-                filename: None,
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             }],
         }

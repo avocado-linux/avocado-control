@@ -308,11 +308,7 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
     if output.is_verbose() {
         println!("  Full image IDs:");
         for ext in &matched.extensions {
-            let id_display = ext
-                .image_id
-                .as_deref()
-                .or(ext.filename.as_deref())
-                .unwrap_or("-");
+            let id_display = ext.image_id.as_deref().unwrap_or("-");
             println!("    {} v{}: {}", ext.name, ext.version, id_display);
         }
         println!();
@@ -451,7 +447,6 @@ mod tests {
             extensions: vec![ManifestExtension {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
-                filename: None,
                 image_id: Some("img-id".to_string()),
             }],
         }
