@@ -18,6 +18,10 @@ struct Extension {
     is_sysext: bool,
     is_confext: bool,
     is_directory: bool, // true for directories, false for .raw files
+    /// Merge priority index derived from manifest ordering.
+    /// Used to compute a numerical prefix for deterministic systemd merge order.
+    /// None for extensions discovered outside the manifest (legacy behavior).
+    merge_index: Option<usize>,
 }
 
 /// Print a colored success message
@@ -405,6 +409,10 @@ fn unmerge_extensions_internal_with_options(
     // Unmerge configuration extensions
     let confext_result = run_systemd_command("systemd-confext", &["unmerge", "--json=short"])?;
     handle_systemd_output("systemd-confext unmerge", &confext_result, output)?;
+
+    // Clean up extension-release bind mounts and staging directories
+    // Must happen after systemd unmerge but before loop unmount
+    cleanup_extension_release_staging(output)?;
 
     // Clean up all symlinks to ensure fresh state for next merge
     cleanup_extension_symlinks(output)?;
@@ -1209,8 +1217,11 @@ fn build_extension_json_list(
 
             let short_id = lookup_extension_short_id(ext_name, manifest_extensions);
 
+            let order = available_ext.and_then(|e| e.merge_index);
+
             serde_json::json!({
                 "name": ext_name,
+                "order": order,
                 "id": if short_id == "-" { serde_json::Value::Null } else { serde_json::Value::String(short_id) },
                 "status": status,
                 "type": if types.is_empty() { vec!["?"] } else { types },
@@ -1266,14 +1277,15 @@ fn display_extension_status(
 
     // Display header with dynamic name column
     println!(
-        "{:<nw$} {:<10} {:<10} {:<12} Origin",
+        "{:<6}{:<nw$} {:<10} {:<10} {:<12} Origin",
+        "Order",
         "Extension",
         "ID",
         "Status",
         "Type",
         nw = name_width
     );
-    let total_width = name_width + 1 + 10 + 1 + 10 + 1 + 12 + 1 + 10;
+    let total_width = 6 + name_width + 1 + 10 + 1 + 10 + 1 + 12 + 1 + 10;
     println!("{}", "=".repeat(total_width));
 
     for ext_name in &sorted_extensions {
@@ -1355,7 +1367,18 @@ fn display_extension_info(
     // Look up short image ID from manifest extensions
     let short_id = lookup_extension_short_id(ext_name, manifest_extensions);
 
-    println!("{ext_name:<name_width$} {short_id:<10} {status:<10} {type_str:<12} {origin}");
+    // Show merge order if available
+    let order_str = if let Some(ext) = available_ext {
+        if let Some(idx) = ext.merge_index {
+            format!("#{idx:02}")
+        } else {
+            "-".to_string()
+        }
+    } else {
+        "-".to_string()
+    };
+
+    println!("{order_str:<6}{ext_name:<name_width$} {short_id:<10} {status:<10} {type_str:<12} {origin}");
 }
 
 /// Look up the short image ID (first 8 chars) for an extension by matching
@@ -1490,16 +1513,34 @@ fn prepare_extension_environment_with_output(
     // Track which extensions are actually enabled and linked
     let mut enabled_extensions = Vec::new();
 
-    // Create symlinks for sysext and confext extensions
+    // Create symlinks for sysext and confext extensions, using prefixed names for ordering
     for extension in &extensions {
         let mut extension_enabled = false;
+        let prefixed_name = compute_prefixed_name(extension);
+
+        // Stage extension-release files with prefixed name if ordering is active
+        if extension.merge_index.is_some() {
+            let original_name = if let Some(ver) = &extension.version {
+                format!("{}-{}", extension.name, ver)
+            } else {
+                extension.name.clone()
+            };
+            // Only stage if the prefixed name differs from the original
+            if prefixed_name != original_name {
+                stage_extension_release(extension, &prefixed_name, output.is_verbose())?;
+            }
+        }
 
         if extension.is_sysext {
-            create_sysext_symlink_with_verbosity(extension, output.is_verbose())?;
+            create_sysext_symlink_with_verbosity(extension, &prefixed_name, output.is_verbose())?;
             extension_enabled = true;
         }
         if extension.is_confext {
-            create_confext_symlink_with_verbosity(extension, output.is_verbose())?;
+            create_confext_symlink_with_verbosity(
+                extension,
+                &prefixed_name,
+                output.is_verbose(),
+            )?;
             extension_enabled = true;
         }
 
@@ -1537,21 +1578,18 @@ fn cleanup_stale_extension_symlinks(
         "/run/confexts".to_string()
     };
 
-    // Build a set of expected symlink names (with versions)
+    // Build a set of expected symlink names (using prefixed names when ordering is active)
     let mut expected_names = std::collections::HashSet::new();
     // Also track base names without versions for masking logic
     let mut non_versioned_base_names = std::collections::HashSet::new();
 
     for ext in enabled_extensions {
-        let name_with_version = if let Some(ver) = &ext.version {
-            format!("{}-{}", ext.name, ver)
-        } else {
-            ext.name.clone()
-        };
-        expected_names.insert(name_with_version);
+        // Use the same prefixed name that was used when creating the symlink
+        let prefixed = compute_prefixed_name(ext);
+        expected_names.insert(prefixed);
 
         // Track non-versioned extensions (e.g., HITL mounts) for masking
-        if ext.version.is_none() {
+        if ext.version.is_none() && ext.merge_index.is_none() {
             non_versioned_base_names.insert(ext.name.clone());
         }
     }
@@ -1740,12 +1778,18 @@ fn scan_extensions_from_all_sources_with_verbosity(
             );
         }
 
-        for mext in &manifest.extensions {
-            if extension_map.contains_key(&mext.name) {
+        let ext_count = manifest.extensions.len();
+        for (index, mext) in manifest.extensions.iter().enumerate() {
+            // Inverted index: manifest[0] = highest priority = highest prefix number
+            let merge_idx = ext_count - 1 - index;
+
+            // If HITL version exists, let it inherit the manifest's merge priority
+            if let Some(existing) = extension_map.get_mut(&mext.name) {
+                existing.merge_index = Some(merge_idx);
                 if verbose {
                     println!(
-                        "Skipping manifest extension {} (HITL version preferred)",
-                        mext.name
+                        "HITL extension {} inherits manifest priority #{:02}",
+                        mext.name, merge_idx
                     );
                 }
                 continue;
@@ -1758,13 +1802,15 @@ fn scan_extensions_from_all_sources_with_verbosity(
                     if let Ok(dir_exts) =
                         scan_directory_extensions(raw_path.to_str().unwrap_or_default())
                     {
-                        for ext in dir_exts {
+                        for mut ext in dir_exts {
                             if !extension_map.contains_key(&ext.name) {
+                                ext.merge_index = Some(merge_idx);
                                 if verbose {
                                     println!(
-                                        "Found manifest extension: {} at {}",
+                                        "Found manifest extension: {} at {} (priority #{:02})",
                                         ext.name,
-                                        ext.path.display()
+                                        ext.path.display(),
+                                        merge_idx
                                     );
                                 }
                                 extension_map.insert(ext.name.clone(), ext);
@@ -1779,12 +1825,14 @@ fn scan_extensions_from_all_sources_with_verbosity(
                         &raw_path,
                         verbose,
                     ) {
-                        Ok(ext) => {
+                        Ok(mut ext) => {
+                            ext.merge_index = Some(merge_idx);
                             if verbose {
                                 println!(
-                                    "Found manifest extension: {} at {}",
+                                    "Found manifest extension: {} at {} (priority #{:02})",
                                     ext.name,
-                                    ext.path.display()
+                                    ext.path.display(),
+                                    merge_idx
                                 );
                             }
                             extension_map.insert(ext.name.clone(), ext);
@@ -2192,6 +2240,7 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
         is_sysext: sysext_enabled,
         is_confext: confext_enabled,
         is_directory: true,
+        merge_index: None,
     })
 }
 
@@ -2314,7 +2363,199 @@ fn analyze_raw_extension_with_loop(
         is_sysext: sysext_enabled,
         is_confext: confext_enabled,
         is_directory: false, // Still track that this originated from a .raw file
+        merge_index: None,
     })
+}
+
+/// Staging base directory for extension-release overrides used to control merge ordering.
+const EXT_RELEASE_STAGING_DIR: &str = "/run/avocado/ext-release-staging";
+
+/// Compute the prefixed symlink name for an extension based on its merge index.
+/// When a merge_index is set, returns "NN-name" or "NN-name-version".
+/// Without a merge_index (legacy), returns "name" or "name-version".
+fn compute_prefixed_name(extension: &Extension) -> String {
+    let base_name = if let Some(ver) = &extension.version {
+        format!("{}-{}", extension.name, ver)
+    } else {
+        extension.name.clone()
+    };
+
+    if let Some(index) = extension.merge_index {
+        format!("{index:02}-{base_name}")
+    } else {
+        base_name
+    }
+}
+
+/// Stage extension-release files with a prefixed name so systemd recognizes the renamed extension.
+///
+/// For each extension that needs ordering, this:
+/// 1. Creates a staging directory with copies of the original extension-release.d contents
+/// 2. Adds a new extension-release file named to match the prefixed symlink name
+/// 3. Bind mounts the staging directory over the original extension-release.d
+///
+/// This allows systemd-sysext/confext to find extension-release.{prefixed-name} even though
+/// the extension image was built with extension-release.{original-name}.
+fn stage_extension_release(
+    extension: &Extension,
+    prefixed_name: &str,
+    verbose: bool,
+) -> Result<(), SystemdError> {
+    let staging_base = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/ext-release-staging")
+    } else {
+        EXT_RELEASE_STAGING_DIR.to_string()
+    };
+
+    // Determine the original extension-release name (without prefix)
+    let original_name = if let Some(ver) = &extension.version {
+        format!("{}-{}", extension.name, ver)
+    } else {
+        extension.name.clone()
+    };
+
+    // Handle sysext release directory
+    if extension.is_sysext {
+        let original_release_dir = extension.path.join("usr/lib/extension-release.d");
+        if original_release_dir.exists() {
+            let staging_dir = PathBuf::from(&staging_base)
+                .join(prefixed_name)
+                .join("sysext");
+            fs::create_dir_all(&staging_dir).map_err(|e| SystemdError::CommandFailed {
+                command: "create_dir_all (sysext staging)".to_string(),
+                source: e,
+            })?;
+
+            // Copy all existing files from original release dir
+            if let Ok(entries) = fs::read_dir(&original_release_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_file() {
+                        let dest = staging_dir.join(entry.file_name());
+                        fs::copy(entry.path(), &dest).map_err(|e| SystemdError::CommandFailed {
+                            command: format!("copy extension-release file {:?}", entry.file_name()),
+                            source: e,
+                        })?;
+                    }
+                }
+            }
+
+            // Create the prefixed release file by copying content from original
+            let original_release =
+                original_release_dir.join(format!("extension-release.{original_name}"));
+            // Also try without version if versioned doesn't exist
+            let original_release = if original_release.exists() {
+                original_release
+            } else {
+                original_release_dir.join(format!("extension-release.{}", extension.name))
+            };
+
+            let prefixed_release =
+                staging_dir.join(format!("extension-release.{prefixed_name}"));
+            if original_release.exists() && !prefixed_release.exists() {
+                fs::copy(&original_release, &prefixed_release).map_err(|e| {
+                    SystemdError::CommandFailed {
+                        command: "copy prefixed extension-release (sysext)".to_string(),
+                        source: e,
+                    }
+                })?;
+            }
+
+            // Bind mount staging dir over original release dir
+            run_bind_mount(
+                staging_dir.to_str().unwrap_or_default(),
+                original_release_dir.to_str().unwrap_or_default(),
+                verbose,
+            )?;
+        }
+    }
+
+    // Handle confext release directory
+    if extension.is_confext {
+        let original_release_dir = extension.path.join("etc/extension-release.d");
+        if original_release_dir.exists() {
+            let staging_dir = PathBuf::from(&staging_base)
+                .join(prefixed_name)
+                .join("confext");
+            fs::create_dir_all(&staging_dir).map_err(|e| SystemdError::CommandFailed {
+                command: "create_dir_all (confext staging)".to_string(),
+                source: e,
+            })?;
+
+            // Copy all existing files from original release dir
+            if let Ok(entries) = fs::read_dir(&original_release_dir) {
+                for entry in entries.flatten() {
+                    if entry.path().is_file() {
+                        let dest = staging_dir.join(entry.file_name());
+                        fs::copy(entry.path(), &dest).map_err(|e| SystemdError::CommandFailed {
+                            command: format!("copy extension-release file {:?}", entry.file_name()),
+                            source: e,
+                        })?;
+                    }
+                }
+            }
+
+            let original_release =
+                original_release_dir.join(format!("extension-release.{original_name}"));
+            let original_release = if original_release.exists() {
+                original_release
+            } else {
+                original_release_dir.join(format!("extension-release.{}", extension.name))
+            };
+
+            let prefixed_release =
+                staging_dir.join(format!("extension-release.{prefixed_name}"));
+            if original_release.exists() && !prefixed_release.exists() {
+                fs::copy(&original_release, &prefixed_release).map_err(|e| {
+                    SystemdError::CommandFailed {
+                        command: "copy prefixed extension-release (confext)".to_string(),
+                        source: e,
+                    }
+                })?;
+            }
+
+            run_bind_mount(
+                staging_dir.to_str().unwrap_or_default(),
+                original_release_dir.to_str().unwrap_or_default(),
+                verbose,
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Execute a bind mount, or simulate in test mode.
+fn run_bind_mount(source: &str, target: &str, verbose: bool) -> Result<(), SystemdError> {
+    if verbose {
+        println!("Bind mounting {source} -> {target}");
+    }
+
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        // In test mode, skip actual mount syscall
+        return Ok(());
+    }
+
+    let output = ProcessCommand::new("mount")
+        .args(["--bind", source, target])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| SystemdError::CommandFailed {
+            command: "mount --bind".to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SystemdError::CommandExitedWithError {
+            command: format!("mount --bind {source} {target}"),
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Create target directories for symlinks
@@ -2349,9 +2590,11 @@ fn create_target_directories() -> Result<(), SystemdError> {
     Ok(())
 }
 
-/// Create a symlink for a sysext extension with verbosity control
+/// Create a symlink for a sysext extension with verbosity control.
+/// The `symlink_name` parameter is the (possibly prefixed) name to use for the symlink.
 fn create_sysext_symlink_with_verbosity(
     extension: &Extension,
+    symlink_name: &str,
     verbose: bool,
 ) -> Result<(), SystemdError> {
     let sysext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
@@ -2359,13 +2602,6 @@ fn create_sysext_symlink_with_verbosity(
         format!("{temp_base}/test_extensions")
     } else {
         "/run/extensions".to_string()
-    };
-
-    // Use versioned name for symlinks if version is available
-    let symlink_name = if let Some(ver) = &extension.version {
-        format!("{}-{}", extension.name, ver)
-    } else {
-        extension.name.clone()
     };
 
     let target_path = format!("{sysext_dir}/{symlink_name}");
@@ -2402,9 +2638,11 @@ fn create_sysext_symlink_with_verbosity(
     Ok(())
 }
 
-/// Create a symlink for a confext extension with verbosity control
+/// Create a symlink for a confext extension with verbosity control.
+/// The `symlink_name` parameter is the (possibly prefixed) name to use for the symlink.
 fn create_confext_symlink_with_verbosity(
     extension: &Extension,
+    symlink_name: &str,
     verbose: bool,
 ) -> Result<(), SystemdError> {
     let confext_dir = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
@@ -2412,13 +2650,6 @@ fn create_confext_symlink_with_verbosity(
         format!("{temp_base}/test_confexts")
     } else {
         "/run/confexts".to_string()
-    };
-
-    // Use versioned name for symlinks if version is available
-    let symlink_name = if let Some(ver) = &extension.version {
-        format!("{}-{}", extension.name, ver)
-    } else {
-        extension.name.clone()
     };
 
     let target_path = format!("{confext_dir}/{symlink_name}");
@@ -2618,6 +2849,71 @@ fn unmount_all_persistent_loops() -> Result<(), SystemdError> {
 }
 
 /// Clean up all extension symlinks to ensure fresh state for merge
+/// Clean up extension-release bind mounts and staging directories.
+/// Scans /proc/mounts for bind mounts within extension paths and unmounts them,
+/// then removes the staging directory tree.
+fn cleanup_extension_release_staging(output: &OutputManager) -> Result<(), SystemdError> {
+    let staging_base = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/ext-release-staging")
+    } else {
+        EXT_RELEASE_STAGING_DIR.to_string()
+    };
+
+    if !Path::new(&staging_base).exists() {
+        return Ok(());
+    }
+
+    if std::env::var("AVOCADO_TEST_MODE").is_err() {
+        // Unmount bind mounts over extension-release.d directories.
+        // These are bind mounts from the staging dir onto the extension's release dir.
+        let ext_mount_base = "/run/avocado/extensions";
+        if let Ok(mounts_content) = fs::read_to_string("/proc/mounts") {
+            for line in mounts_content.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let mount_point = parts[1];
+                    if mount_point.starts_with(ext_mount_base)
+                        && mount_point.contains("extension-release.d")
+                    {
+                        let result = ProcessCommand::new("umount")
+                            .arg(mount_point)
+                            .stdout(Stdio::piped())
+                            .stderr(Stdio::piped())
+                            .output();
+
+                        match result {
+                            Ok(o) if o.status.success() => {
+                                if output.is_verbose() {
+                                    output.progress(&format!(
+                                        "Unmounted bind mount: {mount_point}"
+                                    ));
+                                }
+                            }
+                            _ => {
+                                output.progress(&format!(
+                                    "Warning: Failed to unmount bind mount: {mount_point}"
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Remove staging directories
+    if let Err(e) = fs::remove_dir_all(&staging_base) {
+        output.progress(&format!(
+            "Warning: Failed to remove staging directory {staging_base}: {e}"
+        ));
+    } else if output.is_verbose() {
+        output.progress("Cleaned up extension-release staging directories");
+    }
+
+    Ok(())
+}
+
 fn cleanup_extension_symlinks(output: &OutputManager) -> Result<(), SystemdError> {
     output.step("Cleanup", "Removing old extension symlinks");
 
@@ -3723,6 +4019,7 @@ mod tests {
             is_sysext: true,
             is_confext: false,
             is_directory: false,
+            merge_index: None,
         };
         extension_map.insert("test_ext".to_string(), raw_extension);
 
@@ -3734,6 +4031,7 @@ mod tests {
             is_sysext: true,
             is_confext: true,
             is_directory: true,
+            merge_index: None,
         };
         extension_map.insert("test_ext".to_string(), dir_extension);
 
@@ -3764,6 +4062,7 @@ mod tests {
             is_sysext: true,
             is_confext: true,
             is_directory: true,
+            merge_index: None,
         };
 
         // Test loop-mounted raw file extension symlink naming
@@ -3774,6 +4073,7 @@ mod tests {
             is_sysext: true,
             is_confext: false,
             is_directory: false, // Still false to track origin, but path points to mounted dir
+            merge_index: None,
         };
 
         // Directory extensions should use just the name (no version)
@@ -4298,5 +4598,102 @@ OTHER_KEY=value
 
         assert_eq!(merge_commands, vec!["systemctl start service", "depmod"]);
         assert_eq!(unmerge_commands, vec!["systemctl stop service"]);
+    }
+
+    #[test]
+    fn test_compute_prefixed_name_with_merge_index() {
+        let ext = Extension {
+            name: "app".to_string(),
+            version: Some("1.0.0".to_string()),
+            path: PathBuf::from("/test/app"),
+            is_sysext: true,
+            is_confext: false,
+            is_directory: false,
+            merge_index: Some(2),
+        };
+        assert_eq!(compute_prefixed_name(&ext), "02-app-1.0.0");
+    }
+
+    #[test]
+    fn test_compute_prefixed_name_no_version() {
+        let ext = Extension {
+            name: "networking".to_string(),
+            version: None,
+            path: PathBuf::from("/test/networking"),
+            is_sysext: true,
+            is_confext: false,
+            is_directory: true,
+            merge_index: Some(1),
+        };
+        assert_eq!(compute_prefixed_name(&ext), "01-networking");
+    }
+
+    #[test]
+    fn test_compute_prefixed_name_no_merge_index() {
+        // Legacy extension without ordering — no prefix
+        let ext = Extension {
+            name: "legacy".to_string(),
+            version: Some("0.5.0".to_string()),
+            path: PathBuf::from("/test/legacy"),
+            is_sysext: true,
+            is_confext: false,
+            is_directory: true,
+            merge_index: None,
+        };
+        assert_eq!(compute_prefixed_name(&ext), "legacy-0.5.0");
+    }
+
+    #[test]
+    fn test_compute_prefixed_name_inverted_ordering() {
+        // Simulate a manifest with 3 extensions: [highest, middle, lowest]
+        // manifest[0] = highest priority → merge_index = 2
+        // manifest[1] = middle → merge_index = 1
+        // manifest[2] = lowest → merge_index = 0
+        let n = 3;
+        let names = ["highest", "middle", "lowest"];
+        let expected = ["02-highest", "01-middle", "00-lowest"];
+
+        for (index, name) in names.iter().enumerate() {
+            let ext = Extension {
+                name: name.to_string(),
+                version: None,
+                path: PathBuf::from(format!("/test/{name}")),
+                is_sysext: true,
+                is_confext: false,
+                is_directory: true,
+                merge_index: Some(n - 1 - index),
+            };
+            assert_eq!(
+                compute_prefixed_name(&ext),
+                expected[index],
+                "manifest[{index}] should get prefix {:02}",
+                n - 1 - index
+            );
+        }
+    }
+
+    #[test]
+    fn test_hitl_inherits_manifest_priority() {
+        // When a HITL extension overrides a manifest extension,
+        // it should inherit the same merge_index
+        let mut hitl_ext = Extension {
+            name: "networking".to_string(),
+            version: None,
+            path: PathBuf::from("/run/avocado/hitl/networking"),
+            is_sysext: true,
+            is_confext: false,
+            is_directory: true,
+            merge_index: None, // Initially no index (HITL discovery)
+        };
+
+        // Simulate the manifest scanning assigning the index
+        // For a 3-extension manifest where networking is at position 1:
+        let ext_count = 3;
+        let manifest_index = 1;
+        let merge_idx = ext_count - 1 - manifest_index; // = 1
+        hitl_ext.merge_index = Some(merge_idx);
+
+        // The HITL extension now gets the same prefix as the manifest entry
+        assert_eq!(compute_prefixed_name(&hitl_ext), "01-networking");
     }
 }
