@@ -1,0 +1,48 @@
+# Extension management for Avocado Linux system extensions
+interface org.avocado.Extensions
+
+type Extension (
+    name: string,
+    version: ?string,
+    path: string,
+    isSysext: bool,
+    isConfext: bool,
+    isDirectory: bool
+)
+
+type ExtensionStatus (
+    name: string,
+    version: ?string,
+    isSysext: bool,
+    isConfext: bool,
+    isMerged: bool,
+    origin: ?string,
+    imageId: ?string
+)
+
+# List all available extensions in the extensions directory
+method List() -> (extensions: []Extension)
+
+# Merge extensions using systemd-sysext and systemd-confext
+method Merge() -> ()
+
+# Unmerge extensions
+method Unmerge(unmount: ?bool) -> ()
+
+# Refresh extensions (unmerge then merge)
+method Refresh() -> ()
+
+# Enable extensions for a specific OS release version
+method Enable(extensions: []string, osRelease: ?string) -> (enabled: int, failed: int)
+
+# Disable extensions for a specific OS release version
+method Disable(extensions: ?[]string, all: ?bool, osRelease: ?string) -> (disabled: int, failed: int)
+
+# Show status of merged extensions
+method Status() -> ()
+
+error ExtensionNotFound (name: string)
+error MergeFailed (reason: string)
+error UnmergeFailed (reason: string)
+error ConfigurationError (message: string)
+error CommandFailed (command: string, message: string)

@@ -1,0 +1,15 @@
+[Unit]
+Description=Avocado Control Daemon (Varlink)
+Requires=avocadoctl.socket
+After=avocadoctl.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/avocadoctl serve
+ProtectHome=yes
+ProtectSystem=full
+PrivateTmp=yes
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=multi-user.target

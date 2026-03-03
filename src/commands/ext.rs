@@ -284,7 +284,7 @@ pub fn merge_extensions(config: &Config, output: &OutputManager) {
 }
 
 /// Internal merge function that returns a Result
-fn merge_extensions_internal(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
+pub(crate) fn merge_extensions_internal(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
     let environment_info = if is_running_in_initrd() {
         "initrd environment"
     } else {
@@ -378,7 +378,7 @@ fn unmerge_extensions_internal_with_depmod(
 }
 
 /// Internal unmerge function with all options
-fn unmerge_extensions_internal_with_options(
+pub(crate) fn unmerge_extensions_internal_with_options(
     call_depmod: bool,
     unmount: bool,
     output: &OutputManager,
@@ -597,7 +597,7 @@ pub fn enable_extensions(
 }
 
 /// Sync a directory to ensure all changes are persisted to disk
-fn sync_directory(dir_path: &Path) -> Result<(), SystemdError> {
+pub(crate) fn sync_directory(dir_path: &Path) -> Result<(), SystemdError> {
     // Open the directory
     let dir = fs::File::open(dir_path).map_err(|e| SystemdError::CommandFailed {
         command: format!("open directory {}", dir_path.display()),
@@ -812,7 +812,7 @@ pub fn disable_extensions(
 /// stale cached data after the host rebuilds the extension. This function forces
 /// a remount of each HITL mount to invalidate the NFS client cache, ensuring
 /// fresh data is fetched from the server on the next access.
-fn invalidate_hitl_caches(output: &OutputManager) {
+pub(crate) fn invalidate_hitl_caches(output: &OutputManager) {
     let hitl_dir = std::path::Path::new("/run/avocado/hitl");
 
     // Skip if not in test mode and no HITL directory exists
@@ -948,7 +948,7 @@ pub fn status_extensions(config: &Config, output: &OutputManager) {
 }
 
 /// Show enhanced status with extension origins and HITL information
-fn show_enhanced_status(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
+pub(crate) fn show_enhanced_status(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
     // Load active manifest
     let base_dir = config.get_avocado_base_dir();
     let base_path = std::path::Path::new(&base_dir);
@@ -1706,7 +1706,7 @@ fn cleanup_stale_extension_symlinks(
 }
 
 /// Read VERSION_ID from /etc/os-release
-fn read_os_version_id() -> String {
+pub(crate) fn read_os_version_id() -> String {
     let os_release_path = "/etc/os-release";
 
     if let Ok(contents) = fs::read_to_string(os_release_path) {

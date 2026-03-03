@@ -1,0 +1,11 @@
+# Hardware-in-the-loop testing support
+interface org.avocado.Hitl
+
+# Mount NFS extensions from a remote server
+method Mount(serverIp: string, serverPort: ?string, extensions: []string) -> ()
+
+# Unmount NFS extensions
+method Unmount(extensions: []string) -> ()
+
+error MountFailed (extension: string, reason: string)
+error UnmountFailed (extension: string, reason: string)

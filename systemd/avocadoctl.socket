@@ -1,0 +1,12 @@
+[Unit]
+Description=Avocado Control Varlink Socket
+
+[Socket]
+ListenStream=/run/avocado/avocadoctl.sock
+FileDescriptorName=varlink
+SocketMode=0660
+SocketGroup=avocado
+RemoveOnStop=yes
+
+[Install]
+WantedBy=sockets.target

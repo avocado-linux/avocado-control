@@ -2,8 +2,11 @@ mod commands;
 mod config;
 pub mod manifest;
 mod output;
+pub mod service;
 pub mod staging;
 pub mod update;
+mod varlink;
+mod varlink_server;
 
 use clap::{Arg, Command};
 use commands::{ext, hitl, root_authority, runtime};
@@ -105,6 +108,17 @@ fn main() {
                         .num_args(1..)
                         .value_name("EXTENSION"),
                 ),
+        )
+        .subcommand(
+            Command::new("serve")
+                .about("Start the Varlink IPC server")
+                .arg(
+                    Arg::new("address")
+                        .long("address")
+                        .value_name("ADDRESS")
+                        .help("Listen address (e.g. unix:/run/avocado/avocadoctl.sock)")
+                        .default_value("unix:/run/avocado/avocadoctl.sock"),
+                ),
         );
 
     let matches = app.get_matches();
@@ -142,6 +156,15 @@ fn main() {
         }
         Some(("runtime", runtime_matches)) => {
             runtime::handle_command(runtime_matches, &config, &output);
+        }
+        Some(("serve", serve_matches)) => {
+            let address = serve_matches
+                .get_one::<String>("address")
+                .expect("address has a default value");
+            if let Err(e) = varlink_server::run_server(address, config) {
+                output.error("Server Error", &format!("Varlink server failed: {e}"));
+                std::process::exit(1);
+            }
         }
         Some(("status", _)) => {
             show_system_status(&config, &output);

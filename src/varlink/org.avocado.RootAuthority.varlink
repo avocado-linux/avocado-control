@@ -1,0 +1,20 @@
+# Trust anchor / root authority information
+interface org.avocado.RootAuthority
+
+type TrustedKey (
+    keyId: string,
+    keyType: string,
+    roles: []string
+)
+
+type RootAuthorityInfo (
+    version: int,
+    expires: string,
+    keys: []TrustedKey
+)
+
+# Show the trusted signing keys for this device
+method Show() -> (authority: ?RootAuthorityInfo)
+
+error NoRootAuthority ()
+error ParseFailed (reason: string)

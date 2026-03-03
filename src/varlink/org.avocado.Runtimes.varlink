@@ -1,0 +1,46 @@
+# Runtime lifecycle management for Avocado Linux
+interface org.avocado.Runtimes
+
+type RuntimeInfo (
+    name: string,
+    version: string
+)
+
+type ManifestExtension (
+    name: string,
+    version: string,
+    imageId: ?string
+)
+
+type Runtime (
+    id: string,
+    manifestVersion: int,
+    builtAt: string,
+    runtime: RuntimeInfo,
+    extensions: []ManifestExtension,
+    active: bool
+)
+
+# List all available runtimes
+method List() -> (runtimes: []Runtime)
+
+# Add a runtime from a TUF repository URL
+method AddFromUrl(url: string) -> ()
+
+# Add a runtime from a local manifest file
+method AddFromManifest(manifestPath: string) -> ()
+
+# Remove a staged runtime by ID (or prefix)
+method Remove(id: string) -> ()
+
+# Activate a staged runtime by ID (or prefix)
+method Activate(id: string) -> ()
+
+# Inspect a runtime's details
+method Inspect(id: string) -> (runtime: Runtime)
+
+error RuntimeNotFound (id: string)
+error AmbiguousRuntimeId (id: string, candidates: []string)
+error RemoveActiveRuntime ()
+error StagingFailed (reason: string)
+error UpdateFailed (reason: string)

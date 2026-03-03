@@ -1926,8 +1926,7 @@ fn test_disabled_extension_not_merged_after_refresh() {
     // Verify ext1 is NOT scanned from OS release
     assert!(
         !stdout2.contains("Found OS release extension: ext1-1.0.0"),
-        "ext1 should NOT be found from OS release after being disabled. Stdout: {}",
-        stdout2
+        "ext1 should NOT be found from OS release after being disabled. Stdout: {stdout2}"
     );
 
     // Verify ext2 IS scanned from OS release
@@ -1973,10 +1972,10 @@ fn test_base_directory_skipped_with_runtime() {
 
     // Create release files
     for ext in &["ext1-1.0.0", "ext2-1.0.0", "ext3-1.0.0"] {
-        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        let release_dir = extensions_dir.join(format!("{ext}/usr/lib/extension-release.d"));
         fs::create_dir_all(&release_dir).expect("Failed to create release dir");
         fs::write(
-            release_dir.join(format!("extension-release.{}", ext)),
+            release_dir.join(format!("extension-release.{ext}")),
             "ID=avocado\nVERSION_ID=1.0",
         )
         .expect("Failed to write release file");
@@ -2037,10 +2036,10 @@ fn test_base_directory_used_without_runtime() {
 
     // Create release files
     for ext in &["ext1-1.0.0", "ext2-1.0.0"] {
-        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        let release_dir = extensions_dir.join(format!("{ext}/usr/lib/extension-release.d"));
         fs::create_dir_all(&release_dir).expect("Failed to create release dir");
         fs::write(
-            release_dir.join(format!("extension-release.{}", ext)),
+            release_dir.join(format!("extension-release.{ext}")),
             "ID=avocado\nVERSION_ID=1.0",
         )
         .expect("Failed to write release file");
@@ -2063,13 +2062,11 @@ fn test_base_directory_used_without_runtime() {
     // Verify both extensions are found from base directory (not OS release)
     assert!(
         stdout.contains("Found directory extension: ext1-1.0.0"),
-        "ext1 should be found from base directory. Stdout: {}",
-        stdout
+        "ext1 should be found from base directory. Stdout: {stdout}"
     );
     assert!(
         stdout.contains("Found directory extension: ext2-1.0.0"),
-        "ext2 should be found from base directory. Stdout: {}",
-        stdout
+        "ext2 should be found from base directory. Stdout: {stdout}"
     );
 
     // Verify message about no OS releases directory
@@ -2091,10 +2088,10 @@ fn test_disable_all_then_refresh() {
     for ext in &["ext1-1.0.0", "ext2-1.0.0", "ext3-1.0.0"] {
         fs::create_dir(extensions_dir.join(ext))
             .expect("Failed to create test extension directory");
-        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        let release_dir = extensions_dir.join(format!("{ext}/usr/lib/extension-release.d"));
         fs::create_dir_all(&release_dir).expect("Failed to create release dir");
         fs::write(
-            release_dir.join(format!("extension-release.{}", ext)),
+            release_dir.join(format!("extension-release.{ext}")),
             "ID=avocado\nVERSION_ID=1.0",
         )
         .expect("Failed to write release file");
@@ -2158,7 +2155,7 @@ fn test_disable_all_then_refresh() {
 
     let os_releases_dir = temp_dir
         .path()
-        .join(format!("avocado/os-releases/{}", version_id));
+        .join(format!("avocado/os-releases/{version_id}"));
     assert!(
         os_releases_dir.exists(),
         "OS releases directory should still exist at: {}",
@@ -2192,10 +2189,10 @@ fn test_stale_symlink_cleanup() {
     for ext in &["ext1-1.0.0", "ext2-1.0.0"] {
         fs::create_dir(extensions_dir.join(ext))
             .expect("Failed to create test extension directory");
-        let release_dir = extensions_dir.join(format!("{}/usr/lib/extension-release.d", ext));
+        let release_dir = extensions_dir.join(format!("{ext}/usr/lib/extension-release.d"));
         fs::create_dir_all(&release_dir).expect("Failed to create release dir");
         fs::write(
-            release_dir.join(format!("extension-release.{}", ext)),
+            release_dir.join(format!("extension-release.{ext}")),
             "ID=avocado\nVERSION_ID=1.0",
         )
         .expect("Failed to write release file");
@@ -2348,13 +2345,13 @@ fn test_hitl_mount_masks_multiple_versions() {
 
     // Create multiple versioned extensions (myext-1.0.0 and myext-2.0.0)
     for version in &["1.0.0", "2.0.0"] {
-        let ext_name = format!("myext-{}", version);
+        let ext_name = format!("myext-{version}");
         let versioned_ext_dir = extensions_dir.join(&ext_name);
         fs::create_dir(&versioned_ext_dir).expect("Failed to create versioned extension directory");
         let versioned_release_dir = versioned_ext_dir.join("usr/lib/extension-release.d");
         fs::create_dir_all(&versioned_release_dir).expect("Failed to create release dir");
         fs::write(
-            versioned_release_dir.join(format!("extension-release.{}", ext_name)),
+            versioned_release_dir.join(format!("extension-release.{ext_name}")),
             "ID=avocado\nVERSION_ID=1.0",
         )
         .expect("Failed to write release file");
@@ -2430,13 +2427,13 @@ fn test_hitl_mount_only_masks_same_base_name() {
 
     // Create two different extensions
     for (name, version) in &[("myext", "1.0.0"), ("otherext", "2.0.0")] {
-        let ext_name = format!("{}-{}", name, version);
+        let ext_name = format!("{name}-{version}");
         let ext_dir = extensions_dir.join(&ext_name);
         fs::create_dir(&ext_dir).expect("Failed to create extension directory");
         let release_dir = ext_dir.join("usr/lib/extension-release.d");
         fs::create_dir_all(&release_dir).expect("Failed to create release dir");
         fs::write(
-            release_dir.join(format!("extension-release.{}", ext_name)),
+            release_dir.join(format!("extension-release.{ext_name}")),
             "ID=avocado\nVERSION_ID=1.0",
         )
         .expect("Failed to write release file");
@@ -2727,8 +2724,7 @@ fn test_avocado_on_unmerge_command_deduplication() {
     // Due to deduplication, common-service should appear at most once in command execution
     assert!(
         common_service_count <= 1,
-        "Duplicate commands should be deduplicated (found {} executions)",
-        common_service_count
+        "Duplicate commands should be deduplicated (found {common_service_count} executions)"
     );
 
     assert!(
