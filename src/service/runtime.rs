@@ -95,10 +95,7 @@ pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<(), AvocadoE
 }
 
 /// Inspect a runtime's details by ID (or prefix).
-pub fn inspect_runtime(
-    id_prefix: &str,
-    config: &Config,
-) -> Result<RuntimeEntry, AvocadoError> {
+pub fn inspect_runtime(id_prefix: &str, config: &Config) -> Result<RuntimeEntry, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
     let runtimes = RuntimeManifest::list_all(base_path);

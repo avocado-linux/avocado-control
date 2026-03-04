@@ -18,8 +18,8 @@ pub fn show(config: &Config) -> Result<Option<RootAuthorityInfo>, AvocadoError> 
         Err(_) => return Ok(None),
     };
 
-    let signed_root: tough::schema::Signed<tough::schema::Root> =
-        serde_json::from_str(&content).map_err(|e| AvocadoError::ParseFailed {
+    let signed_root: tough::schema::Signed<tough::schema::Root> = serde_json::from_str(&content)
+        .map_err(|e| AvocadoError::ParseFailed {
             reason: format!("Failed to parse {}: {e}", root_path.display()),
         })?;
 

@@ -4,10 +4,8 @@ use crate::config::Config;
 use crate::service;
 use crate::service::error::AvocadoError;
 use crate::varlink::{
-    org_avocado_Extensions as vl_ext,
-    org_avocado_Hitl as vl_hitl,
-    org_avocado_RootAuthority as vl_ra,
-    org_avocado_Runtimes as vl_rt,
+    org_avocado_Extensions as vl_ext, org_avocado_Hitl as vl_hitl,
+    org_avocado_RootAuthority as vl_ra, org_avocado_Runtimes as vl_rt,
 };
 
 // ── Extensions handler ──────────────────────────────────────────────

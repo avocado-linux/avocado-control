@@ -48,10 +48,7 @@ pub enum AvocadoError {
     MountFailed { extension: String, reason: String },
 
     #[error("Unmount failed for '{extension}': {reason}")]
-    UnmountFailed {
-        extension: String,
-        reason: String,
-    },
+    UnmountFailed { extension: String, reason: String },
 
     #[error("No root authority configured")]
     NoRootAuthority,
@@ -128,13 +125,12 @@ impl From<crate::commands::hitl::HitlError> for AvocadoError {
                 extension,
                 reason: error,
             },
-            crate::commands::hitl::HitlError::Unmount {
-                mount_point,
-                error,
-            } => AvocadoError::UnmountFailed {
-                extension: mount_point,
-                reason: error,
-            },
+            crate::commands::hitl::HitlError::Unmount { mount_point, error } => {
+                AvocadoError::UnmountFailed {
+                    extension: mount_point,
+                    reason: error,
+                }
+            }
             other => AvocadoError::CommandFailed {
                 command: "hitl".to_string(),
                 source: std::io::Error::other(other.to_string()),

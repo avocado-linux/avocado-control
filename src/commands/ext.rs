@@ -284,7 +284,10 @@ pub fn merge_extensions(config: &Config, output: &OutputManager) {
 }
 
 /// Internal merge function that returns a Result
-pub(crate) fn merge_extensions_internal(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
+pub(crate) fn merge_extensions_internal(
+    config: &Config,
+    output: &OutputManager,
+) -> Result<(), SystemdError> {
     let environment_info = if is_running_in_initrd() {
         "initrd environment"
     } else {
@@ -948,7 +951,10 @@ pub fn status_extensions(config: &Config, output: &OutputManager) {
 }
 
 /// Show enhanced status with extension origins and HITL information
-pub(crate) fn show_enhanced_status(config: &Config, output: &OutputManager) -> Result<(), SystemdError> {
+pub(crate) fn show_enhanced_status(
+    config: &Config,
+    output: &OutputManager,
+) -> Result<(), SystemdError> {
     // Load active manifest
     let base_dir = config.get_avocado_base_dir();
     let base_path = std::path::Path::new(&base_dir);
@@ -1378,7 +1384,9 @@ fn display_extension_info(
         "-".to_string()
     };
 
-    println!("{order_str:<6}{ext_name:<name_width$} {short_id:<10} {status:<10} {type_str:<12} {origin}");
+    println!(
+        "{order_str:<6}{ext_name:<name_width$} {short_id:<10} {status:<10} {type_str:<12} {origin}"
+    );
 }
 
 /// Look up the short image ID (first 8 chars) for an extension by matching
@@ -1536,11 +1544,7 @@ fn prepare_extension_environment_with_output(
             extension_enabled = true;
         }
         if extension.is_confext {
-            create_confext_symlink_with_verbosity(
-                extension,
-                &prefixed_name,
-                output.is_verbose(),
-            )?;
+            create_confext_symlink_with_verbosity(extension, &prefixed_name, output.is_verbose())?;
             extension_enabled = true;
         }
 
@@ -2450,8 +2454,7 @@ fn stage_extension_release(
                 original_release_dir.join(format!("extension-release.{}", extension.name))
             };
 
-            let prefixed_release =
-                staging_dir.join(format!("extension-release.{prefixed_name}"));
+            let prefixed_release = staging_dir.join(format!("extension-release.{prefixed_name}"));
             if original_release.exists() && !prefixed_release.exists() {
                 fs::copy(&original_release, &prefixed_release).map_err(|e| {
                     SystemdError::CommandFailed {
@@ -2503,8 +2506,7 @@ fn stage_extension_release(
                 original_release_dir.join(format!("extension-release.{}", extension.name))
             };
 
-            let prefixed_release =
-                staging_dir.join(format!("extension-release.{prefixed_name}"));
+            let prefixed_release = staging_dir.join(format!("extension-release.{prefixed_name}"));
             if original_release.exists() && !prefixed_release.exists() {
                 fs::copy(&original_release, &prefixed_release).map_err(|e| {
                     SystemdError::CommandFailed {
@@ -2885,9 +2887,8 @@ fn cleanup_extension_release_staging(output: &OutputManager) -> Result<(), Syste
                         match result {
                             Ok(o) if o.status.success() => {
                                 if output.is_verbose() {
-                                    output.progress(&format!(
-                                        "Unmounted bind mount: {mount_point}"
-                                    ));
+                                    output
+                                        .progress(&format!("Unmounted bind mount: {mount_point}"));
                                 }
                             }
                             _ => {

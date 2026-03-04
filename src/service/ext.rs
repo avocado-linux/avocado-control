@@ -194,11 +194,10 @@ pub fn disable_extensions(
     let mut failed = 0;
 
     if all {
-        let entries = fs::read_dir(&os_releases_dir).map_err(|e| {
-            AvocadoError::ConfigurationError {
+        let entries =
+            fs::read_dir(&os_releases_dir).map_err(|e| AvocadoError::ConfigurationError {
                 message: format!("Failed to read os-releases directory: {e}"),
-            }
-        })?;
+            })?;
 
         for entry in entries.flatten() {
             let path = entry.path();

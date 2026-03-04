@@ -81,7 +81,8 @@ pub fn mount(
         let enabled_services =
             ext::scan_extension_for_enable_services(Path::new(&extension_dir), extension);
         if !enabled_services.is_empty() {
-            let _ = hitl::create_service_dropins(extension, &extension_dir, &enabled_services, &output);
+            let _ =
+                hitl::create_service_dropins(extension, &extension_dir, &enabled_services, &output);
         }
     }
 
