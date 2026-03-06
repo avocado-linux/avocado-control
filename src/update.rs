@@ -118,9 +118,54 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         );
     }
 
-    // 3. Enumerate and download targets
-    let target_map = &targets.signed.targets;
-    println!("  Downloading {} target(s)...", target_map.len());
+    // 3a. Walk delegations if present — collect delegated targets
+    let mut delegated_targets: Vec<(String, tough::schema::Target)> = Vec::new();
+
+    if let Some(delegations) = &targets.signed.delegations {
+        for role in &delegations.roles {
+            let role_path = format!("delegations/{}.json", role.name);
+            let delegation_url = format!("{url}/metadata/{role_path}");
+            let delegation_raw = fetch_url(&delegation_url)?;
+
+            // Verify hash + length against snapshot meta entry
+            verify_delegation_hash(&role_path, &delegation_raw, &snapshot)?;
+
+            // Parse and verify signature against content key from targets.json delegations.keys
+            let delegation: tough::schema::Signed<tough::schema::Targets> =
+                parse_metadata(&role_path, &delegation_raw)?;
+            verify_delegation_signatures(
+                &role_path,
+                &delegation_raw,
+                &delegation.signatures,
+                &delegations.keys,
+                &role.keyids,
+                role.threshold,
+            )?;
+
+            if verbose {
+                println!(
+                    "  Verified delegation {} ({} target(s))",
+                    role.name,
+                    delegation.signed.targets.len()
+                );
+            }
+
+            for (name, info) in &delegation.signed.targets {
+                delegated_targets.push((name.raw().to_string(), info.clone()));
+            }
+        }
+    }
+
+    // 3b. Enumerate and download targets (inline + delegated)
+    let inline_targets: Vec<(String, &tough::schema::Target)> = targets
+        .signed
+        .targets
+        .iter()
+        .map(|(k, v)| (k.raw().to_string(), v))
+        .collect();
+
+    let all_count = inline_targets.len() + delegated_targets.len();
+    println!("  Downloading {all_count} target(s)...");
 
     let staging_dir = base_dir.join(".update-staging");
     fs::create_dir_all(&staging_dir).map_err(|e| {
@@ -144,49 +189,28 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         })
         .unwrap_or_default();
 
-    for (target_name, target_info) in target_map {
-        let name_str = target_name.raw();
+    // Download inline targets (empty for delegated format; kept for backward compat)
+    for (name_str, target_info) in &inline_targets {
+        download_target(
+            url,
+            name_str,
+            target_info,
+            &staging_dir,
+            &existing_images,
+            verbose,
+        )?;
+    }
 
-        // Content-addressable skip: if this target is an image that already
-        // exists locally, the UUIDv5 name guarantees identical content.
-        if name_str != "manifest.json" && existing_images.contains(name_str) {
-            if verbose {
-                println!("    Already present, skipping: {name_str}");
-            }
-            continue;
-        }
-
-        let target_url = format!("{url}/targets/{name_str}");
-
-        if verbose {
-            println!("    Downloading {name_str}...");
-        }
-
-        let data = fetch_url_bytes(&target_url)?;
-
-        // Verify length
-        if data.len() as u64 != target_info.length {
-            return Err(UpdateError::HashMismatch {
-                target: name_str.to_string(),
-                expected: format!("{} bytes", target_info.length),
-                actual: format!("{} bytes", data.len()),
-            });
-        }
-
-        // Verify sha256 hash
-        let expected_hex = hex_encode(target_info.hashes.sha256.as_ref());
-        let actual_hash = sha256_hex(&data);
-        if actual_hash != expected_hex {
-            return Err(UpdateError::HashMismatch {
-                target: name_str.to_string(),
-                expected: expected_hex,
-                actual: actual_hash,
-            });
-        }
-
-        let target_path = staging_dir.join(name_str);
-        fs::write(&target_path, &data)
-            .map_err(|e| UpdateError::StagingFailed(format!("Failed to write {name_str}: {e}")))?;
+    // Download delegated targets
+    for (name_str, target_info) in &delegated_targets {
+        download_target(
+            url,
+            name_str,
+            target_info,
+            &staging_dir,
+            &existing_images,
+            verbose,
+        )?;
     }
 
     // 4. Parse the downloaded manifest and stage the update
@@ -229,6 +253,160 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     let _ = fs::remove_dir_all(&staging_dir);
 
     println!("  Update staged successfully.");
+    Ok(())
+}
+
+/// Download a single target file into the staging directory, verifying hash and length.
+/// Skips content-addressable image files that already exist on disk.
+fn download_target(
+    url: &str,
+    name_str: &str,
+    target_info: &tough::schema::Target,
+    staging_dir: &Path,
+    existing_images: &std::collections::HashSet<String>,
+    verbose: bool,
+) -> Result<(), UpdateError> {
+    // Content-addressable skip: if this target is an image that already
+    // exists locally, the UUIDv5 name guarantees identical content.
+    if name_str != "manifest.json" && existing_images.contains(name_str) {
+        if verbose {
+            println!("    Already present, skipping: {name_str}");
+        }
+        return Ok(());
+    }
+
+    let target_url = format!("{url}/targets/{name_str}");
+
+    if verbose {
+        println!("    Downloading {name_str}...");
+    }
+
+    let data = fetch_url_bytes(&target_url)?;
+
+    // Verify length
+    if data.len() as u64 != target_info.length {
+        return Err(UpdateError::HashMismatch {
+            target: name_str.to_string(),
+            expected: format!("{} bytes", target_info.length),
+            actual: format!("{} bytes", data.len()),
+        });
+    }
+
+    // Verify sha256 hash
+    let expected_hex = hex_encode(target_info.hashes.sha256.as_ref());
+    let actual_hash = sha256_hex(&data);
+    if actual_hash != expected_hex {
+        return Err(UpdateError::HashMismatch {
+            target: name_str.to_string(),
+            expected: expected_hex,
+            actual: actual_hash,
+        });
+    }
+
+    let target_path = staging_dir.join(name_str);
+    fs::write(&target_path, &data)
+        .map_err(|e| UpdateError::StagingFailed(format!("Failed to write {name_str}: {e}")))?;
+
+    Ok(())
+}
+
+/// Verify a delegation file's hash and length against the snapshot metadata.
+fn verify_delegation_hash(
+    role_path: &str,
+    raw_json: &str,
+    snapshot: &tough::schema::Signed<tough::schema::Snapshot>,
+) -> Result<(), UpdateError> {
+    // The snapshot meta key uses the full path like "delegations/runtime-<uuid>.json"
+    let meta_entry = snapshot.signed.meta.get(role_path).ok_or_else(|| {
+        UpdateError::MetadataError(format!(
+            "Delegation '{role_path}' not found in snapshot.json meta"
+        ))
+    })?;
+
+    let actual_len = raw_json.len() as u64;
+    if let Some(expected_len) = meta_entry.length {
+        if actual_len != expected_len {
+            return Err(UpdateError::MetadataError(format!(
+                "Length mismatch for '{role_path}': snapshot says {expected_len}, got {actual_len}"
+            )));
+        }
+    }
+
+    let actual_hash = sha256_hex(raw_json.as_bytes());
+    let hashes = meta_entry.hashes.as_ref().ok_or_else(|| {
+        UpdateError::MetadataError(format!(
+            "No hashes in snapshot.json for '{role_path}'"
+        ))
+    })?;
+    let expected_hash = hex_encode(hashes.sha256.as_ref());
+    if actual_hash != expected_hash {
+        return Err(UpdateError::MetadataError(format!(
+            "Hash mismatch for '{role_path}': snapshot says {expected_hash}, got {actual_hash}"
+        )));
+    }
+
+    Ok(())
+}
+
+/// Verify signatures on a delegation file using the keys declared in the
+/// parent targets.json `delegations.keys` map.
+fn verify_delegation_signatures<K: AsRef<[u8]>>(
+    name: &str,
+    raw_json: &str,
+    signatures: &[tough::schema::Signature],
+    delegation_keys: &std::collections::HashMap<K, tough::schema::key::Key>,
+    authorized_keyids: &[K],
+    threshold: std::num::NonZeroU64,
+) -> Result<(), UpdateError> {
+    let authorized_hex: Vec<String> = authorized_keyids
+        .iter()
+        .map(|id| hex_encode(id.as_ref()))
+        .collect();
+
+    let threshold = threshold.get() as usize;
+
+    // Build a map of keyid-hex → PublicKey from the delegation keys
+    let mut key_map: Vec<(String, PublicKey)> = Vec::new();
+    for (key_id, key) in delegation_keys {
+        let key_id_hex = hex_encode(key_id.as_ref());
+        if let tough::schema::key::Key::Ed25519 { keyval, .. } = key {
+            let public_hex = hex_encode(keyval.public.as_ref());
+            if let Ok(public_bytes) = hex_decode(&public_hex) {
+                if let Ok(pk) = PublicKey::from_slice(&public_bytes) {
+                    key_map.push((key_id_hex, pk));
+                }
+            }
+        }
+    }
+
+    let canonical = extract_signed_canonical(raw_json)
+        .map_err(|e| UpdateError::SignatureVerification(name.to_string(), e))?;
+
+    let mut valid_count = 0;
+
+    for sig in signatures {
+        let sig_key_id = hex_encode(sig.keyid.as_ref());
+
+        if !authorized_hex.contains(&sig_key_id) {
+            continue;
+        }
+
+        if let Some((_, pk)) = key_map.iter().find(|(id, _)| *id == sig_key_id) {
+            if let Ok(signature) = ed25519_compact::Signature::from_slice(sig.sig.as_ref()) {
+                if pk.verify(canonical.as_bytes(), &signature).is_ok() {
+                    valid_count += 1;
+                }
+            }
+        }
+    }
+
+    if valid_count < threshold {
+        return Err(UpdateError::SignatureVerification(
+            name.to_string(),
+            format!("Insufficient valid signatures: got {valid_count}, need {threshold}"),
+        ));
+    }
+
     Ok(())
 }
 
@@ -406,6 +584,11 @@ mod tests {
         ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::from(seed_bytes))
     }
 
+    fn content_keypair() -> ed25519_compact::KeyPair {
+        let seed_bytes = [99u8; 32];
+        ed25519_compact::KeyPair::from_seed(ed25519_compact::Seed::from(seed_bytes))
+    }
+
     fn make_test_root_json() -> (String, ed25519_compact::KeyPair) {
         let kp = test_keypair();
         let pk_hex = hex_encode(kp.pk.as_ref());
@@ -447,6 +630,25 @@ mod tests {
         });
 
         (serde_json::to_string_pretty(&root).unwrap(), kp)
+    }
+
+    /// Build a signed TUF metadata envelope.
+    fn sign_json(payload: &serde_json::Value, kp: &ed25519_compact::KeyPair) -> (String, String) {
+        let pk_hex = hex_encode(kp.pk.as_ref());
+        let key_id = sha256_hex(
+            format!(
+                r#"{{"keytype":"ed25519","keyval":{{"public":"{pk_hex}"}},"scheme":"ed25519"}}"#
+            )
+            .as_bytes(),
+        );
+        let canonical = serde_json::to_string(payload).unwrap();
+        let sig = kp.sk.sign(canonical.as_bytes(), None);
+        let sig_hex = hex_encode(sig.as_ref());
+        let envelope = serde_json::json!({
+            "signatures": [{ "keyid": &key_id, "sig": sig_hex }],
+            "signed": payload
+        });
+        (serde_json::to_string_pretty(&envelope).unwrap(), key_id)
     }
 
     #[test]
@@ -540,5 +742,257 @@ mod tests {
             result.is_ok(),
             "Signature verification should succeed: {result:?}"
         );
+    }
+
+    // ---- Delegation tests ----
+
+    fn make_delegated_targets_json(
+        runtime_uuid: &str,
+        content_kp: &ed25519_compact::KeyPair,
+        targets: &[(&str, &str, u64)], // (name, sha256_hex, size)
+    ) -> String {
+        let mut targets_map = serde_json::Map::new();
+        for (name, hash, size) in targets {
+            targets_map.insert(
+                name.to_string(),
+                serde_json::json!({
+                    "hashes": { "sha256": hash },
+                    "length": size
+                }),
+            );
+        }
+        let payload = serde_json::json!({
+            "_type": "targets",
+            "expires": "2030-01-01T00:00:00Z",
+            "spec_version": "1.0.0",
+            "targets": targets_map,
+            "version": 1,
+            "_delegation_name": format!("runtime-{runtime_uuid}")
+        });
+        let (json, _) = sign_json(&payload, content_kp);
+        json
+    }
+
+    fn make_targets_with_delegation(
+        runtime_uuid: &str,
+        content_kp: &ed25519_compact::KeyPair,
+        signer_kp: &ed25519_compact::KeyPair,
+    ) -> String {
+        let content_pk_hex = hex_encode(content_kp.pk.as_ref());
+        let content_key_id = sha256_hex(
+            format!(
+                r#"{{"keytype":"ed25519","keyval":{{"public":"{content_pk_hex}"}},"scheme":"ed25519"}}"#
+            )
+            .as_bytes(),
+        );
+
+        let payload = serde_json::json!({
+            "_type": "targets",
+            "expires": "2030-01-01T00:00:00Z",
+            "spec_version": "1.0.0",
+            "targets": {},
+            "delegations": {
+                "keys": {
+                    &content_key_id: {
+                        "keytype": "ed25519",
+                        "keyval": { "public": content_pk_hex },
+                        "scheme": "ed25519"
+                    }
+                },
+                "roles": [
+                    {
+                        "name": format!("runtime-{runtime_uuid}"),
+                        "keyids": [&content_key_id],
+                        "threshold": 1,
+                        "paths": ["manifest.json", "*.raw"],
+                        "terminating": true
+                    }
+                ]
+            },
+            "version": 1
+        });
+        let (json, _) = sign_json(&payload, signer_kp);
+        json
+    }
+
+    fn make_snapshot_with_delegation(
+        targets_json: &str,
+        delegation_json: &str,
+        runtime_uuid: &str,
+        signer_kp: &ed25519_compact::KeyPair,
+    ) -> String {
+        let targets_hash = sha256_hex(targets_json.as_bytes());
+        let targets_len = targets_json.len() as u64;
+        let del_hash = sha256_hex(delegation_json.as_bytes());
+        let del_len = delegation_json.len() as u64;
+        let del_path = format!("delegations/runtime-{runtime_uuid}.json");
+
+        let payload = serde_json::json!({
+            "_type": "snapshot",
+            "expires": "2030-01-01T00:00:00Z",
+            "spec_version": "1.0.0",
+            "meta": {
+                "targets.json": {
+                    "hashes": { "sha256": targets_hash },
+                    "length": targets_len,
+                    "version": 1
+                },
+                del_path: {
+                    "hashes": { "sha256": del_hash },
+                    "length": del_len,
+                    "version": 1
+                }
+            },
+            "version": 1
+        });
+        let (json, _) = sign_json(&payload, signer_kp);
+        json
+    }
+
+    #[test]
+    fn test_verify_delegation_hash_ok() {
+        let kp = test_keypair();
+        let ckp = content_keypair();
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let del_json = make_delegated_targets_json(uuid, &ckp, &[]);
+        let targets_json = make_targets_with_delegation(uuid, &ckp, &kp);
+        let snapshot_json = make_snapshot_with_delegation(&targets_json, &del_json, uuid, &kp);
+        let snapshot: tough::schema::Signed<tough::schema::Snapshot> =
+            serde_json::from_str(&snapshot_json).unwrap();
+
+        let role_path = format!("delegations/runtime-{uuid}.json");
+        assert!(verify_delegation_hash(&role_path, &del_json, &snapshot).is_ok());
+    }
+
+    #[test]
+    fn test_verify_delegation_hash_mismatch() {
+        let kp = test_keypair();
+        let ckp = content_keypair();
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let del_json = make_delegated_targets_json(uuid, &ckp, &[]);
+        let targets_json = make_targets_with_delegation(uuid, &ckp, &kp);
+        let snapshot_json = make_snapshot_with_delegation(&targets_json, &del_json, uuid, &kp);
+        let snapshot: tough::schema::Signed<tough::schema::Snapshot> =
+            serde_json::from_str(&snapshot_json).unwrap();
+
+        let role_path = format!("delegations/runtime-{uuid}.json");
+        let tampered = del_json.replace("runtime", "TAMPERED");
+        assert!(verify_delegation_hash(&role_path, &tampered, &snapshot).is_err());
+    }
+
+    #[test]
+    fn test_verify_delegation_signatures_ok() {
+        let ckp = content_keypair();
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+        let del_json =
+            make_delegated_targets_json(uuid, &ckp, &[("manifest.json", &"aa".repeat(32), 10)]);
+
+        let del: tough::schema::Signed<tough::schema::Targets> =
+            serde_json::from_str(&del_json).unwrap();
+
+        // Build keys + keyids matching the content keypair
+        let content_pk_hex = hex_encode(ckp.pk.as_ref());
+        let content_key_id_hex = sha256_hex(
+            format!(
+                r#"{{"keytype":"ed25519","keyval":{{"public":"{content_pk_hex}"}},"scheme":"ed25519"}}"#
+            )
+            .as_bytes(),
+        );
+
+        // Parse from a full targets.json with delegation block to get proper tough types
+        let kp = test_keypair();
+        let targets_json = make_targets_with_delegation(uuid, &ckp, &kp);
+        let targets: tough::schema::Signed<tough::schema::Targets> =
+            serde_json::from_str(&targets_json).unwrap();
+        let delegations = targets.signed.delegations.unwrap();
+        let role = &delegations.roles[0];
+
+        let role_path = format!("delegations/runtime-{uuid}.json");
+        let result = verify_delegation_signatures(
+            &role_path,
+            &del_json,
+            &del.signatures,
+            &delegations.keys,
+            &role.keyids,
+            role.threshold,
+        );
+        assert!(
+            result.is_ok(),
+            "Delegation signature verification should succeed: {result:?}"
+        );
+        let _ = content_key_id_hex;
+    }
+
+    #[test]
+    fn test_verify_delegation_signatures_wrong_key() {
+        let ckp = content_keypair();
+        let wrong_kp = test_keypair(); // different key
+        let uuid = "550e8400-e29b-41d4-a716-446655440000";
+
+        // Sign with the content key, but declare a different key in delegation
+        let del_json = make_delegated_targets_json(uuid, &wrong_kp, &[]);
+        let del: tough::schema::Signed<tough::schema::Targets> =
+            serde_json::from_str(&del_json).unwrap();
+
+        // targets.json delegates to ckp, but the file is signed by wrong_kp
+        let targets_json = make_targets_with_delegation(uuid, &ckp, &ckp);
+        let targets: tough::schema::Signed<tough::schema::Targets> =
+            serde_json::from_str(&targets_json).unwrap();
+        let delegations = targets.signed.delegations.unwrap();
+        let role = &delegations.roles[0];
+
+        let role_path = format!("delegations/runtime-{uuid}.json");
+        let result = verify_delegation_signatures(
+            &role_path,
+            &del_json,
+            &del.signatures,
+            &delegations.keys,
+            &role.keyids,
+            role.threshold,
+        );
+        assert!(result.is_err(), "Should fail with wrong signing key");
+    }
+
+    #[test]
+    fn test_flat_targets_no_delegation() {
+        // Without a delegations block, delegated_targets should be empty
+        // and processing continues using inline targets only.
+        let kp = test_keypair();
+        let pk_hex = hex_encode(kp.pk.as_ref());
+        let key_id = sha256_hex(
+            format!(
+                r#"{{"keytype":"ed25519","keyval":{{"public":"{pk_hex}"}},"scheme":"ed25519"}}"#
+            )
+            .as_bytes(),
+        );
+
+        // Build a flat targets.json without delegations
+        let payload = serde_json::json!({
+            "_type": "targets",
+            "expires": "2030-01-01T00:00:00Z",
+            "spec_version": "1.0.0",
+            "targets": {
+                "manifest.json": {
+                    "hashes": { "sha256": "aa".repeat(32) },
+                    "length": 10
+                }
+            },
+            "version": 1
+        });
+        let canonical = serde_json::to_string(&payload).unwrap();
+        let sig = kp.sk.sign(canonical.as_bytes(), None);
+        let sig_hex = hex_encode(sig.as_ref());
+        let targets_json = serde_json::to_string(&serde_json::json!({
+            "signatures": [{ "keyid": key_id, "sig": sig_hex }],
+            "signed": payload
+        }))
+        .unwrap();
+
+        let targets: tough::schema::Signed<tough::schema::Targets> =
+            serde_json::from_str(&targets_json).unwrap();
+
+        // No delegations block → no delegation walking
+        assert!(targets.signed.delegations.is_none());
+        assert_eq!(targets.signed.targets.len(), 1);
     }
 }
