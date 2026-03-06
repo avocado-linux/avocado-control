@@ -109,7 +109,7 @@ impl vl_ext::VarlinkInterface for ExtensionsHandler {
 
     fn status(&self, call: &mut dyn vl_ext::Call_Status) -> varlink::Result<()> {
         match service::ext::status_extensions(&self.config) {
-            Ok(()) => call.reply(),
+            Ok(extensions) => call.reply(extensions),
             Err(e) => map_ext_error!(call, e),
         }
     }

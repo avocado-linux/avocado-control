@@ -39,7 +39,7 @@ method Enable(extensions: []string, osRelease: ?string) -> (enabled: int, failed
 method Disable(extensions: ?[]string, all: ?bool, osRelease: ?string) -> (disabled: int, failed: int)
 
 # Show status of merged extensions
-method Status() -> ()
+method Status() -> (extensions: []ExtensionStatus)
 
 error ExtensionNotFound (name: string)
 error MergeFailed (reason: string)

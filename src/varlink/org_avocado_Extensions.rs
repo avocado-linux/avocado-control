@@ -380,14 +380,16 @@ pub trait Call_Refresh: VarlinkCallError {
 }
 impl Call_Refresh for varlink::Call<'_> {}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct Status_Reply {}
+pub struct Status_Reply {
+    pub r#extensions: Vec<ExtensionStatus>,
+}
 impl varlink::VarlinkReply for Status_Reply {}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Status_Args {}
 #[allow(dead_code)]
 pub trait Call_Status: VarlinkCallError {
-    fn reply(&mut self) -> varlink::Result<()> {
-        self.reply_struct(varlink::Reply::parameters(None))
+    fn reply(&mut self, r#extensions: Vec<ExtensionStatus>) -> varlink::Result<()> {
+        self.reply_struct(Status_Reply { r#extensions }.into())
     }
 }
 impl Call_Status for varlink::Call<'_> {}
@@ -546,7 +548,7 @@ pub fn new(inner: Box<dyn VarlinkInterface + Send + Sync>) -> VarlinkInterfacePr
 }
 impl varlink::Interface for VarlinkInterfaceProxy {
     fn get_description(&self) -> &'static str {
-        "# Extension management for Avocado Linux system extensions\ninterface org.avocado.Extensions\n\ntype Extension (\n    name: string,\n    version: ?string,\n    path: string,\n    isSysext: bool,\n    isConfext: bool,\n    isDirectory: bool\n)\n\ntype ExtensionStatus (\n    name: string,\n    version: ?string,\n    isSysext: bool,\n    isConfext: bool,\n    isMerged: bool,\n    origin: ?string,\n    imageId: ?string\n)\n\n# List all available extensions in the extensions directory\nmethod List() -> (extensions: []Extension)\n\n# Merge extensions using systemd-sysext and systemd-confext\nmethod Merge() -> ()\n\n# Unmerge extensions\nmethod Unmerge(unmount: ?bool) -> ()\n\n# Refresh extensions (unmerge then merge)\nmethod Refresh() -> ()\n\n# Enable extensions for a specific OS release version\nmethod Enable(extensions: []string, osRelease: ?string) -> (enabled: int, failed: int)\n\n# Disable extensions for a specific OS release version\nmethod Disable(extensions: ?[]string, all: ?bool, osRelease: ?string) -> (disabled: int, failed: int)\n\n# Show status of merged extensions\nmethod Status() -> ()\n\nerror ExtensionNotFound (name: string)\nerror MergeFailed (reason: string)\nerror UnmergeFailed (reason: string)\nerror ConfigurationError (message: string)\nerror CommandFailed (command: string, message: string)\n"
+        "# Extension management for Avocado Linux system extensions\ninterface org.avocado.Extensions\n\ntype Extension (\n    name: string,\n    version: ?string,\n    path: string,\n    isSysext: bool,\n    isConfext: bool,\n    isDirectory: bool\n)\n\ntype ExtensionStatus (\n    name: string,\n    version: ?string,\n    isSysext: bool,\n    isConfext: bool,\n    isMerged: bool,\n    origin: ?string,\n    imageId: ?string\n)\n\n# List all available extensions in the extensions directory\nmethod List() -> (extensions: []Extension)\n\n# Merge extensions using systemd-sysext and systemd-confext\nmethod Merge() -> ()\n\n# Unmerge extensions\nmethod Unmerge(unmount: ?bool) -> ()\n\n# Refresh extensions (unmerge then merge)\nmethod Refresh() -> ()\n\n# Enable extensions for a specific OS release version\nmethod Enable(extensions: []string, osRelease: ?string) -> (enabled: int, failed: int)\n\n# Disable extensions for a specific OS release version\nmethod Disable(extensions: ?[]string, all: ?bool, osRelease: ?string) -> (disabled: int, failed: int)\n\n# Show status of merged extensions\nmethod Status() -> (extensions: []ExtensionStatus)\n\nerror ExtensionNotFound (name: string)\nerror MergeFailed (reason: string)\nerror UnmergeFailed (reason: string)\nerror ConfigurationError (message: string)\nerror CommandFailed (command: string, message: string)\n"
     }
     fn get_name(&self) -> &'static str {
         "org.avocado.Extensions"
