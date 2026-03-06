@@ -59,56 +59,55 @@ fn run_avocadoctl(args: &[&str]) -> std::process::Output {
         .expect("Failed to execute avocadoctl")
 }
 
-/// Test ext list with non-existent directory
+/// Test ext list with non-existent default directory
 #[test]
 fn test_ext_list_nonexistent_directory() {
     let output = run_avocadoctl(&["ext", "list"]);
-    // This should not panic, but will likely show an error since /var/lib/avocado/extensions doesn't exist
-    // The command should still exit successfully (error handling is done via stderr, not exit code)
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // Should contain error message about directory not existing
+    // The scanner handles missing directories gracefully — exits 0 and reports no extensions
     assert!(
-        stderr.contains("Error accessing extensions directory")
-            || stderr.contains("No such file or directory"),
-        "Should show appropriate error message for missing directory"
+        output.status.success(),
+        "ext list should succeed even when the default extensions directory does not exist"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No extensions found"),
+        "Should indicate no extensions found"
     );
 }
 
-/// Test ext list with mock extensions directory using environment variable
+/// Test ext list with mock directory extensions using environment variable
+///
+/// .raw files are intentionally excluded: they require loop device mounting which is not
+/// available in the unit-test environment. Directory-based extensions are sufficient to
+/// exercise the scanner + display logic.
 #[test]
 fn test_ext_list_with_mock_extensions() {
-    // Create a temporary directory structure
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let extensions_dir = temp_dir.path();
 
-    // Create test extensions
+    // Create directory-based extensions
     fs::create_dir(extensions_dir.join("test_extension_dir"))
         .expect("Failed to create test directory");
     fs::create_dir(extensions_dir.join("another_ext"))
         .expect("Failed to create another test directory");
-    fs::write(extensions_dir.join("file_extension.raw"), "")
-        .expect("Failed to create test .raw file");
-    fs::write(extensions_dir.join("binary_ext.raw"), "binary data")
-        .expect("Failed to create binary .raw file");
+
+    // Non-extension files that should be ignored
     fs::write(extensions_dir.join("ignored_file.txt"), "").expect("Failed to create ignored file");
     fs::write(extensions_dir.join("README.md"), "readme content")
         .expect("Failed to create ignored readme");
 
-    // Run avocadoctl ext list with custom extensions directory
     let output = run_avocadoctl_with_env(
         &["ext", "list"],
-        &[("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap())],
+        &[
+            ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+            ("AVOCADO_TEST_MODE", "1"),
+        ],
     );
 
-    assert!(
-        output.status.success(),
-        "ext list should succeed with mock directory"
-    );
+    assert!(output.status.success(), "ext list should succeed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // Should contain our test extensions
     assert!(
         stdout.contains("test_extension_dir"),
         "Should list directory extension"
@@ -118,64 +117,33 @@ fn test_ext_list_with_mock_extensions() {
         "Should list another directory extension"
     );
     assert!(
-        stdout.contains("file_extension"),
-        "Should list .raw file without extension"
-    );
-    assert!(
-        stdout.contains("binary_ext"),
-        "Should list binary .raw file without extension"
-    );
-
-    // Should NOT contain ignored files
-    assert!(
         !stdout.contains("ignored_file.txt"),
         "Should not list .txt files"
     );
     assert!(!stdout.contains("README.md"), "Should not list .md files");
+
+    // Layer-stack labels should be present
     assert!(
-        !stdout.contains(".raw"),
-        "Should not show .raw extension in output"
+        stdout.contains("top layer") && stdout.contains("base layer"),
+        "Should show overlay layer direction labels"
     );
-
-    // Should be sorted alphabetically
-    let lines: Vec<&str> = stdout.lines().collect();
-    let extension_lines: Vec<&str> = lines
-        .iter()
-        .filter(|line| {
-            line.trim().starts_with("another_ext")
-                || line.trim().starts_with("binary_ext")
-                || line.trim().starts_with("file_extension")
-                || line.trim().starts_with("test_extension_dir")
-        })
-        .copied()
-        .collect();
-
-    // Verify alphabetical order
-    assert!(
-        extension_lines.len() >= 4,
-        "Should have at least 4 extension entries"
-    );
-
-    // The temp_dir will be automatically cleaned up when it goes out of scope
 }
 
-/// Test ext list with custom config file
+/// Test ext list with a custom config file via the -c flag
+///
+/// ext list now uses the extension scanner (AVOCADO_EXTENSIONS_PATH / manifest) rather than
+/// config.ext.dir, so this test verifies that -c is accepted and the command completes
+/// successfully — not that config.ext.dir drives discovery.
 #[test]
 fn test_ext_list_with_config_file() {
-    // Create temporary directories for config and extensions
     let temp_dir = TempDir::new().expect("Failed to create temp directory");
     let config_path = temp_dir.path().join("test_config.toml");
     let extensions_dir = temp_dir.path().join("custom_extensions");
 
     fs::create_dir(&extensions_dir).expect("Failed to create extensions directory");
-
-    // Create test extensions
     fs::create_dir(extensions_dir.join("config_test_ext"))
         .expect("Failed to create test directory");
-    fs::write(extensions_dir.join("config_raw_ext.raw"), "")
-        .expect("Failed to create test .raw file");
 
-    // Create config file
     let config_content = format!(
         r#"[avocado.ext]
 dir = "{}"
@@ -184,8 +152,14 @@ dir = "{}"
     );
     fs::write(&config_path, config_content).expect("Failed to write config file");
 
-    // Run avocadoctl ext list with custom config
-    let output = run_avocadoctl(&["-c", config_path.to_str().unwrap(), "ext", "list"]);
+    // Supply the extensions dir via env var so the scanner can find it
+    let output = run_avocadoctl_with_env(
+        &["-c", config_path.to_str().unwrap(), "ext", "list"],
+        &[
+            ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+            ("AVOCADO_TEST_MODE", "1"),
+        ],
+    );
 
     assert!(
         output.status.success(),
@@ -193,15 +167,9 @@ dir = "{}"
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-
-    // Should contain our test extensions from config-specified directory
     assert!(
         stdout.contains("config_test_ext"),
         "Should list directory extension from config"
-    );
-    assert!(
-        stdout.contains("config_raw_ext"),
-        "Should list .raw file from config"
     );
 }
 
@@ -233,12 +201,16 @@ fn test_invalid_config_file() {
 fn test_nonexistent_config_file() {
     let output = run_avocadoctl(&["-c", "/nonexistent/config.toml", "ext", "list"]);
 
-    // Should still work (using defaults) since nonexistent config is handled gracefully
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    // Should show error about extensions directory, not config file
+    // Nonexistent config falls back to defaults; missing extensions directories are handled
+    // gracefully by the scanner — the command should succeed and report no extensions.
     assert!(
-        stderr.contains("Error accessing extensions directory")
-            || stderr.contains("No such file or directory")
+        output.status.success(),
+        "ext list should succeed using default config when config file does not exist"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No extensions found"),
+        "Should indicate no extensions found"
     );
 }
 
@@ -265,12 +237,6 @@ fn test_ext_list_empty_directory() {
         stdout.contains("No extensions found"),
         "Should indicate no extensions found"
     );
-    assert!(
-        stdout.contains(extensions_dir.to_str().unwrap()),
-        "Should show the directory path"
-    );
-
-    // The temp_dir will be automatically cleaned up when it goes out of scope
 }
 
 /// Test ext list help

@@ -217,54 +217,111 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
     }
 }
 
-/// List all extensions from the extensions directory
-fn list_extensions(config: &Config, output: &OutputManager) {
+/// List all extensions from disk images, annotating which are currently mounted/active.
+fn list_extensions(_config: &Config, output: &OutputManager) {
     output.info("Extension List", "Listing available extensions");
-    let extensions_path = config.get_extensions_dir();
 
-    match fs::read_dir(&extensions_path) {
-        Ok(entries) => {
-            let mut extension_names = Vec::new();
-
-            for entry in entries {
-                match entry {
-                    Ok(entry) => {
-                        let path = entry.path();
-                        if let Some(name) = path.file_name() {
-                            if let Some(name_str) = name.to_str() {
-                                // Handle directories and .raw files
-                                if path.is_dir() {
-                                    extension_names.push(name_str.to_string());
-                                } else if name_str.ends_with(".raw") {
-                                    // Remove .raw extension from filename
-                                    let ext_name =
-                                        name_str.strip_suffix(".raw").unwrap_or(name_str);
-                                    extension_names.push(ext_name.to_string());
-                                }
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Error reading entry: {e}");
-                    }
-                }
-            }
-
-            if extension_names.is_empty() {
-                println!("No extensions found in {extensions_path}");
-            } else {
-                extension_names.sort();
-                println!("Available extensions:");
-                for name in extension_names {
-                    println!("  {name}");
-                }
-            }
-        }
+    let available = match scan_extensions_from_all_sources_with_verbosity(output.is_verbose()) {
+        Ok(exts) => exts,
         Err(e) => {
-            eprintln!("Error accessing extensions directory '{extensions_path}': {e}");
-            eprintln!("Make sure the directory exists and you have read permissions.");
+            eprintln!("Error scanning extensions: {e}");
+            std::process::exit(1);
         }
+    };
+
+    if available.is_empty() {
+        println!("No extensions found.");
+        return;
     }
+
+    // Collect mounted names for correlation (strip order prefix, ignore errors)
+    let mounted_sysext: std::collections::HashSet<String> =
+        get_mounted_systemd_extensions("systemd-sysext")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+    let mounted_confext: std::collections::HashSet<String> =
+        get_mounted_systemd_extensions("systemd-confext")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.name)
+            .collect();
+
+    // Sort descending by merge_index (highest priority / top layer first).
+    // Extensions without a merge_index sort to the bottom.
+    let mut sorted = available;
+    sorted.sort_by(|a, b| {
+        b.merge_index
+            .cmp(&a.merge_index)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    // Compute column width
+    let name_width = sorted
+        .iter()
+        .map(|e| {
+            if let Some(ver) = &e.version {
+                e.name.len() + 1 + ver.len()
+            } else {
+                e.name.len()
+            }
+        })
+        .max()
+        .unwrap_or(9)
+        .max(9);
+
+    println!("  (high priority / top layer)");
+    println!(
+        "{:<6}{:<nw$} {:<12} {:<8}",
+        "Order",
+        "Extension",
+        "Type",
+        "Status",
+        nw = name_width
+    );
+    println!("{}", "=".repeat(6 + name_width + 1 + 12 + 1 + 8));
+
+    for ext in &sorted {
+        let versioned_name = if let Some(ver) = &ext.version {
+            format!("{}-{}", ext.name, ver)
+        } else {
+            ext.name.clone()
+        };
+
+        let order_str = ext
+            .merge_index
+            .map(|i| format!("#{i:02}"))
+            .unwrap_or_else(|| "-".to_string());
+
+        let mut types = Vec::new();
+        if ext.is_sysext {
+            types.push("sys");
+        }
+        if ext.is_confext {
+            types.push("conf");
+        }
+        let type_str = if types.is_empty() {
+            "?".to_string()
+        } else {
+            types.join("+")
+        };
+
+        let in_sysext = mounted_sysext.contains(&versioned_name);
+        let in_confext = mounted_confext.contains(&versioned_name);
+        let status = match (in_sysext, in_confext) {
+            (true, true) => "MERGED",
+            (true, false) => "SYSEXT",
+            (false, true) => "CONFEXT",
+            (false, false) => "READY",
+        };
+
+        println!("{order_str:<6}{versioned_name:<name_width$} {type_str:<12} {status}");
+    }
+
+    println!("  (low priority / base layer)");
+    println!();
+    println!("Total: {} extension(s)", sorted.len());
 }
 
 /// Merge extensions using systemd-sysext and systemd-confext
@@ -1100,6 +1157,17 @@ struct MountedExtension {
     hierarchy: String,
 }
 
+/// Strip a numeric order prefix (e.g. "00-", "03-") from an extension name.
+/// These prefixes are added by avocadoctl to enforce systemd merge ordering.
+fn strip_order_prefix(name: &str) -> &str {
+    let end = name.bytes().take_while(|b| b.is_ascii_digit()).count();
+    if end > 0 && name.as_bytes().get(end) == Some(&b'-') {
+        &name[end + 1..]
+    } else {
+        name
+    }
+}
+
 /// Get mounted extensions from systemd using JSON format
 fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>, SystemdError> {
     let mut mounted = Vec::new();
@@ -1131,11 +1199,11 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
 
         // Handle extensions field - can be string "none" or array of strings
         if let Some(extensions) = hierarchy_obj["extensions"].as_array() {
-            // Array of extension names
+            // Array of extension names — strip any "NN-" ordering prefix before storing
             for ext in extensions {
                 if let Some(ext_name) = ext.as_str() {
                     mounted.push(MountedExtension {
-                        name: ext_name.to_string(),
+                        name: strip_order_prefix(ext_name).to_string(),
                         hierarchy: hierarchy.clone(),
                     });
                 }
@@ -1144,7 +1212,7 @@ fn get_mounted_systemd_extensions(command: &str) -> Result<Vec<MountedExtension>
             // Single string - skip if it's "none"
             if ext_str != "none" {
                 mounted.push(MountedExtension {
-                    name: ext_str.to_string(),
+                    name: strip_order_prefix(ext_str).to_string(),
                     hierarchy: hierarchy.clone(),
                 });
             }
@@ -1269,9 +1337,33 @@ fn display_extension_status(
         return Ok(());
     }
 
-    // Sort extensions for consistent display
+    // Sort descending by merge_index (highest priority / top layer first).
+    // Extensions without a merge_index sort to the bottom.
     let mut sorted_extensions: Vec<_> = all_extensions.into_iter().collect();
-    sorted_extensions.sort();
+    sorted_extensions.sort_by(|a, b| {
+        let idx_a = available
+            .iter()
+            .find(|e| {
+                if let Some(ver) = &e.version {
+                    format!("{}-{}", e.name, ver) == *a
+                } else {
+                    e.name == *a
+                }
+            })
+            .and_then(|e| e.merge_index);
+        let idx_b = available
+            .iter()
+            .find(|e| {
+                if let Some(ver) = &e.version {
+                    format!("{}-{}", e.name, ver) == *b
+                } else {
+                    e.name == *b
+                }
+            })
+            .and_then(|e| e.merge_index);
+        // Descending by index; None sorts last
+        idx_b.cmp(&idx_a).then_with(|| a.cmp(b))
+    });
 
     // Compute dynamic column width from the longest extension name
     let name_width = sorted_extensions
@@ -1281,7 +1373,10 @@ fn display_extension_status(
         .unwrap_or(9)
         .max(9); // at least as wide as "Extension"
 
-    // Display header with dynamic name column
+    let total_width = 6 + name_width + 1 + 10 + 1 + 10 + 1 + 12 + 1 + 10;
+
+    // Display header — top-of-stack indicator makes the overlay direction explicit
+    println!("  (high priority / top layer)");
     println!(
         "{:<6}{:<nw$} {:<10} {:<10} {:<12} Origin",
         "Order",
@@ -1291,7 +1386,6 @@ fn display_extension_status(
         "Type",
         nw = name_width
     );
-    let total_width = 6 + name_width + 1 + 10 + 1 + 10 + 1 + 12 + 1 + 10;
     println!("{}", "=".repeat(total_width));
 
     for ext_name in &sorted_extensions {
@@ -1304,6 +1398,8 @@ fn display_extension_status(
             name_width,
         );
     }
+
+    println!("  (low priority / base layer)");
 
     // Display summary
     println!();
@@ -1748,9 +1844,9 @@ fn scan_extensions_from_all_sources_with_verbosity(
     // Read OS VERSION_ID for runtime-specific extensions
     let version_id = read_os_version_id();
 
-    // Fallback to direct extensions path (for backward compatibility)
+    // Fallback to the images directory where extension images are installed
     let extensions_dir = std::env::var("AVOCADO_EXTENSIONS_PATH")
-        .unwrap_or_else(|_| "/var/lib/avocado/extensions".to_string());
+        .unwrap_or_else(|_| "/var/lib/avocado/images".to_string());
 
     // 1. First priority: HITL mounted extensions
     if verbose {
@@ -3960,7 +4056,7 @@ mod tests {
 
         let config = Config::default();
         let extensions_path = config.get_extensions_dir();
-        assert_eq!(extensions_path, "/var/lib/avocado/extensions");
+        assert_eq!(extensions_path, "/var/lib/avocado/images");
     }
 
     #[test]

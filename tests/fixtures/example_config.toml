@@ -5,4 +5,4 @@
 [avocado.ext]
 # Directory where Avocado extensions are stored
 # Can be overridden by AVOCADO_EXTENSIONS_PATH environment variable
-dir = "/var/lib/avocado/extensions"
+dir = "/var/lib/avocado/images"

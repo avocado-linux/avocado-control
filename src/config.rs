@@ -41,7 +41,7 @@ impl Default for Config {
         Self {
             avocado: AvocadoConfig {
                 ext: ExtConfig {
-                    dir: "/var/lib/avocado/extensions".to_string(),
+                    dir: "/var/lib/avocado/images".to_string(),
                     sysext_mutable: None,
                     confext_mutable: None,
                     mutable: None,
@@ -213,7 +213,7 @@ mod tests {
     #[test]
     fn test_default_config() {
         let config = Config::default();
-        assert_eq!(config.avocado.ext.dir, "/var/lib/avocado/extensions");
+        assert_eq!(config.avocado.ext.dir, "/var/lib/avocado/images");
     }
 
     #[test]
@@ -221,7 +221,7 @@ mod tests {
         let result = Config::load("/nonexistent/path/config.toml");
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert_eq!(config.avocado.ext.dir, "/var/lib/avocado/extensions");
+        assert_eq!(config.avocado.ext.dir, "/var/lib/avocado/images");
     }
 
     #[test]
@@ -278,7 +278,7 @@ dir = "/custom/extensions/path"
 
         // Test without environment variable
         std::env::remove_var("AVOCADO_EXTENSIONS_PATH");
-        assert_eq!(config.get_extensions_dir(), "/var/lib/avocado/extensions");
+        assert_eq!(config.get_extensions_dir(), "/var/lib/avocado/images");
 
         // Test with environment variable
         std::env::set_var("AVOCADO_EXTENSIONS_PATH", "/env/override/path");
@@ -540,9 +540,6 @@ dir = "/override/test/path"
 
         // Test with default path (should return default config since default doesn't exist)
         let default_config = Config::load_with_override(None).unwrap();
-        assert_eq!(
-            default_config.avocado.ext.dir,
-            "/var/lib/avocado/extensions"
-        );
+        assert_eq!(default_config.avocado.ext.dir, "/var/lib/avocado/images");
     }
 }
