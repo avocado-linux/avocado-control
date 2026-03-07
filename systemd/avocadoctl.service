@@ -1,7 +1,8 @@
 [Unit]
 Description=Avocado Control Daemon (Varlink)
+DefaultDependencies=no
 Requires=avocadoctl.socket
-After=avocadoctl.socket
+After=local-fs.target avocadoctl.socket
 
 [Service]
 Type=simple
