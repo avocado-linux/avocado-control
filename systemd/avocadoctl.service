@@ -2,6 +2,7 @@
 Description=Avocado Control Daemon (Varlink)
 Requires=avocadoctl.socket
 After=avocadoctl.socket
+Before=avocado-extension.service avocado-extension-initrd.service
 
 [Service]
 Type=simple

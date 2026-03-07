@@ -1,5 +1,6 @@
 [Unit]
 Description=Avocado Control Varlink Socket
+Before=avocado-extension.service avocado-extension-initrd.service
 
 [Socket]
 ListenStream=/run/avocado/avocadoctl.sock
