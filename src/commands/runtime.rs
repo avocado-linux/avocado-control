@@ -88,7 +88,8 @@ fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
         println!("  Adding runtime from {url}");
         println!();
 
-        match update::perform_update(url, base_path, output.is_verbose()) {
+        let auth_token = std::env::var("AVOCADO_TUF_AUTH_TOKEN").ok();
+        match update::perform_update(url, base_path, auth_token.as_deref(), output.is_verbose()) {
             Ok(()) => {
                 crate::commands::ext::refresh_extensions(config, output);
                 println!();

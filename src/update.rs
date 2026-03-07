@@ -32,7 +32,7 @@ pub enum UpdateError {
     MetadataError(String),
 }
 
-pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), UpdateError> {
+pub fn perform_update(url: &str, base_dir: &Path, auth_token: Option<&str>, verbose: bool) -> Result<(), UpdateError> {
     let url = url.trim_end_matches('/');
 
     // 1. Load the local trust anchor
@@ -59,7 +59,7 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     println!("  Fetching update metadata...");
 
     let timestamp_url = format!("{url}/metadata/timestamp.json");
-    let timestamp_raw = fetch_url(&timestamp_url)?;
+    let timestamp_raw = fetch_url(&timestamp_url, auth_token)?;
     let timestamp: tough::schema::Signed<tough::schema::Timestamp> =
         parse_metadata("timestamp.json", &timestamp_raw)?;
     verify_signatures(
@@ -79,7 +79,7 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     }
 
     let snapshot_url = format!("{url}/metadata/snapshot.json");
-    let snapshot_raw = fetch_url(&snapshot_url)?;
+    let snapshot_raw = fetch_url(&snapshot_url, auth_token)?;
     let snapshot: tough::schema::Signed<tough::schema::Snapshot> =
         parse_metadata("snapshot.json", &snapshot_raw)?;
     verify_signatures(
@@ -99,7 +99,7 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
     }
 
     let targets_url = format!("{url}/metadata/targets.json");
-    let targets_raw = fetch_url(&targets_url)?;
+    let targets_raw = fetch_url(&targets_url, auth_token)?;
     let targets: tough::schema::Signed<tough::schema::Targets> =
         parse_metadata("targets.json", &targets_raw)?;
     verify_signatures(
@@ -125,7 +125,7 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
         for role in &delegations.roles {
             let role_path = format!("delegations/{}.json", role.name);
             let delegation_url = format!("{url}/metadata/{role_path}");
-            let delegation_raw = fetch_url(&delegation_url)?;
+            let delegation_raw = fetch_url(&delegation_url, auth_token)?;
 
             // Verify hash + length against snapshot meta entry
             verify_delegation_hash(&role_path, &delegation_raw, &snapshot)?;
@@ -197,6 +197,7 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
             target_info,
             &staging_dir,
             &existing_images,
+            auth_token,
             verbose,
         )?;
     }
@@ -209,6 +210,7 @@ pub fn perform_update(url: &str, base_dir: &Path, verbose: bool) -> Result<(), U
             target_info,
             &staging_dir,
             &existing_images,
+            auth_token,
             verbose,
         )?;
     }
@@ -264,6 +266,7 @@ fn download_target(
     target_info: &tough::schema::Target,
     staging_dir: &Path,
     existing_images: &std::collections::HashSet<String>,
+    auth_token: Option<&str>,
     verbose: bool,
 ) -> Result<(), UpdateError> {
     // Content-addressable skip: if this target is an image that already
@@ -281,7 +284,7 @@ fn download_target(
         println!("    Downloading {name_str}...");
     }
 
-    let data = fetch_url_bytes(&target_url)?;
+    let data = fetch_url_bytes(&target_url, auth_token)?;
 
     // Verify length
     if data.len() as u64 != target_info.length {
@@ -509,8 +512,16 @@ fn extract_signed_canonical(raw_json: &str) -> Result<String, String> {
     serde_json::to_string(signed).map_err(|e| format!("Failed to serialize: {e}"))
 }
 
-fn fetch_url(url: &str) -> Result<String, UpdateError> {
-    let response = ureq::get(url)
+fn make_request(url: &str, auth_token: Option<&str>) -> ureq::RequestBuilder {
+    let req = ureq::get(url);
+    match auth_token {
+        Some(token) => req.header("Authorization", format!("Bearer {token}")),
+        None => req,
+    }
+}
+
+fn fetch_url(url: &str, auth_token: Option<&str>) -> Result<String, UpdateError> {
+    let response = make_request(url, auth_token)
         .call()
         .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
 
@@ -524,8 +535,8 @@ fn fetch_url(url: &str) -> Result<String, UpdateError> {
     Ok(body)
 }
 
-fn fetch_url_bytes(url: &str) -> Result<Vec<u8>, UpdateError> {
-    let response = ureq::get(url)
+fn fetch_url_bytes(url: &str, auth_token: Option<&str>) -> Result<Vec<u8>, UpdateError> {
+    let response = make_request(url, auth_token)
         .call()
         .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
 
@@ -679,7 +690,7 @@ mod tests {
     #[test]
     fn test_no_trust_anchor() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let result = perform_update("http://localhost:9999", tmp.path(), false);
+        let result = perform_update("http://localhost:9999", tmp.path(), None, false);
         assert!(matches!(result, Err(UpdateError::NoTrustAnchor)));
     }
 

@@ -24,8 +24,8 @@ type Runtime (
 # List all available runtimes
 method List() -> (runtimes: []Runtime)
 
-# Add a runtime from a TUF repository URL
-method AddFromUrl(url: string) -> ()
+# Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)
+method AddFromUrl(url: string, authToken: ?string) -> ()
 
 # Add a runtime from a local manifest file
 method AddFromManifest(manifestPath: string) -> ()

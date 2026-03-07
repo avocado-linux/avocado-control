@@ -39,10 +39,10 @@ pub fn list_runtimes(config: &Config) -> Result<Vec<RuntimeEntry>, AvocadoError>
 }
 
 /// Add a runtime from a TUF repository URL.
-pub fn add_from_url(url: &str, config: &Config) -> Result<(), AvocadoError> {
+pub fn add_from_url(url: &str, auth_token: Option<&str>, config: &Config) -> Result<(), AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
-    update::perform_update(url, base_path, false)?;
+    update::perform_update(url, base_path, auth_token, false)?;
     Ok(())
 }
 
