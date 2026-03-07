@@ -1,5 +1,7 @@
 [Unit]
 Description=Avocado Control Varlink Socket
+DefaultDependencies=no
+After=local-fs.target
 Before=avocado-extension.service avocado-extension-initrd.service
 
 [Socket]
