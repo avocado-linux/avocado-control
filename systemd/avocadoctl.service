@@ -1,9 +1,7 @@
 [Unit]
 Description=Avocado Control Daemon (Varlink)
-DefaultDependencies=no
 Requires=avocadoctl.socket
-After=local-fs.target avocadoctl.socket
-Before=avocado-extension.service avocado-extension-initrd.service
+After=avocadoctl.socket
 
 [Service]
 Type=simple
