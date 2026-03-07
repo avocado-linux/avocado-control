@@ -20,6 +20,10 @@ pub struct AvocadoConfig {
     /// Override for the avocado base directory (default: /var/lib/avocado)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtimes_dir: Option<String>,
+    /// Varlink socket address for daemon communication
+    /// (default: unix:/run/avocado/avocadoctl.sock)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub socket: Option<String>,
 }
 
 /// Extension configuration
@@ -47,6 +51,7 @@ impl Default for Config {
                     mutable: None,
                 },
                 runtimes_dir: None,
+                socket: None,
             },
         }
     }
@@ -79,6 +84,15 @@ impl Config {
     pub fn load_with_override(custom_path: Option<&str>) -> Result<Self, ConfigError> {
         let config_path = custom_path.unwrap_or(DEFAULT_CONFIG_PATH);
         Self::load(config_path)
+    }
+
+    /// Get the varlink socket address for daemon communication.
+    /// Resolution order: config file → hardcoded default.
+    pub fn socket_address(&self) -> &str {
+        self.avocado
+            .socket
+            .as_deref()
+            .unwrap_or("unix:/run/avocado/avocadoctl.sock")
     }
 
     /// Get the extensions directory, checking environment variable first

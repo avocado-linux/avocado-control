@@ -62,7 +62,7 @@ fn run_avocadoctl(args: &[&str]) -> std::process::Output {
 /// Test ext list with non-existent default directory
 #[test]
 fn test_ext_list_nonexistent_directory() {
-    let output = run_avocadoctl(&["ext", "list"]);
+    let output = run_avocadoctl_with_env(&["ext", "list"], &[("AVOCADO_TEST_MODE", "1")]);
     // The scanner handles missing directories gracefully — exits 0 and reports no extensions
     assert!(
         output.status.success(),
@@ -199,7 +199,10 @@ fn test_invalid_config_file() {
 /// Test -c flag with nonexistent config file (should use defaults)
 #[test]
 fn test_nonexistent_config_file() {
-    let output = run_avocadoctl(&["-c", "/nonexistent/config.toml", "ext", "list"]);
+    let output = run_avocadoctl_with_env(
+        &["-c", "/nonexistent/config.toml", "ext", "list"],
+        &[("AVOCADO_TEST_MODE", "1")],
+    );
 
     // Nonexistent config falls back to defaults; missing extensions directories are handled
     // gracefully by the scanner — the command should succeed and report no extensions.
@@ -224,7 +227,10 @@ fn test_ext_list_empty_directory() {
     // Run avocadoctl ext list with empty extensions directory
     let output = run_avocadoctl_with_env(
         &["ext", "list"],
-        &[("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap())],
+        &[
+            ("AVOCADO_EXTENSIONS_PATH", extensions_dir.to_str().unwrap()),
+            ("AVOCADO_TEST_MODE", "1"),
+        ],
     );
 
     assert!(
