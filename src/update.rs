@@ -512,18 +512,14 @@ fn extract_signed_canonical(raw_json: &str) -> Result<String, String> {
     serde_json::to_string(signed).map_err(|e| format!("Failed to serialize: {e}"))
 }
 
-fn make_request(url: &str, auth_token: Option<&str>) -> ureq::RequestBuilder {
+fn fetch_url(url: &str, auth_token: Option<&str>) -> Result<String, UpdateError> {
     let req = ureq::get(url);
-    match auth_token {
+    let response = match auth_token {
         Some(token) => req.header("Authorization", format!("Bearer {token}")),
         None => req,
     }
-}
-
-fn fetch_url(url: &str, auth_token: Option<&str>) -> Result<String, UpdateError> {
-    let response = make_request(url, auth_token)
-        .call()
-        .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
+    .call()
+    .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
 
     let mut body = String::new();
     response
@@ -536,9 +532,13 @@ fn fetch_url(url: &str, auth_token: Option<&str>) -> Result<String, UpdateError>
 }
 
 fn fetch_url_bytes(url: &str, auth_token: Option<&str>) -> Result<Vec<u8>, UpdateError> {
-    let response = make_request(url, auth_token)
-        .call()
-        .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
+    let req = ureq::get(url);
+    let response = match auth_token {
+        Some(token) => req.header("Authorization", format!("Bearer {token}")),
+        None => req,
+    }
+    .call()
+    .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
 
     let mut body = Vec::new();
     response
