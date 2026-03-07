@@ -180,14 +180,14 @@ fn main() {
             match ext_matches.subcommand() {
                 Some(("list", _)) => {
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.list().recv() {
+                    match client.list().call() {
                         Ok(reply) => varlink_client::print_extensions(&reply.extensions, &output),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
                 }
                 Some(("merge", _)) => {
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.merge().recv() {
+                    match client.merge().call() {
                         Ok(_) => output.success("Merge", "Extensions merged successfully"),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
@@ -196,7 +196,7 @@ fn main() {
                 Some(("unmerge", unmerge_matches)) => {
                     let unmount = unmerge_matches.get_flag("unmount");
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.unmerge(Some(unmount)).recv() {
+                    match client.unmerge(Some(unmount)).call() {
                         Ok(_) => output.success("Unmerge", "Extensions unmerged successfully"),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
@@ -204,7 +204,7 @@ fn main() {
                 }
                 Some(("refresh", _)) => {
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.refresh().recv() {
+                    match client.refresh().call() {
                         Ok(_) => output.success("Refresh", "Extensions refreshed successfully"),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
@@ -212,7 +212,7 @@ fn main() {
                 }
                 Some(("status", _)) => {
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.status().recv() {
+                    match client.status().call() {
                         Ok(reply) => {
                             varlink_client::print_extension_status(&reply.extensions, &output)
                         }
@@ -243,7 +243,7 @@ fn main() {
                         .cloned()
                         .collect();
                     let mut client = vl_hitl::VarlinkClient::new(conn);
-                    match client.mount(server_ip, server_port, extensions).recv() {
+                    match client.mount(server_ip, server_port, extensions).call() {
                         Ok(_) => {
                             output.success("HITL Mount", "Extensions mounted successfully")
                         }
@@ -258,7 +258,7 @@ fn main() {
                         .cloned()
                         .collect();
                     let mut client = vl_hitl::VarlinkClient::new(conn);
-                    match client.unmount(extensions).recv() {
+                    match client.unmount(extensions).call() {
                         Ok(_) => {
                             output.success("HITL Unmount", "Extensions unmounted successfully")
                         }
@@ -276,7 +276,7 @@ fn main() {
         Some(("root-authority", _)) => {
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ra::VarlinkClient::new(conn);
-            match client.show().recv() {
+            match client.show().call() {
                 Ok(reply) => varlink_client::print_root_authority(&reply.authority, &output),
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),
             }
@@ -288,7 +288,7 @@ fn main() {
             match runtime_matches.subcommand() {
                 Some(("list", _)) => {
                     let mut client = vl_rt::VarlinkClient::new(conn);
-                    match client.list().recv() {
+                    match client.list().call() {
                         Ok(reply) => varlink_client::print_runtimes(&reply.runtimes, &output),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
@@ -299,14 +299,14 @@ fn main() {
                         let mut client = vl_rt::VarlinkClient::new(conn);
                         match client
                             .add_from_url(url.clone(), auth_token)
-                            .recv()
+                            .call()
                         {
                             Ok(_) => output.success("Runtime Add", "Runtime added successfully"),
                             Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                         }
                     } else if let Some(manifest) = add_matches.get_one::<String>("manifest") {
                         let mut client = vl_rt::VarlinkClient::new(conn);
-                        match client.add_from_manifest(manifest.clone()).recv() {
+                        match client.add_from_manifest(manifest.clone()).call() {
                             Ok(_) => output.success("Runtime Add", "Runtime added successfully"),
                             Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                         }
@@ -319,7 +319,7 @@ fn main() {
                         .expect("id is required")
                         .clone();
                     let mut client = vl_rt::VarlinkClient::new(conn);
-                    match client.remove(id).recv() {
+                    match client.remove(id).call() {
                         Ok(_) => output.success("Runtime Remove", "Runtime removed successfully"),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
@@ -331,7 +331,7 @@ fn main() {
                         .expect("id is required")
                         .clone();
                     let mut client = vl_rt::VarlinkClient::new(conn);
-                    match client.activate(id).recv() {
+                    match client.activate(id).call() {
                         Ok(_) => {
                             output.success("Runtime Activate", "Runtime activated successfully")
                         }
@@ -345,7 +345,7 @@ fn main() {
                         .expect("id is required")
                         .clone();
                     let mut client = vl_rt::VarlinkClient::new(conn);
-                    match client.inspect(id).recv() {
+                    match client.inspect(id).call() {
                         Ok(reply) => varlink_client::print_runtime_detail(&reply.runtime, &output),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
@@ -372,7 +372,7 @@ fn main() {
         Some(("status", _)) => {
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.status().recv() {
+            match client.status().call() {
                 Ok(reply) => {
                     output.status_header("System Status");
                     varlink_client::print_extension_status(&reply.extensions, &output);
@@ -385,7 +385,7 @@ fn main() {
         Some(("merge", _)) => {
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.merge().recv() {
+            match client.merge().call() {
                 Ok(_) => output.success("Merge", "Extensions merged successfully"),
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),
             }
@@ -395,7 +395,7 @@ fn main() {
             let unmount = unmerge_matches.get_flag("unmount");
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.unmerge(Some(unmount)).recv() {
+            match client.unmerge(Some(unmount)).call() {
                 Ok(_) => output.success("Unmerge", "Extensions unmerged successfully"),
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),
             }
@@ -404,7 +404,7 @@ fn main() {
         Some(("refresh", _)) => {
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.refresh().recv() {
+            match client.refresh().call() {
                 Ok(_) => output.success("Refresh", "Extensions refreshed successfully"),
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),
             }
@@ -421,7 +421,7 @@ fn main() {
                 .collect();
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.enable(extensions, os_release).recv() {
+            match client.enable(extensions, os_release).call() {
                 Ok(reply) => {
                     if !output.is_json() {
                         output.success(
@@ -447,7 +447,7 @@ fn main() {
                 .map(|values| values.cloned().collect());
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.disable(extensions, Some(all), os_release).recv() {
+            match client.disable(extensions, Some(all), os_release).call() {
                 Ok(reply) => {
                     if !output.is_json() {
                         output.success(

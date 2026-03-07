@@ -30,8 +30,12 @@ pub fn connect_or_exit(address: &str, output: &OutputManager) -> Arc<RwLock<Conn
 }
 
 /// Print an RPC error and exit with code 1.
-pub fn exit_with_rpc_error(err: impl std::fmt::Display, output: &OutputManager) -> ! {
-    output.error("RPC Error", &err.to_string());
+pub fn exit_with_rpc_error(err: impl std::fmt::Display + std::fmt::Debug, output: &OutputManager) -> ! {
+    if output.is_verbose() {
+        output.error("RPC Error", &format!("{err:?}"));
+    } else {
+        output.error("RPC Error", &err.to_string());
+    }
     std::process::exit(1);
 }
 

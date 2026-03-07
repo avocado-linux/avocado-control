@@ -83,16 +83,15 @@ impl TestDaemon {
     /// Run a CLI command routed through this daemon.
     fn run(&self, args: &[&str]) -> std::process::Output {
         let socket = self.socket_address();
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        let test_path = format!("{}:{}", fixtures_path().display(), original_path);
 
         let mut all_args = vec!["--socket", socket.as_str()];
         all_args.extend_from_slice(args);
 
+        // Do NOT set AVOCADO_TEST_MODE here: the client must use the varlink path.
+        // The daemon (started above with AVOCADO_TEST_MODE=1) handles the actual
+        // service calls with mock executables.
         Command::new(get_binary_path())
             .args(&all_args)
-            .env("AVOCADO_TEST_MODE", "1")
-            .env("PATH", &test_path)
             .output()
             .expect("Failed to execute avocadoctl")
     }
@@ -164,11 +163,9 @@ fn test_ext_list_with_extensions_via_daemon() {
     }
     assert!(socket_path.exists(), "socket should appear");
 
+    // Client must NOT have AVOCADO_TEST_MODE set so it routes through varlink.
     let output = Command::new(get_binary_path())
         .args(["--socket", &socket_address, "ext", "list"])
-        .env("AVOCADO_TEST_MODE", "1")
-        .env("AVOCADO_EXTENSIONS_PATH", ext_dir.to_str().unwrap())
-        .env("PATH", &test_path)
         .output()
         .expect("run cli");
 
@@ -263,20 +260,16 @@ fn test_no_daemon_shows_helpful_error() {
 fn test_concurrent_requests_serialised_by_daemon() {
     let daemon = TestDaemon::start();
     let socket = daemon.socket_address();
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let test_path = format!("{}:{}", fixtures_path().display(), original_path);
 
-    // Spawn two merge requests at the same time
+    // Spawn two merge requests at the same time.
+    // Clients must NOT set AVOCADO_TEST_MODE — they must route through varlink.
     let mut handles = Vec::new();
     for _ in 0..2 {
         let socket_clone = socket.clone();
-        let path_clone = test_path.clone();
         let bin = get_binary_path();
         handles.push(std::thread::spawn(move || {
             Command::new(bin)
                 .args(["--socket", &socket_clone, "ext", "merge"])
-                .env("AVOCADO_TEST_MODE", "1")
-                .env("PATH", &path_clone)
                 .output()
                 .expect("run cli")
         }));

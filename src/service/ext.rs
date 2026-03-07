@@ -15,9 +15,15 @@ fn quiet_output() -> OutputManager {
 /// List all available extensions from the extensions directory.
 pub fn list_extensions(config: &Config) -> Result<Vec<ExtensionInfo>, AvocadoError> {
     let extensions_path = config.get_extensions_dir();
-    let entries = fs::read_dir(&extensions_path).map_err(|e| AvocadoError::ConfigurationError {
-        message: format!("Cannot read extensions directory '{extensions_path}': {e}"),
-    })?;
+    let entries = match fs::read_dir(&extensions_path) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => {
+            return Err(AvocadoError::ConfigurationError {
+                message: format!("Cannot read extensions directory '{extensions_path}': {e}"),
+            })
+        }
+    };
 
     let mut result = Vec::new();
     for entry in entries.flatten() {
