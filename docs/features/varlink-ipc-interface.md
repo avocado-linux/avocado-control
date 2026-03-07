@@ -173,8 +173,6 @@ After=avocadoctl.socket
 Type=simple
 ExecStart=/usr/bin/avocadoctl serve
 ProtectHome=yes
-ProtectSystem=full
-PrivateTmp=yes
 NoNewPrivileges=yes
 
 [Install]
