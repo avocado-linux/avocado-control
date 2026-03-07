@@ -30,7 +30,10 @@ pub fn connect_or_exit(address: &str, output: &OutputManager) -> Arc<RwLock<Conn
 }
 
 /// Print an RPC error and exit with code 1.
-pub fn exit_with_rpc_error(err: impl std::fmt::Display + std::fmt::Debug, output: &OutputManager) -> ! {
+pub fn exit_with_rpc_error(
+    err: impl std::fmt::Display + std::fmt::Debug,
+    output: &OutputManager,
+) -> ! {
     if output.is_verbose() {
         output.error("RPC Error", &format!("{err:?}"));
     } else {
@@ -60,24 +63,12 @@ pub fn print_extensions(extensions: &[vl_ext::Extension], output: &OutputManager
 
     let name_width = extensions
         .iter()
-        .map(|e| {
-            e.name.len()
-                + e.version
-                    .as_ref()
-                    .map(|v| v.len() + 1)
-                    .unwrap_or(0)
-        })
+        .map(|e| e.name.len() + e.version.as_ref().map(|v| v.len() + 1).unwrap_or(0))
         .max()
         .unwrap_or(9)
         .max(9);
 
-    println!(
-        "{:<nw$} {:<12} {}",
-        "Extension",
-        "Type",
-        "Path",
-        nw = name_width
-    );
+    println!("{:<nw$} {:<12} Path", "Extension", "Type", nw = name_width);
     println!("{}", "=".repeat(name_width + 1 + 12 + 1 + 20));
 
     for ext in extensions {
@@ -131,23 +122,16 @@ pub fn print_extension_status(extensions: &[vl_ext::ExtensionStatus], output: &O
 
     let name_width = extensions
         .iter()
-        .map(|e| {
-            e.name.len()
-                + e.version
-                    .as_ref()
-                    .map(|v| v.len() + 1)
-                    .unwrap_or(0)
-        })
+        .map(|e| e.name.len() + e.version.as_ref().map(|v| v.len() + 1).unwrap_or(0))
         .max()
         .unwrap_or(9)
         .max(9);
 
     println!(
-        "{:<nw$} {:<12} {:<8} {}",
+        "{:<nw$} {:<12} {:<8} Origin",
         "Extension",
         "Type",
         "Merged",
-        "Origin",
         nw = name_width
     );
     println!("{}", "=".repeat(name_width + 1 + 12 + 1 + 8 + 1 + 20));
@@ -174,19 +158,16 @@ pub fn print_extension_status(extensions: &[vl_ext::ExtensionStatus], output: &O
         let merged_str = if ext.isMerged { "yes" } else { "no" };
         let origin = ext.origin.as_deref().unwrap_or("-");
 
-        println!(
-            "{:<nw$} {:<12} {:<8} {}",
-            versioned_name,
-            type_str,
-            merged_str,
-            origin,
-            nw = name_width
-        );
+        println!("{versioned_name:<name_width$} {type_str:<12} {merged_str:<8} {origin}");
     }
 
     println!();
     let merged_count = extensions.iter().filter(|e| e.isMerged).count();
-    println!("Total: {} extension(s), {} merged", extensions.len(), merged_count);
+    println!(
+        "Total: {} extension(s), {} merged",
+        extensions.len(),
+        merged_count
+    );
 }
 
 // ── Runtime output helpers ────────────────────────────────────────────────────
@@ -216,11 +197,10 @@ pub fn print_runtimes(runtimes: &[vl_rt::Runtime], output: &OutputManager) {
         .max(8);
 
     println!(
-        "{:<iw$} {:<20} {:<12} {}",
+        "{:<iw$} {:<20} {:<12} Built At",
         "ID",
         "Runtime",
         "Active",
-        "Built At",
         iw = id_width
     );
     println!("{}", "=".repeat(id_width + 1 + 20 + 1 + 12 + 1 + 20));

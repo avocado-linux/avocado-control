@@ -32,7 +32,12 @@ pub enum UpdateError {
     MetadataError(String),
 }
 
-pub fn perform_update(url: &str, base_dir: &Path, auth_token: Option<&str>, verbose: bool) -> Result<(), UpdateError> {
+pub fn perform_update(
+    url: &str,
+    base_dir: &Path,
+    auth_token: Option<&str>,
+    verbose: bool,
+) -> Result<(), UpdateError> {
     let url = url.trim_end_matches('/');
 
     // 1. Load the local trust anchor
@@ -337,9 +342,7 @@ fn verify_delegation_hash(
 
     let actual_hash = sha256_hex(raw_json.as_bytes());
     let hashes = meta_entry.hashes.as_ref().ok_or_else(|| {
-        UpdateError::MetadataError(format!(
-            "No hashes in snapshot.json for '{role_path}'"
-        ))
+        UpdateError::MetadataError(format!("No hashes in snapshot.json for '{role_path}'"))
     })?;
     let expected_hash = hex_encode(hashes.sha256.as_ref());
     if actual_hash != expected_hash {

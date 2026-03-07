@@ -162,7 +162,7 @@ fn main() {
     // Resolve socket address: CLI flag > config > default
     let socket_address = matches
         .get_one::<String>("socket")
-        .map(|s| s.clone())
+        .cloned()
         .unwrap_or_else(|| config.socket_address().to_string());
 
     // In test mode, skip the varlink daemon and call service functions directly.
@@ -234,9 +234,7 @@ fn main() {
                         .get_one::<String>("server-ip")
                         .expect("server-ip is required")
                         .clone();
-                    let server_port = mount_matches
-                        .get_one::<String>("server-port")
-                        .map(|s| s.clone());
+                    let server_port = mount_matches.get_one::<String>("server-port").cloned();
                     let extensions: Vec<String> = mount_matches
                         .get_many::<String>("extension")
                         .expect("at least one extension is required")
@@ -244,9 +242,7 @@ fn main() {
                         .collect();
                     let mut client = vl_hitl::VarlinkClient::new(conn);
                     match client.mount(server_ip, server_port, extensions).call() {
-                        Ok(_) => {
-                            output.success("HITL Mount", "Extensions mounted successfully")
-                        }
+                        Ok(_) => output.success("HITL Mount", "Extensions mounted successfully"),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
                     json_ok(&output);
@@ -297,10 +293,7 @@ fn main() {
                     if let Some(url) = add_matches.get_one::<String>("url") {
                         let auth_token = std::env::var("AVOCADO_TUF_AUTH_TOKEN").ok();
                         let mut client = vl_rt::VarlinkClient::new(conn);
-                        match client
-                            .add_from_url(url.clone(), auth_token)
-                            .call()
-                        {
+                        match client.add_from_url(url.clone(), auth_token).call() {
                             Ok(_) => output.success("Runtime Add", "Runtime added successfully"),
                             Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                         }
@@ -411,9 +404,7 @@ fn main() {
             json_ok(&output);
         }
         Some(("enable", enable_matches)) => {
-            let os_release = enable_matches
-                .get_one::<String>("os_release")
-                .cloned();
+            let os_release = enable_matches.get_one::<String>("os_release").cloned();
             let extensions: Vec<String> = enable_matches
                 .get_many::<String>("extensions")
                 .unwrap()
@@ -438,9 +429,7 @@ fn main() {
             json_ok(&output);
         }
         Some(("disable", disable_matches)) => {
-            let os_release = disable_matches
-                .get_one::<String>("os_release")
-                .cloned();
+            let os_release = disable_matches.get_one::<String>("os_release").cloned();
             let all = disable_matches.get_flag("all");
             let extensions: Option<Vec<String>> = disable_matches
                 .get_many::<String>("extensions")

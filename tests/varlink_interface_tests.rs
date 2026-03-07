@@ -23,9 +23,7 @@ fn get_binary_path() -> PathBuf {
 }
 
 fn fixtures_path() -> PathBuf {
-    std::env::current_dir()
-        .expect("cwd")
-        .join("tests/fixtures")
+    std::env::current_dir().expect("cwd").join("tests/fixtures")
 }
 
 /// A running `avocadoctl serve` process bound to a temp socket.
@@ -129,7 +127,10 @@ fn test_ext_list_via_daemon() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Either shows extensions or a "No extensions found" message — both are valid.
     let valid = stdout.contains("Extension") || stdout.contains("No extensions found");
-    assert!(valid, "ext list should produce a table or empty message; got: {stdout}");
+    assert!(
+        valid,
+        "ext list should produce a table or empty message; got: {stdout}"
+    );
 }
 
 /// `ext list` with an extensions directory populates the table.
@@ -233,10 +234,7 @@ fn test_merge_alias_via_daemon() {
 #[test]
 fn test_no_daemon_shows_helpful_error() {
     let temp_dir = TempDir::new().expect("temp dir");
-    let nonexistent_socket = format!(
-        "unix:{}/nonexistent.sock",
-        temp_dir.path().display()
-    );
+    let nonexistent_socket = format!("unix:{}/nonexistent.sock", temp_dir.path().display());
 
     let output = Command::new(get_binary_path())
         .args(["--socket", &nonexistent_socket, "ext", "list"])
