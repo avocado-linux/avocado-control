@@ -7,6 +7,48 @@ use crate::varlink::{
     org_avocado_Extensions as vl_ext, org_avocado_Hitl as vl_hitl,
     org_avocado_RootAuthority as vl_ra, org_avocado_Runtimes as vl_rt,
 };
+use std::sync::mpsc;
+use std::thread;
+use varlink::CallTrait;
+
+// ── Streaming helper ───────────────────────────────────────────────
+
+/// Drain a streaming channel, sending each message as a varlink reply with
+/// `continues: true`. After the channel closes, join the worker thread and
+/// send a final reply (success or error).
+///
+/// The `reply_fn` sends one intermediate message. The `done_fn` sends the
+/// final success reply. The `error_fn` sends an error reply.
+fn drain_stream<C, R, D, E>(
+    call: &mut C,
+    rx: mpsc::Receiver<String>,
+    handle: thread::JoinHandle<Result<(), AvocadoError>>,
+    reply_fn: R,
+    done_fn: D,
+    error_fn: E,
+) -> varlink::Result<()>
+where
+    C: CallTrait + ?Sized,
+    R: Fn(&mut C, String) -> varlink::Result<()>,
+    D: Fn(&mut C) -> varlink::Result<()>,
+    E: Fn(&mut C, AvocadoError) -> varlink::Result<()>,
+{
+    call.set_continues(true);
+    for message in rx {
+        reply_fn(call, message)?;
+    }
+    // Channel closed — worker thread is done
+    let result = handle.join().unwrap_or_else(|_| {
+        Err(AvocadoError::MergeFailed {
+            reason: "internal panic".into(),
+        })
+    });
+    call.set_continues(false);
+    match result {
+        Ok(()) => done_fn(call),
+        Err(e) => error_fn(call, e),
+    }
+}
 
 // ── Extensions handler ──────────────────────────────────────────────
 
@@ -50,9 +92,21 @@ impl vl_ext::VarlinkInterface for ExtensionsHandler {
     }
 
     fn merge(&self, call: &mut dyn vl_ext::Call_Merge) -> varlink::Result<()> {
-        match service::ext::merge_extensions(&self.config) {
-            Ok(log) => call.reply(log),
-            Err(e) => map_ext_error!(call, e),
+        if call.wants_more() {
+            let (rx, handle) = service::ext::merge_extensions_streaming(&self.config);
+            drain_stream(
+                call,
+                rx,
+                handle,
+                |c, msg| c.reply(msg, false),
+                |c| c.reply(String::new(), true),
+                |c, e| map_ext_error!(c, e),
+            )
+        } else {
+            match service::ext::merge_extensions(&self.config) {
+                Ok(log) => call.reply(log.join("\n"), true),
+                Err(e) => map_ext_error!(call, e),
+            }
         }
     }
 
@@ -61,16 +115,40 @@ impl vl_ext::VarlinkInterface for ExtensionsHandler {
         call: &mut dyn vl_ext::Call_Unmerge,
         r#unmount: Option<bool>,
     ) -> varlink::Result<()> {
-        match service::ext::unmerge_extensions(unmount.unwrap_or(false)) {
-            Ok(log) => call.reply(log),
-            Err(e) => map_ext_error!(call, e),
+        if call.wants_more() {
+            let (rx, handle) = service::ext::unmerge_extensions_streaming(unmount.unwrap_or(false));
+            drain_stream(
+                call,
+                rx,
+                handle,
+                |c, msg| c.reply(msg, false),
+                |c| c.reply(String::new(), true),
+                |c, e| map_ext_error!(c, e),
+            )
+        } else {
+            match service::ext::unmerge_extensions(unmount.unwrap_or(false)) {
+                Ok(log) => call.reply(log.join("\n"), true),
+                Err(e) => map_ext_error!(call, e),
+            }
         }
     }
 
     fn refresh(&self, call: &mut dyn vl_ext::Call_Refresh) -> varlink::Result<()> {
-        match service::ext::refresh_extensions(&self.config) {
-            Ok(log) => call.reply(log),
-            Err(e) => map_ext_error!(call, e),
+        if call.wants_more() {
+            let (rx, handle) = service::ext::refresh_extensions_streaming(&self.config);
+            drain_stream(
+                call,
+                rx,
+                handle,
+                |c, msg| c.reply(msg, false),
+                |c| c.reply(String::new(), true),
+                |c, e| map_ext_error!(c, e),
+            )
+        } else {
+            match service::ext::refresh_extensions(&self.config) {
+                Ok(log) => call.reply(log.join("\n"), true),
+                Err(e) => map_ext_error!(call, e),
+            }
         }
     }
 
@@ -176,9 +254,24 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         r#url: String,
         r#authToken: Option<String>,
     ) -> varlink::Result<()> {
-        match service::runtime::add_from_url(&url, authToken.as_deref(), &self.config) {
-            Ok(log) => call.reply(log),
-            Err(e) => map_rt_error!(call, e),
+        if call.wants_more() {
+            match service::runtime::add_from_url_streaming(&url, authToken.as_deref(), &self.config)
+            {
+                Ok((rx, handle)) => drain_stream(
+                    call,
+                    rx,
+                    handle,
+                    |c, msg| c.reply(msg, false),
+                    |c| c.reply(String::new(), true),
+                    |c, e| map_rt_error!(c, e),
+                ),
+                Err(e) => map_rt_error!(call, e),
+            }
+        } else {
+            match service::runtime::add_from_url(&url, authToken.as_deref(), &self.config) {
+                Ok(log) => call.reply(log.join("\n"), true),
+                Err(e) => map_rt_error!(call, e),
+            }
         }
     }
 
@@ -187,9 +280,23 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         call: &mut dyn vl_rt::Call_AddFromManifest,
         r#manifestPath: String,
     ) -> varlink::Result<()> {
-        match service::runtime::add_from_manifest(&manifestPath, &self.config) {
-            Ok(log) => call.reply(log),
-            Err(e) => map_rt_error!(call, e),
+        if call.wants_more() {
+            match service::runtime::add_from_manifest_streaming(&manifestPath, &self.config) {
+                Ok((rx, handle)) => drain_stream(
+                    call,
+                    rx,
+                    handle,
+                    |c, msg| c.reply(msg, false),
+                    |c| c.reply(String::new(), true),
+                    |c, e| map_rt_error!(c, e),
+                ),
+                Err(e) => map_rt_error!(call, e),
+            }
+        } else {
+            match service::runtime::add_from_manifest(&manifestPath, &self.config) {
+                Ok(log) => call.reply(log.join("\n"), true),
+                Err(e) => map_rt_error!(call, e),
+            }
         }
     }
 
@@ -201,9 +308,27 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
     }
 
     fn activate(&self, call: &mut dyn vl_rt::Call_Activate, r#id: String) -> varlink::Result<()> {
-        match service::runtime::activate_runtime(&id, &self.config) {
-            Ok(log) => call.reply(log),
-            Err(e) => map_rt_error!(call, e),
+        if call.wants_more() {
+            match service::runtime::activate_runtime_streaming(&id, &self.config) {
+                Ok(Some((rx, handle))) => drain_stream(
+                    call,
+                    rx,
+                    handle,
+                    |c, msg| c.reply(msg, false),
+                    |c| c.reply(String::new(), true),
+                    |c, e| map_rt_error!(c, e),
+                ),
+                Ok(None) => {
+                    // Already active, nothing to stream
+                    call.reply(String::new(), true)
+                }
+                Err(e) => map_rt_error!(call, e),
+            }
+        } else {
+            match service::runtime::activate_runtime(&id, &self.config) {
+                Ok(log) => call.reply(log.join("\n"), true),
+                Err(e) => map_rt_error!(call, e),
+            }
         }
     }
 

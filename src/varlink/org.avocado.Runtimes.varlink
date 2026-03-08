@@ -25,16 +25,19 @@ type Runtime (
 method List() -> (runtimes: []Runtime)
 
 # Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)
-method AddFromUrl(url: string, authToken: ?string) -> (log: []string)
+# Supports streaming: client may set more=true to receive per-message progress
+method AddFromUrl(url: string, authToken: ?string) -> (message: string, done: bool)
 
 # Add a runtime from a local manifest file
-method AddFromManifest(manifestPath: string) -> (log: []string)
+# Supports streaming: client may set more=true to receive per-message progress
+method AddFromManifest(manifestPath: string) -> (message: string, done: bool)
 
 # Remove a staged runtime by ID (or prefix)
 method Remove(id: string) -> ()
 
 # Activate a staged runtime by ID (or prefix)
-method Activate(id: string) -> (log: []string)
+# Supports streaming: client may set more=true to receive per-message progress
+method Activate(id: string) -> (message: string, done: bool)
 
 # Inspect a runtime's details
 method Inspect(id: string) -> (runtime: Runtime)

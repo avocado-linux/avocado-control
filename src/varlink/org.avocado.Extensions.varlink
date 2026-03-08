@@ -24,13 +24,16 @@ type ExtensionStatus (
 method List() -> (extensions: []Extension)
 
 # Merge extensions using systemd-sysext and systemd-confext
-method Merge() -> (log: []string)
+# Supports streaming: client may set more=true to receive per-message progress
+method Merge() -> (message: string, done: bool)
 
 # Unmerge extensions
-method Unmerge(unmount: ?bool) -> (log: []string)
+# Supports streaming: client may set more=true to receive per-message progress
+method Unmerge(unmount: ?bool) -> (message: string, done: bool)
 
 # Refresh extensions (unmerge then merge)
-method Refresh() -> (log: []string)
+# Supports streaming: client may set more=true to receive per-message progress
+method Refresh() -> (message: string, done: bool)
 
 # Enable extensions for a specific OS release version
 method Enable(extensions: []string, osRelease: ?string) -> (enabled: int, failed: int)

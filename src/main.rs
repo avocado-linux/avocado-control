@@ -187,9 +187,17 @@ fn main() {
                 }
                 Some(("merge", _)) => {
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.merge().call() {
-                        Ok(reply) => {
-                            varlink_client::print_log(&reply.log);
+                    match client.merge().more() {
+                        Ok(iter) => {
+                            for reply in iter {
+                                match reply {
+                                    Ok(r) if !r.done => {
+                                        varlink_client::print_single_log(&r.message, &output)
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                                }
+                            }
                             output.success("Merge", "Extensions merged successfully");
                         }
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -199,9 +207,17 @@ fn main() {
                 Some(("unmerge", unmerge_matches)) => {
                     let unmount = unmerge_matches.get_flag("unmount");
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.unmerge(Some(unmount)).call() {
-                        Ok(reply) => {
-                            varlink_client::print_log(&reply.log);
+                    match client.unmerge(Some(unmount)).more() {
+                        Ok(iter) => {
+                            for reply in iter {
+                                match reply {
+                                    Ok(r) if !r.done => {
+                                        varlink_client::print_single_log(&r.message, &output)
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                                }
+                            }
                             output.success("Unmerge", "Extensions unmerged successfully");
                         }
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -210,9 +226,17 @@ fn main() {
                 }
                 Some(("refresh", _)) => {
                     let mut client = vl_ext::VarlinkClient::new(conn);
-                    match client.refresh().call() {
-                        Ok(reply) => {
-                            varlink_client::print_log(&reply.log);
+                    match client.refresh().more() {
+                        Ok(iter) => {
+                            for reply in iter {
+                                match reply {
+                                    Ok(r) if !r.done => {
+                                        varlink_client::print_single_log(&r.message, &output)
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                                }
+                            }
                             output.success("Refresh", "Extensions refreshed successfully");
                         }
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -302,18 +326,34 @@ fn main() {
                     if let Some(url) = add_matches.get_one::<String>("url") {
                         let auth_token = std::env::var("AVOCADO_TUF_AUTH_TOKEN").ok();
                         let mut client = vl_rt::VarlinkClient::new(conn);
-                        match client.add_from_url(url.clone(), auth_token).call() {
-                            Ok(reply) => {
-                                varlink_client::print_log(&reply.log);
+                        match client.add_from_url(url.clone(), auth_token).more() {
+                            Ok(iter) => {
+                                for reply in iter {
+                                    match reply {
+                                        Ok(r) if !r.done => {
+                                            varlink_client::print_single_log(&r.message, &output)
+                                        }
+                                        Ok(_) => {}
+                                        Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                                    }
+                                }
                                 output.success("Runtime Add", "Runtime added successfully");
                             }
                             Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                         }
                     } else if let Some(manifest) = add_matches.get_one::<String>("manifest") {
                         let mut client = vl_rt::VarlinkClient::new(conn);
-                        match client.add_from_manifest(manifest.clone()).call() {
-                            Ok(reply) => {
-                                varlink_client::print_log(&reply.log);
+                        match client.add_from_manifest(manifest.clone()).more() {
+                            Ok(iter) => {
+                                for reply in iter {
+                                    match reply {
+                                        Ok(r) if !r.done => {
+                                            varlink_client::print_single_log(&r.message, &output)
+                                        }
+                                        Ok(_) => {}
+                                        Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                                    }
+                                }
                                 output.success("Runtime Add", "Runtime added successfully");
                             }
                             Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -339,9 +379,17 @@ fn main() {
                         .expect("id is required")
                         .clone();
                     let mut client = vl_rt::VarlinkClient::new(conn);
-                    match client.activate(id).call() {
-                        Ok(reply) => {
-                            varlink_client::print_log(&reply.log);
+                    match client.activate(id).more() {
+                        Ok(iter) => {
+                            for reply in iter {
+                                match reply {
+                                    Ok(r) if !r.done => {
+                                        varlink_client::print_single_log(&r.message, &output)
+                                    }
+                                    Ok(_) => {}
+                                    Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                                }
+                            }
                             output.success("Runtime Activate", "Runtime activated successfully");
                         }
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -394,9 +442,17 @@ fn main() {
         Some(("merge", _)) => {
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.merge().call() {
-                Ok(reply) => {
-                    varlink_client::print_log(&reply.log);
+            match client.merge().more() {
+                Ok(iter) => {
+                    for reply in iter {
+                        match reply {
+                            Ok(r) if !r.done => {
+                                varlink_client::print_single_log(&r.message, &output)
+                            }
+                            Ok(_) => {}
+                            Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                        }
+                    }
                     output.success("Merge", "Extensions merged successfully");
                 }
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -407,9 +463,17 @@ fn main() {
             let unmount = unmerge_matches.get_flag("unmount");
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.unmerge(Some(unmount)).call() {
-                Ok(reply) => {
-                    varlink_client::print_log(&reply.log);
+            match client.unmerge(Some(unmount)).more() {
+                Ok(iter) => {
+                    for reply in iter {
+                        match reply {
+                            Ok(r) if !r.done => {
+                                varlink_client::print_single_log(&r.message, &output)
+                            }
+                            Ok(_) => {}
+                            Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                        }
+                    }
                     output.success("Unmerge", "Extensions unmerged successfully");
                 }
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -419,9 +483,17 @@ fn main() {
         Some(("refresh", _)) => {
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.refresh().call() {
-                Ok(reply) => {
-                    varlink_client::print_log(&reply.log);
+            match client.refresh().more() {
+                Ok(iter) => {
+                    for reply in iter {
+                        match reply {
+                            Ok(r) if !r.done => {
+                                varlink_client::print_single_log(&r.message, &output)
+                            }
+                            Ok(_) => {}
+                            Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                        }
+                    }
                     output.success("Refresh", "Extensions refreshed successfully");
                 }
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),

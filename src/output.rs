@@ -3,18 +3,17 @@
 //! This module provides a consistent interface for all output in the CLI,
 //! handling verbosity levels and formatting consistently across all commands.
 
-use std::cell::RefCell;
 use std::io::Write;
+use std::sync::mpsc::SyncSender;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 /// Output manager that handles verbosity and formatting consistently
 pub struct OutputManager {
     verbose: bool,
     json: bool,
-    /// When set, messages are captured into this buffer instead of printed.
-    /// Used by the service layer so the daemon can return log messages to
-    /// varlink callers rather than printing to its own stdout.
-    captured: Option<RefCell<Vec<String>>>,
+    /// When set, messages are streamed through this channel as they are produced.
+    /// Used by the varlink streaming handlers for real-time progress.
+    sender: Option<SyncSender<String>>,
 }
 
 impl OutputManager {
@@ -23,37 +22,17 @@ impl OutputManager {
         Self {
             verbose,
             json,
-            captured: None,
+            sender: None,
         }
     }
 
-    /// Create an output manager that captures messages instead of printing them.
-    /// Use `take_messages()` to retrieve the collected messages.
-    pub fn new_capturing() -> Self {
+    /// Create an output manager that streams messages through a channel.
+    /// Each `log_info` / `log_success` call sends a message immediately.
+    pub fn new_streaming(sender: SyncSender<String>) -> Self {
         Self {
             verbose: false,
             json: false,
-            captured: Some(RefCell::new(Vec::new())),
-        }
-    }
-
-    /// Whether this output manager is in capture mode.
-    fn is_capturing(&self) -> bool {
-        self.captured.is_some()
-    }
-
-    /// Push a message to the capture buffer.
-    fn capture(&self, message: String) {
-        if let Some(ref buf) = self.captured {
-            buf.borrow_mut().push(message);
-        }
-    }
-
-    /// Take all captured messages, leaving the buffer empty.
-    pub fn take_messages(&self) -> Vec<String> {
-        match self.captured {
-            Some(ref buf) => std::mem::take(&mut *buf.borrow_mut()),
-            None => Vec::new(),
+            sender: Some(sender),
         }
     }
 
@@ -221,10 +200,11 @@ impl OutputManager {
     /// Log an informational message.
     ///
     /// In normal mode: prints to stdout with color (always, regardless of verbosity).
+    /// In streaming mode: sends through channel immediately.
     /// In capture mode: captures to the message buffer for returning via varlink.
     pub fn log_info(&self, message: &str) {
-        if self.is_capturing() {
-            self.capture(format!("[INFO] {message}"));
+        if let Some(ref tx) = self.sender {
+            let _ = tx.send(format!("[INFO] {message}"));
         } else if !self.json {
             self.print_colored_prefix("INFO", Color::Blue, message);
         }
@@ -233,10 +213,10 @@ impl OutputManager {
     /// Log a success message.
     ///
     /// In normal mode: prints to stdout with color (always, regardless of verbosity).
-    /// In capture mode: captures to the message buffer for returning via varlink.
+    /// In streaming mode: sends through channel immediately.
     pub fn log_success(&self, message: &str) {
-        if self.is_capturing() {
-            self.capture(format!("[SUCCESS] {message}"));
+        if let Some(ref tx) = self.sender {
+            let _ = tx.send(format!("[SUCCESS] {message}"));
         } else if !self.json {
             self.print_colored_prefix("SUCCESS", Color::Green, message);
         }

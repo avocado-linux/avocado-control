@@ -42,12 +42,20 @@ pub fn exit_with_rpc_error(
     std::process::exit(1);
 }
 
-// ── Log output helper ────────────────────────────────────────────────────────
+// ── Log output helpers ───────────────────────────────────────────────────────
 
-/// Print log messages returned from the daemon via varlink replies.
-pub fn print_log(messages: &[String]) {
-    for msg in messages {
-        println!("{msg}");
+/// Print a single log message from a streaming varlink reply.
+/// Re-colorizes `[INFO]` and `[SUCCESS]` prefixes for the caller's terminal.
+pub fn print_single_log(message: &str, output: &OutputManager) {
+    if message.is_empty() {
+        return;
+    }
+    if let Some(rest) = message.strip_prefix("[INFO] ") {
+        output.log_info(rest);
+    } else if let Some(rest) = message.strip_prefix("[SUCCESS] ") {
+        output.log_success(rest);
+    } else {
+        println!("{message}");
     }
 }
 

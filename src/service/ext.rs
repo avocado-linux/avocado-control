@@ -6,6 +6,8 @@ use crate::service::types::{DisableResult, EnableResult, ExtensionInfo};
 use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 
 /// List all available extensions from the extensions directory.
 pub fn list_extensions(config: &Config) -> Result<Vec<ExtensionInfo>, AvocadoError> {
@@ -51,39 +53,106 @@ pub fn list_extensions(config: &Config) -> Result<Vec<ExtensionInfo>, AvocadoErr
     Ok(result)
 }
 
+// ── Streaming service functions ──────────────────────────────────────────────
+
+/// Merge extensions with streaming output.
+/// Returns a receiver that yields log messages as they are produced,
+/// and a join handle for the worker thread.
+pub fn merge_extensions_streaming(
+    config: &Config,
+) -> (
+    mpsc::Receiver<String>,
+    thread::JoinHandle<Result<(), AvocadoError>>,
+) {
+    let (tx, rx) = mpsc::sync_channel(4);
+    let config = config.clone();
+    let handle = thread::spawn(move || {
+        let output = OutputManager::new_streaming(tx);
+        ext::merge_extensions_internal(&config, &output).map_err(AvocadoError::from)
+    });
+    (rx, handle)
+}
+
+/// Unmerge extensions with streaming output.
+pub fn unmerge_extensions_streaming(
+    unmount: bool,
+) -> (
+    mpsc::Receiver<String>,
+    thread::JoinHandle<Result<(), AvocadoError>>,
+) {
+    let (tx, rx) = mpsc::sync_channel(4);
+    let handle = thread::spawn(move || {
+        let output = OutputManager::new_streaming(tx);
+        ext::unmerge_extensions_internal_with_options(true, unmount, &output)
+            .map_err(AvocadoError::from)
+    });
+    (rx, handle)
+}
+
+/// Refresh extensions (unmerge then merge) with streaming output.
+pub fn refresh_extensions_streaming(
+    config: &Config,
+) -> (
+    mpsc::Receiver<String>,
+    thread::JoinHandle<Result<(), AvocadoError>>,
+) {
+    let (tx, rx) = mpsc::sync_channel(4);
+    let config = config.clone();
+    let handle = thread::spawn(move || {
+        let output = OutputManager::new_streaming(tx);
+
+        // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
+        ext::unmerge_extensions_internal_with_options(false, false, &output)
+            .map_err(AvocadoError::from)?;
+
+        // Invalidate NFS caches for any HITL-mounted extensions
+        ext::invalidate_hitl_caches(&output);
+
+        // Then merge (this will call depmod via post-merge processing)
+        ext::merge_extensions_internal(&config, &output).map_err(AvocadoError::from)
+    });
+    (rx, handle)
+}
+
+// ── Batch service functions (used by non-streaming clients and tests) ────────
+
 /// Merge extensions using systemd-sysext and systemd-confext.
 /// Returns log messages produced during the operation.
 pub fn merge_extensions(config: &Config) -> Result<Vec<String>, AvocadoError> {
-    let output = OutputManager::new_capturing();
-    ext::merge_extensions_internal(config, &output).map_err(AvocadoError::from)?;
-    Ok(output.take_messages())
+    let (rx, handle) = merge_extensions_streaming(config);
+    let messages: Vec<String> = rx.into_iter().collect();
+    handle.join().unwrap_or_else(|_| {
+        Err(AvocadoError::MergeFailed {
+            reason: "internal panic".into(),
+        })
+    })?;
+    Ok(messages)
 }
 
 /// Unmerge extensions using systemd-sysext and systemd-confext.
 /// Returns log messages produced during the operation.
 pub fn unmerge_extensions(unmount: bool) -> Result<Vec<String>, AvocadoError> {
-    let output = OutputManager::new_capturing();
-    ext::unmerge_extensions_internal_with_options(true, unmount, &output)
-        .map_err(AvocadoError::from)?;
-    Ok(output.take_messages())
+    let (rx, handle) = unmerge_extensions_streaming(unmount);
+    let messages: Vec<String> = rx.into_iter().collect();
+    handle.join().unwrap_or_else(|_| {
+        Err(AvocadoError::UnmergeFailed {
+            reason: "internal panic".into(),
+        })
+    })?;
+    Ok(messages)
 }
 
 /// Refresh extensions (unmerge then merge).
 /// Returns log messages produced during the operation.
 pub fn refresh_extensions(config: &Config) -> Result<Vec<String>, AvocadoError> {
-    let output = OutputManager::new_capturing();
-
-    // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
-    ext::unmerge_extensions_internal_with_options(false, false, &output)
-        .map_err(AvocadoError::from)?;
-
-    // Invalidate NFS caches for any HITL-mounted extensions
-    ext::invalidate_hitl_caches(&output);
-
-    // Then merge (this will call depmod via post-merge processing)
-    ext::merge_extensions_internal(config, &output).map_err(AvocadoError::from)?;
-
-    Ok(output.take_messages())
+    let (rx, handle) = refresh_extensions_streaming(config);
+    let messages: Vec<String> = rx.into_iter().collect();
+    handle.join().unwrap_or_else(|_| {
+        Err(AvocadoError::MergeFailed {
+            reason: "internal panic".into(),
+        })
+    })?;
+    Ok(messages)
 }
 
 /// Enable extensions for a specific OS release version.
