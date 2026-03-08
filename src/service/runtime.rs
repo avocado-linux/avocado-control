@@ -47,6 +47,7 @@ pub fn add_from_url(
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
     update::perform_update(url, base_path, auth_token, false)?;
+    super::ext::refresh_extensions(config)?;
     Ok(())
 }
 
@@ -68,6 +69,7 @@ pub fn add_from_manifest(manifest_path: &str, config: &Config) -> Result<(), Avo
     staging::validate_manifest_images(&manifest, base_path)?;
     staging::stage_manifest(&manifest, &manifest_content, base_path, false)?;
     staging::activate_runtime(&manifest.id, base_path)?;
+    super::ext::refresh_extensions(config)?;
 
     Ok(())
 }
@@ -95,6 +97,7 @@ pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<(), AvocadoE
     }
 
     staging::activate_runtime(&matched.id, base_path)?;
+    super::ext::refresh_extensions(config)?;
     Ok(())
 }
 
