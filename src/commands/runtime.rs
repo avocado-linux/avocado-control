@@ -139,11 +139,10 @@ fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
             std::process::exit(1);
         }
 
+        let short_id = &manifest.id[..8.min(manifest.id.len())];
         println!(
-            "  Activated runtime: {} v{} ({})",
-            manifest.runtime.name,
-            manifest.runtime.version,
-            &manifest.id[..8.min(manifest.id.len())]
+            "  Activated runtime: {} {} ({short_id})",
+            manifest.runtime.name, manifest.runtime.version,
         );
 
         crate::commands::ext::refresh_extensions(config, output);
@@ -168,14 +167,13 @@ fn handle_remove(matches: &ArgMatches, config: &Config, output: &OutputManager) 
         std::process::exit(1);
     }
 
+    let short_id = &matched.id[..8.min(matched.id.len())];
     println!();
     output.success(
         "Runtime Remove",
         &format!(
-            "Removed runtime: {} v{} ({})",
-            matched.runtime.name,
-            matched.runtime.version,
-            &matched.id[..8.min(matched.id.len())]
+            "Removed runtime: {} {} ({short_id})",
+            matched.runtime.name, matched.runtime.version,
         ),
     );
 }
@@ -191,14 +189,14 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
         None => return,
     };
 
+    let short_id = &matched.id[..8.min(matched.id.len())];
+
     if is_active {
         output.info(
             "Runtime Activate",
             &format!(
-                "Runtime {} v{} ({}) is already active.",
-                matched.runtime.name,
-                matched.runtime.version,
-                &matched.id[..8.min(matched.id.len())]
+                "Runtime {} {} ({short_id}) is already active.",
+                matched.runtime.name, matched.runtime.version,
             ),
         );
         return;
@@ -210,10 +208,8 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
     }
 
     println!(
-        "  Activated runtime: {} v{} ({})",
-        matched.runtime.name,
-        matched.runtime.version,
-        &matched.id[..8.min(matched.id.len())]
+        "  Activated runtime: {} {} ({short_id})",
+        matched.runtime.name, matched.runtime.version,
     );
 
     crate::commands::ext::refresh_extensions(config, output);
@@ -221,10 +217,8 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
     output.success(
         "Runtime Activate",
         &format!(
-            "Switched to runtime: {} v{} ({})",
-            matched.runtime.name,
-            matched.runtime.version,
-            &matched.id[..8.min(matched.id.len())]
+            "Switched to runtime: {} {} ({short_id})",
+            matched.runtime.name, matched.runtime.version,
         ),
     );
 }
@@ -261,10 +255,10 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
 
     println!();
     println!(
-        "  Runtime: {} v{}{active_marker}",
+        "  Runtime: {} {} ({short_id}){active_marker}",
         matched.runtime.name, matched.runtime.version
     );
-    println!("  Build ID: {} ({short_id})", matched.id);
+    println!("  Build ID: {}", matched.id);
     println!("  Built:    {}", matched.built_at);
     println!("  Manifest: v{}", matched.manifest_version);
     println!();
@@ -310,7 +304,7 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
         println!("  Full image IDs:");
         for ext in &matched.extensions {
             let id_display = ext.image_id.as_deref().unwrap_or("-");
-            println!("    {} v{}: {}", ext.name, ext.version, id_display);
+            println!("    {} {}: {}", ext.name, ext.version, id_display);
         }
         println!();
     }
@@ -342,12 +336,10 @@ fn resolve_runtime_id<'a>(
                 .iter()
                 .map(|(m, active)| {
                     let marker = if *active { " (active)" } else { "" };
+                    let sid = &m.id[..8.min(m.id.len())];
                     format!(
-                        "  {} {} v{}{}",
-                        &m.id[..8.min(m.id.len())],
-                        m.runtime.name,
-                        m.runtime.version,
-                        marker
+                        "  {} {} ({sid}){}",
+                        m.runtime.name, m.runtime.version, marker
                     )
                 })
                 .collect();
@@ -397,25 +389,21 @@ fn list_runtimes(config: &Config, output: &OutputManager) {
     }
 
     println!();
-    println!(
-        "  {:<16} {:<12} {:<10} {:<24} STATUS",
-        "NAME", "VERSION", "BUILD ID", "BUILT AT"
-    );
+    println!("  {:<32} {:<12} BUILT AT", "RUNTIME", "ACTIVE");
 
     for (manifest, is_active) in &runtimes {
-        let short_id = if manifest.id.len() >= 8 {
-            &manifest.id[..8]
-        } else {
-            &manifest.id
-        };
+        let short_id = &manifest.id[..8.min(manifest.id.len())];
+        let runtime_label = format!(
+            "{} {} ({short_id})",
+            manifest.runtime.name, manifest.runtime.version
+        );
 
         let built_at_display = manifest.built_at.replace('T', " ").replace('Z', "");
-
-        let status = if *is_active { "active" } else { "" };
+        let status = if *is_active { "* active" } else { "" };
 
         println!(
-            "  {:<16} {:<12} {:<10} {:<24} {}",
-            manifest.runtime.name, manifest.runtime.version, short_id, built_at_display, status
+            "  {:<32} {:<12} {}",
+            runtime_label, status, built_at_display
         );
     }
 

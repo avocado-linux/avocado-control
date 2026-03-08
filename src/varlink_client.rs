@@ -206,35 +206,15 @@ pub fn print_runtimes(runtimes: &[vl_rt::Runtime], output: &OutputManager) {
         return;
     }
 
-    let id_width = runtimes
-        .iter()
-        .map(|r| r.id.len().min(12))
-        .max()
-        .unwrap_or(8)
-        .max(8);
-
-    println!(
-        "{:<iw$} {:<20} {:<12} Built At",
-        "ID",
-        "Runtime",
-        "Active",
-        iw = id_width
-    );
-    println!("{}", "=".repeat(id_width + 1 + 20 + 1 + 12 + 1 + 20));
+    println!("{:<32} {:<12} Built At", "Runtime", "Active",);
+    println!("{}", "=".repeat(32 + 1 + 12 + 1 + 20));
 
     for rt in runtimes {
-        let short_id = &rt.id[..rt.id.len().min(12)];
-        let runtime_label = format!("{} {}", rt.runtime.name, rt.runtime.version);
+        let short_id = &rt.id[..rt.id.len().min(8)];
+        let runtime_label = format!("{} {} ({short_id})", rt.runtime.name, rt.runtime.version);
         let active_str = if rt.active { "* active" } else { "" };
 
-        println!(
-            "{:<iw$} {:<20} {:<12} {}",
-            short_id,
-            runtime_label,
-            active_str,
-            rt.builtAt,
-            iw = id_width
-        );
+        println!("{:<32} {:<12} {}", runtime_label, active_str, rt.builtAt,);
     }
 
     println!();
@@ -253,8 +233,12 @@ pub fn print_runtime_detail(rt: &vl_rt::Runtime, output: &OutputManager) {
         return;
     }
 
+    let short_id = &rt.id[..rt.id.len().min(8)];
     println!();
-    println!("  Runtime: {} {}", rt.runtime.name, rt.runtime.version);
+    println!(
+        "  Runtime: {} {} ({short_id})",
+        rt.runtime.name, rt.runtime.version
+    );
     println!("  ID:      {}", rt.id);
     println!("  Built:   {}", rt.builtAt);
     println!("  Active:  {}", if rt.active { "yes" } else { "no" });

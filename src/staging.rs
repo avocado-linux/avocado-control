@@ -39,7 +39,7 @@ pub fn validate_manifest_images(
                 None
             } else {
                 Some(MissingImage {
-                    extension_name: format!("{} v{}", ext.name, ext.version),
+                    extension_name: format!("{} {}", ext.name, ext.version),
                     expected_path: path.display().to_string(),
                 })
             }
@@ -75,7 +75,7 @@ pub fn stage_manifest(
 
     if verbose {
         println!(
-            "  Staged runtime: {} v{} (build {})",
+            "  Staged runtime: {} {} ({})",
             manifest.runtime.name,
             manifest.runtime.version,
             &manifest.id[..8.min(manifest.id.len())]
@@ -216,7 +216,7 @@ mod tests {
         let result = validate_manifest_images(&manifest, tmp.path());
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("app v0.1.0"));
+        assert!(err.contains("app 0.1.0"));
         assert!(err.contains("a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw"));
     }
 

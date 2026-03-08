@@ -1152,7 +1152,7 @@ fn display_active_runtime(config: &Config, output: &OutputManager) {
             };
             println!("Active Runtime:");
             println!(
-                "  {} v{} (build {short_id})",
+                "  {} {} ({short_id})",
                 manifest.runtime.name, manifest.runtime.version
             );
             println!("  Built: {}", manifest.built_at);
@@ -1161,7 +1161,7 @@ fn display_active_runtime(config: &Config, output: &OutputManager) {
                 println!("  Build ID: {}", manifest.id);
                 for ext in &manifest.extensions {
                     let id_display = ext.image_id.as_deref().unwrap_or("?");
-                    println!("    - {} v{} ({})", ext.name, ext.version, id_display);
+                    println!("    - {} {} ({})", ext.name, ext.version, id_display);
                 }
             }
             println!();
@@ -1939,8 +1939,10 @@ fn scan_extensions_from_all_sources_with_verbosity(
     let used_manifest = if let Some(ref manifest) = active_manifest {
         if verbose {
             println!(
-                "Found active runtime manifest: {} v{} (build {})",
-                manifest.runtime.name, manifest.runtime.version, manifest.id
+                "Found active runtime manifest: {} {} ({})",
+                manifest.runtime.name,
+                manifest.runtime.version,
+                &manifest.id[..8.min(manifest.id.len())]
             );
         }
 

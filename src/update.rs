@@ -232,11 +232,10 @@ pub fn perform_update(
         .map_err(|e| UpdateError::StagingFailed(format!("Invalid manifest.json: {e}")))?;
 
     if verbose {
+        let short_id = &new_manifest.id[..8.min(new_manifest.id.len())];
         println!(
-            "  New runtime: {} v{} (build {})",
-            new_manifest.runtime.name,
-            new_manifest.runtime.version,
-            &new_manifest.id[..8.min(new_manifest.id.len())]
+            "  New runtime: {} {} ({short_id})",
+            new_manifest.runtime.name, new_manifest.runtime.version,
         );
     }
 
@@ -249,11 +248,10 @@ pub fn perform_update(
     staging::activate_runtime(&new_manifest.id, base_dir)
         .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
 
+    let short_id = &new_manifest.id[..8.min(new_manifest.id.len())];
     println!(
-        "  Activated runtime: {} v{} ({})",
-        new_manifest.runtime.name,
-        new_manifest.runtime.version,
-        &new_manifest.id[..8.min(new_manifest.id.len())]
+        "  Activated runtime: {} {} ({short_id})",
+        new_manifest.runtime.name, new_manifest.runtime.version,
     );
 
     // Clean up staging directory
