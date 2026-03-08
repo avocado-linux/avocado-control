@@ -7,11 +7,6 @@ use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::Path;
 
-/// A quiet OutputManager for service-layer calls (no terminal output).
-fn quiet_output() -> OutputManager {
-    OutputManager::new(false, false)
-}
-
 /// List all available extensions from the extensions directory.
 pub fn list_extensions(config: &Config) -> Result<Vec<ExtensionInfo>, AvocadoError> {
     let extensions_path = config.get_extensions_dir();
@@ -57,21 +52,26 @@ pub fn list_extensions(config: &Config) -> Result<Vec<ExtensionInfo>, AvocadoErr
 }
 
 /// Merge extensions using systemd-sysext and systemd-confext.
-pub fn merge_extensions(config: &Config) -> Result<(), AvocadoError> {
-    let output = quiet_output();
-    ext::merge_extensions_internal(config, &output).map_err(AvocadoError::from)
+/// Returns log messages produced during the operation.
+pub fn merge_extensions(config: &Config) -> Result<Vec<String>, AvocadoError> {
+    let output = OutputManager::new_capturing();
+    ext::merge_extensions_internal(config, &output).map_err(AvocadoError::from)?;
+    Ok(output.take_messages())
 }
 
 /// Unmerge extensions using systemd-sysext and systemd-confext.
-pub fn unmerge_extensions(unmount: bool) -> Result<(), AvocadoError> {
-    let output = quiet_output();
+/// Returns log messages produced during the operation.
+pub fn unmerge_extensions(unmount: bool) -> Result<Vec<String>, AvocadoError> {
+    let output = OutputManager::new_capturing();
     ext::unmerge_extensions_internal_with_options(true, unmount, &output)
-        .map_err(AvocadoError::from)
+        .map_err(AvocadoError::from)?;
+    Ok(output.take_messages())
 }
 
 /// Refresh extensions (unmerge then merge).
-pub fn refresh_extensions(config: &Config) -> Result<(), AvocadoError> {
-    let output = quiet_output();
+/// Returns log messages produced during the operation.
+pub fn refresh_extensions(config: &Config) -> Result<Vec<String>, AvocadoError> {
+    let output = OutputManager::new_capturing();
 
     // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
     ext::unmerge_extensions_internal_with_options(false, false, &output)
@@ -83,7 +83,7 @@ pub fn refresh_extensions(config: &Config) -> Result<(), AvocadoError> {
     // Then merge (this will call depmod via post-merge processing)
     ext::merge_extensions_internal(config, &output).map_err(AvocadoError::from)?;
 
-    Ok(())
+    Ok(output.take_messages())
 }
 
 /// Enable extensions for a specific OS release version.

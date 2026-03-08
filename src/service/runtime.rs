@@ -39,20 +39,24 @@ pub fn list_runtimes(config: &Config) -> Result<Vec<RuntimeEntry>, AvocadoError>
 }
 
 /// Add a runtime from a TUF repository URL.
+/// Returns log messages from the refresh operation.
 pub fn add_from_url(
     url: &str,
     auth_token: Option<&str>,
     config: &Config,
-) -> Result<(), AvocadoError> {
+) -> Result<Vec<String>, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
     update::perform_update(url, base_path, auth_token, false)?;
-    super::ext::refresh_extensions(config)?;
-    Ok(())
+    super::ext::refresh_extensions(config)
 }
 
 /// Add a runtime from a local manifest file.
-pub fn add_from_manifest(manifest_path: &str, config: &Config) -> Result<(), AvocadoError> {
+/// Returns log messages from the refresh operation.
+pub fn add_from_manifest(
+    manifest_path: &str,
+    config: &Config,
+) -> Result<Vec<String>, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
 
@@ -69,9 +73,7 @@ pub fn add_from_manifest(manifest_path: &str, config: &Config) -> Result<(), Avo
     staging::validate_manifest_images(&manifest, base_path)?;
     staging::stage_manifest(&manifest, &manifest_content, base_path, false)?;
     staging::activate_runtime(&manifest.id, base_path)?;
-    super::ext::refresh_extensions(config)?;
-
-    Ok(())
+    super::ext::refresh_extensions(config)
 }
 
 /// Remove a staged runtime by ID (or prefix).
@@ -86,19 +88,19 @@ pub fn remove_runtime(id_prefix: &str, config: &Config) -> Result<(), AvocadoErr
 }
 
 /// Activate a staged runtime by ID (or prefix).
-pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<(), AvocadoError> {
+/// Returns log messages from the refresh operation.
+pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<Vec<String>, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
     let runtimes = RuntimeManifest::list_all(base_path);
 
     let (matched, is_active) = resolve_runtime_with_active(id_prefix, &runtimes)?;
     if is_active {
-        return Ok(()); // Already active, nothing to do
+        return Ok(Vec::new()); // Already active, nothing to do
     }
 
     staging::activate_runtime(&matched.id, base_path)?;
-    super::ext::refresh_extensions(config)?;
-    Ok(())
+    super::ext::refresh_extensions(config)
 }
 
 /// Inspect a runtime's details by ID (or prefix).

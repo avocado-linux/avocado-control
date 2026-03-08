@@ -42,6 +42,15 @@ pub fn exit_with_rpc_error(
     std::process::exit(1);
 }
 
+// ── Log output helper ────────────────────────────────────────────────────────
+
+/// Print log messages returned from the daemon via varlink replies.
+pub fn print_log(messages: &[String]) {
+    for msg in messages {
+        println!("{msg}");
+    }
+}
+
 // ── Extension output helpers ─────────────────────────────────────────────────
 
 pub fn print_extensions(extensions: &[vl_ext::Extension], output: &OutputManager) {

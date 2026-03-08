@@ -51,7 +51,7 @@ impl vl_ext::VarlinkInterface for ExtensionsHandler {
 
     fn merge(&self, call: &mut dyn vl_ext::Call_Merge) -> varlink::Result<()> {
         match service::ext::merge_extensions(&self.config) {
-            Ok(()) => call.reply(),
+            Ok(log) => call.reply(log),
             Err(e) => map_ext_error!(call, e),
         }
     }
@@ -62,14 +62,14 @@ impl vl_ext::VarlinkInterface for ExtensionsHandler {
         r#unmount: Option<bool>,
     ) -> varlink::Result<()> {
         match service::ext::unmerge_extensions(unmount.unwrap_or(false)) {
-            Ok(()) => call.reply(),
+            Ok(log) => call.reply(log),
             Err(e) => map_ext_error!(call, e),
         }
     }
 
     fn refresh(&self, call: &mut dyn vl_ext::Call_Refresh) -> varlink::Result<()> {
         match service::ext::refresh_extensions(&self.config) {
-            Ok(()) => call.reply(),
+            Ok(log) => call.reply(log),
             Err(e) => map_ext_error!(call, e),
         }
     }
@@ -177,7 +177,7 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         r#authToken: Option<String>,
     ) -> varlink::Result<()> {
         match service::runtime::add_from_url(&url, authToken.as_deref(), &self.config) {
-            Ok(()) => call.reply(),
+            Ok(log) => call.reply(log),
             Err(e) => map_rt_error!(call, e),
         }
     }
@@ -188,7 +188,7 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         r#manifestPath: String,
     ) -> varlink::Result<()> {
         match service::runtime::add_from_manifest(&manifestPath, &self.config) {
-            Ok(()) => call.reply(),
+            Ok(log) => call.reply(log),
             Err(e) => map_rt_error!(call, e),
         }
     }
@@ -202,7 +202,7 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
 
     fn activate(&self, call: &mut dyn vl_rt::Call_Activate, r#id: String) -> varlink::Result<()> {
         match service::runtime::activate_runtime(&id, &self.config) {
-            Ok(()) => call.reply(),
+            Ok(log) => call.reply(log),
             Err(e) => map_rt_error!(call, e),
         }
     }

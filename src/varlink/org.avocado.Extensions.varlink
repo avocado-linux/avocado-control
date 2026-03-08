@@ -24,13 +24,13 @@ type ExtensionStatus (
 method List() -> (extensions: []Extension)
 
 # Merge extensions using systemd-sysext and systemd-confext
-method Merge() -> ()
+method Merge() -> (log: []string)
 
 # Unmerge extensions
-method Unmerge(unmount: ?bool) -> ()
+method Unmerge(unmount: ?bool) -> (log: []string)
 
 # Refresh extensions (unmerge then merge)
-method Refresh() -> ()
+method Refresh() -> (log: []string)
 
 # Enable extensions for a specific OS release version
 method Enable(extensions: []string, osRelease: ?string) -> (enabled: int, failed: int)

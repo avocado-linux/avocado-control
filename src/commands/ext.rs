@@ -24,30 +24,6 @@ struct Extension {
     merge_index: Option<usize>,
 }
 
-/// Print a colored success message
-fn print_colored_success(message: &str) {
-    // Use auto-detection but fallback gracefully
-    let color_choice =
-        if std::env::var("NO_COLOR").is_ok() || std::env::var("AVOCADO_TEST_MODE").is_ok() {
-            ColorChoice::Never
-        } else {
-            ColorChoice::Auto
-        };
-
-    let mut stdout = StandardStream::stdout(color_choice);
-    let mut color_spec = ColorSpec::new();
-    color_spec.set_fg(Some(Color::Green)).set_bold(true);
-
-    if stdout.set_color(&color_spec).is_ok() && color_choice != ColorChoice::Never {
-        let _ = write!(&mut stdout, "[SUCCESS]");
-        let _ = stdout.reset();
-        println!(" {message}");
-    } else {
-        // Fallback for environments without color support
-        println!("[SUCCESS] {message}");
-    }
-}
-
 /// Print a colored info message
 fn print_colored_info(message: &str) {
     // Use auto-detection but fallback gracefully
@@ -402,7 +378,7 @@ pub(crate) fn merge_extensions_internal(
     handle_systemd_output("systemd-confext merge", &confext_result, output)?;
 
     // Process post-merge tasks only for enabled extensions
-    process_post_merge_tasks_for_extensions(&enabled_extensions)?;
+    process_post_merge_tasks_for_extensions(&enabled_extensions, output)?;
 
     Ok(())
 }
@@ -455,7 +431,7 @@ pub(crate) fn unmerge_extensions_internal_with_options(
 
     // Execute AVOCADO_ON_UNMERGE commands before unmerging extensions
     // These commands are executed while extensions are still merged
-    if let Err(e) = process_pre_unmerge_tasks() {
+    if let Err(e) = process_pre_unmerge_tasks(output) {
         output.progress(&format!(
             "Warning: Failed to process pre-unmerge tasks: {e}"
         ));
@@ -479,7 +455,7 @@ pub(crate) fn unmerge_extensions_internal_with_options(
 
     // Run depmod after unmerge if requested
     if call_depmod {
-        run_depmod()?;
+        run_depmod(output)?;
     }
 
     // Unmount persistent loops if requested
@@ -3527,6 +3503,7 @@ fn scan_directory_for_release_files(
 /// Process post-merge tasks for only the enabled extensions
 fn process_post_merge_tasks_for_extensions(
     enabled_extensions: &[Extension],
+    output: &OutputManager,
 ) -> Result<(), SystemdError> {
     let (on_merge_commands, modprobe_modules) =
         scan_release_files_for_enabled_extensions(enabled_extensions)?;
@@ -3541,12 +3518,12 @@ fn process_post_merge_tasks_for_extensions(
 
     // Execute accumulated AVOCADO_ON_MERGE commands
     if !unique_commands.is_empty() {
-        run_avocado_on_merge_commands(&unique_commands)?;
+        run_avocado_on_merge_commands(&unique_commands, output)?;
     }
 
     // Call modprobe for each module after commands complete
     if !modprobe_modules.is_empty() {
-        run_modprobe(&modprobe_modules)?;
+        run_modprobe(&modprobe_modules, output)?;
     }
 
     Ok(())
@@ -3722,7 +3699,7 @@ fn scan_directory_for_on_unmerge_commands(
 }
 
 /// Process pre-unmerge tasks: execute AVOCADO_ON_UNMERGE commands
-fn process_pre_unmerge_tasks() -> Result<(), SystemdError> {
+fn process_pre_unmerge_tasks(output: &OutputManager) -> Result<(), SystemdError> {
     let on_unmerge_commands = scan_merged_extensions_for_on_unmerge_commands()?;
 
     // Remove duplicates while preserving order
@@ -3735,7 +3712,7 @@ fn process_pre_unmerge_tasks() -> Result<(), SystemdError> {
 
     // Execute accumulated AVOCADO_ON_UNMERGE commands
     if !unique_commands.is_empty() {
-        run_avocado_on_unmerge_commands(&unique_commands)?;
+        run_avocado_on_unmerge_commands(&unique_commands, output)?;
     }
 
     Ok(())
@@ -3796,8 +3773,8 @@ pub fn parse_avocado_enable_services(content: &str) -> Vec<String> {
 }
 
 /// Run the depmod command
-fn run_depmod() -> Result<(), SystemdError> {
-    print_colored_info("Running depmod to update kernel module dependencies...");
+fn run_depmod(out: &OutputManager) -> Result<(), SystemdError> {
+    out.log_info("Running depmod to update kernel module dependencies...");
 
     // Check if we're in test mode and should use mock commands
     let command_name = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
@@ -3824,17 +3801,17 @@ fn run_depmod() -> Result<(), SystemdError> {
         });
     }
 
-    print_colored_success("depmod completed successfully.");
+    out.log_success("depmod completed successfully.");
     Ok(())
 }
 
 /// Run modprobe for a list of modules
-fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
+fn run_modprobe(modules: &[String], out: &OutputManager) -> Result<(), SystemdError> {
     if modules.is_empty() {
         return Ok(());
     }
 
-    print_colored_info(&format!("Loading kernel modules: {}", modules.join(", ")));
+    out.log_info(&format!("Loading kernel modules: {}", modules.join(", ")));
 
     for module in modules {
         // Check if we're in test mode and should use mock commands
@@ -3860,16 +3837,16 @@ fn run_modprobe(modules: &[String]) -> Result<(), SystemdError> {
             // Don't fail the entire operation for individual module failures
             // Just log the warning and continue with other modules
         } else {
-            print_colored_success(&format!("Module {module} loaded successfully."));
+            out.log_success(&format!("Module {module} loaded successfully."));
         }
     }
 
-    print_colored_success("Module loading completed.");
+    out.log_success("Module loading completed.");
     Ok(())
 }
 
 /// Execute a single command with its arguments
-fn execute_single_command(command_str: &str) -> Result<(), SystemdError> {
+fn execute_single_command(command_str: &str, out: &OutputManager) -> Result<(), SystemdError> {
     // Parse the command string to handle commands with arguments
     // Commands may be quoted or contain spaces
     let parts: Vec<&str> = if command_str.starts_with('"') && command_str.ends_with('"') {
@@ -3924,22 +3901,25 @@ fn execute_single_command(command_str: &str) -> Result<(), SystemdError> {
         // Log warning but don't fail the entire operation
         // This matches the behavior of modprobe failures
     } else {
-        print_colored_success(&format!("Command '{command_str}' completed successfully"));
+        out.log_success(&format!("Command '{command_str}' completed successfully"));
     }
 
     Ok(())
 }
 
 /// Run accumulated AVOCADO_ON_MERGE commands
-fn run_avocado_on_merge_commands(commands: &[String]) -> Result<(), SystemdError> {
+fn run_avocado_on_merge_commands(
+    commands: &[String],
+    out: &OutputManager,
+) -> Result<(), SystemdError> {
     if commands.is_empty() {
         return Ok(());
     }
 
-    print_colored_info(&format!("Executing {} post-merge commands", commands.len()));
+    out.log_info(&format!("Executing {} post-merge commands", commands.len()));
 
     for command_str in commands {
-        print_colored_info(&format!("Running command: {command_str}"));
+        out.log_info(&format!("Running command: {command_str}"));
 
         // Check if the command contains shell operators like semicolons
         if command_str.contains(';') {
@@ -3948,33 +3928,36 @@ fn run_avocado_on_merge_commands(commands: &[String]) -> Result<(), SystemdError
 
             for sub_command in sub_commands {
                 if !sub_command.is_empty() {
-                    print_colored_info(&format!("Running sub-command: {sub_command}"));
-                    execute_single_command(sub_command)?;
+                    out.log_info(&format!("Running sub-command: {sub_command}"));
+                    execute_single_command(sub_command, out)?;
                 }
             }
         } else {
             // Execute as a single command
-            execute_single_command(command_str)?;
+            execute_single_command(command_str, out)?;
         }
     }
 
-    print_colored_success("Post-merge command execution completed.");
+    out.log_success("Post-merge command execution completed.");
     Ok(())
 }
 
 /// Run accumulated AVOCADO_ON_UNMERGE commands
-fn run_avocado_on_unmerge_commands(commands: &[String]) -> Result<(), SystemdError> {
+fn run_avocado_on_unmerge_commands(
+    commands: &[String],
+    out: &OutputManager,
+) -> Result<(), SystemdError> {
     if commands.is_empty() {
         return Ok(());
     }
 
-    print_colored_info(&format!(
+    out.log_info(&format!(
         "Executing {} pre-unmerge commands",
         commands.len()
     ));
 
     for command_str in commands {
-        print_colored_info(&format!("Running command: {command_str}"));
+        out.log_info(&format!("Running command: {command_str}"));
 
         // Check if the command contains shell operators like semicolons
         if command_str.contains(';') {
@@ -3983,17 +3966,17 @@ fn run_avocado_on_unmerge_commands(commands: &[String]) -> Result<(), SystemdErr
 
             for sub_command in sub_commands {
                 if !sub_command.is_empty() {
-                    print_colored_info(&format!("Running sub-command: {sub_command}"));
-                    execute_single_command(sub_command)?;
+                    out.log_info(&format!("Running sub-command: {sub_command}"));
+                    execute_single_command(sub_command, out)?;
                 }
             }
         } else {
             // Execute as a single command
-            execute_single_command(command_str)?;
+            execute_single_command(command_str, out)?;
         }
     }
 
-    print_colored_success("Pre-unmerge command execution completed.");
+    out.log_success("Pre-unmerge command execution completed.");
     Ok(())
 }
 
