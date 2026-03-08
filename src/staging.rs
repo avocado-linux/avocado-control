@@ -96,12 +96,17 @@ pub fn install_images_from_staging(
     let images_dir = base_dir.join(IMAGES_DIR_NAME);
     let _ = fs::create_dir_all(&images_dir);
 
+    let mut missing = Vec::new();
+
     for ext in &manifest.extensions {
         if let Some(ref image_id) = ext.image_id {
             let dest = images_dir.join(format!("{image_id}.raw"));
             if dest.exists() {
                 if verbose {
-                    println!("    Image already present: {} ({})", ext.name, image_id);
+                    println!(
+                        "    Image already present: {} {} ({})",
+                        ext.name, ext.version, image_id
+                    );
                 }
                 continue;
             }
@@ -114,9 +119,28 @@ pub fn install_images_from_staging(
                     ))
                 })?;
                 if verbose {
-                    println!("    Installed image: {} -> {}.raw", ext.name, image_id);
+                    println!(
+                        "    Installed image: {} {} -> {}.raw",
+                        ext.name, ext.version, image_id
+                    );
                 }
+            } else {
+                println!(
+                    "    WARNING: Image not in staging and not on disk: {} {} ({})",
+                    ext.name, ext.version, image_id
+                );
+                missing.push(format!("{} {} ({})", ext.name, ext.version, image_id));
             }
+        }
+    }
+
+    if !missing.is_empty() {
+        println!(
+            "  WARNING: {} extension image(s) missing after staging:",
+            missing.len()
+        );
+        for m in &missing {
+            println!("    - {m}");
         }
     }
 

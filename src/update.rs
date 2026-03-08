@@ -52,13 +52,11 @@ pub fn perform_update(
     let root = &signed_root.signed;
     let trusted_keys = extract_trusted_keys(root)?;
 
-    if verbose {
-        println!(
-            "  Loaded trust anchor: version {}, {} trusted key(s)",
-            root.version,
-            trusted_keys.len()
-        );
-    }
+    println!(
+        "  Trust anchor: version {}, {} trusted key(s)",
+        root.version,
+        trusted_keys.len()
+    );
 
     // 2. Fetch and verify remote metadata (TUF order: timestamp -> snapshot -> targets)
     println!("  Fetching update metadata...");
@@ -76,12 +74,10 @@ pub fn perform_update(
         &tough::schema::RoleType::Timestamp,
     )?;
 
-    if verbose {
-        println!(
-            "  Verified timestamp.json (version {})",
-            timestamp.signed.version
-        );
-    }
+    println!(
+        "  Verified timestamp.json (version {})",
+        timestamp.signed.version
+    );
 
     let snapshot_url = format!("{url}/metadata/snapshot.json");
     let snapshot_raw = fetch_url(&snapshot_url, auth_token)?;
@@ -96,12 +92,10 @@ pub fn perform_update(
         &tough::schema::RoleType::Snapshot,
     )?;
 
-    if verbose {
-        println!(
-            "  Verified snapshot.json (version {})",
-            snapshot.signed.version
-        );
-    }
+    println!(
+        "  Verified snapshot.json (version {})",
+        snapshot.signed.version
+    );
 
     let targets_url = format!("{url}/metadata/targets.json");
     let targets_raw = fetch_url(&targets_url, auth_token)?;
@@ -116,20 +110,29 @@ pub fn perform_update(
         &tough::schema::RoleType::Targets,
     )?;
 
+    let inline_count = targets.signed.targets.len();
+    println!(
+        "  Verified targets.json (version {}, {} inline target(s))",
+        targets.signed.version, inline_count
+    );
     if verbose {
-        println!(
-            "  Verified targets.json (version {})",
-            targets.signed.version
-        );
+        for (name, _) in targets.signed.targets.iter() {
+            println!("    inline target: {}", name.raw());
+        }
     }
 
     // 3a. Walk delegations if present — collect delegated targets
     let mut delegated_targets: Vec<(String, tough::schema::Target)> = Vec::new();
 
     if let Some(delegations) = &targets.signed.delegations {
+        println!(
+            "  Found {} delegation(s) in targets.json",
+            delegations.roles.len()
+        );
         for role in &delegations.roles {
             let role_path = format!("delegations/{}.json", role.name);
             let delegation_url = format!("{url}/metadata/{role_path}");
+            println!("  Fetching delegation: {}", role.name);
             let delegation_raw = fetch_url(&delegation_url, auth_token)?;
 
             // Verify hash + length against snapshot meta entry
@@ -147,18 +150,26 @@ pub fn perform_update(
                 role.threshold,
             )?;
 
+            println!(
+                "  Verified delegation {} ({} target(s))",
+                role.name,
+                delegation.signed.targets.len()
+            );
             if verbose {
-                println!(
-                    "  Verified delegation {} ({} target(s))",
-                    role.name,
-                    delegation.signed.targets.len()
-                );
+                for (name, _) in delegation.signed.targets.iter() {
+                    println!("    delegated target: {}", name.raw());
+                }
+            }
+            if delegation.signed.targets.is_empty() {
+                println!("  WARNING: Delegation '{}' has no targets — extension images will not be downloaded!", role.name);
             }
 
             for (name, info) in &delegation.signed.targets {
                 delegated_targets.push((name.raw().to_string(), info.clone()));
             }
         }
+    } else {
+        println!("  No delegations found in targets.json");
     }
 
     // 3b. Enumerate and download targets (inline + delegated)
@@ -231,12 +242,18 @@ pub fn perform_update(
     let new_manifest: RuntimeManifest = serde_json::from_str(&manifest_content)
         .map_err(|e| UpdateError::StagingFailed(format!("Invalid manifest.json: {e}")))?;
 
-    if verbose {
-        let short_id = &new_manifest.id[..8.min(new_manifest.id.len())];
-        println!(
-            "  New runtime: {} {} ({short_id})",
-            new_manifest.runtime.name, new_manifest.runtime.version,
-        );
+    let short_id = &new_manifest.id[..8.min(new_manifest.id.len())];
+    println!(
+        "  New runtime: {} {} ({short_id})",
+        new_manifest.runtime.name, new_manifest.runtime.version,
+    );
+    println!(
+        "  Manifest lists {} extension(s):",
+        new_manifest.extensions.len()
+    );
+    for ext in &new_manifest.extensions {
+        let img = ext.image_id.as_deref().unwrap_or("none");
+        println!("    {} {} (image: {})", ext.name, ext.version, img);
     }
 
     staging::install_images_from_staging(&new_manifest, &staging_dir, base_dir, verbose)
@@ -282,7 +299,6 @@ fn download_target(
     }
 
     let target_url = format!("{url}/targets/{name_str}");
-
     if verbose {
         println!("    Downloading {name_str}...");
     }
