@@ -135,13 +135,11 @@ pub fn install_images_from_staging(
     }
 
     if !missing.is_empty() {
-        println!(
-            "  WARNING: {} extension image(s) missing after staging:",
+        let details = missing.join(", ");
+        return Err(StagingError::StagingFailed(format!(
+            "{} extension image(s) missing after staging: {details}",
             missing.len()
-        );
-        for m in &missing {
-            println!("    - {m}");
-        }
+        )));
     }
 
     Ok(())

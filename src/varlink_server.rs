@@ -253,10 +253,15 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         call: &mut dyn vl_rt::Call_AddFromUrl,
         r#url: String,
         r#authToken: Option<String>,
+        r#artifactsUrl: Option<String>,
     ) -> varlink::Result<()> {
         if call.wants_more() {
-            match service::runtime::add_from_url_streaming(&url, authToken.as_deref(), &self.config)
-            {
+            match service::runtime::add_from_url_streaming(
+                &url,
+                authToken.as_deref(),
+                artifactsUrl.as_deref(),
+                &self.config,
+            ) {
                 Ok((rx, handle)) => drain_stream(
                     call,
                     rx,
@@ -268,7 +273,12 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
                 Err(e) => map_rt_error!(call, e),
             }
         } else {
-            match service::runtime::add_from_url(&url, authToken.as_deref(), &self.config) {
+            match service::runtime::add_from_url(
+                &url,
+                authToken.as_deref(),
+                artifactsUrl.as_deref(),
+                &self.config,
+            ) {
                 Ok(log) => call.reply(log.join("\n"), true),
                 Err(e) => map_rt_error!(call, e),
             }

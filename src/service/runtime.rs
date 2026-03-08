@@ -53,11 +53,12 @@ pub fn list_runtimes(config: &Config) -> Result<Vec<RuntimeEntry>, AvocadoError>
 pub fn add_from_url_streaming(
     url: &str,
     auth_token: Option<&str>,
+    artifacts_url: Option<&str>,
     config: &Config,
 ) -> Result<StreamHandle, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
-    update::perform_update(url, base_path, auth_token, false)?;
+    update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
     Ok(super::ext::refresh_extensions_streaming(config))
 }
 
@@ -112,11 +113,12 @@ pub fn activate_runtime_streaming(
 pub fn add_from_url(
     url: &str,
     auth_token: Option<&str>,
+    artifacts_url: Option<&str>,
     config: &Config,
 ) -> Result<Vec<String>, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
-    update::perform_update(url, base_path, auth_token, false)?;
+    update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
     super::ext::refresh_extensions(config)
 }
 

@@ -26,7 +26,7 @@ method List() -> (runtimes: []Runtime)
 
 # Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)
 # Supports streaming: client may set more=true to receive per-message progress
-method AddFromUrl(url: string, authToken: ?string) -> (message: string, done: bool)
+method AddFromUrl(url: string, authToken: ?string, artifactsUrl: ?string) -> (message: string, done: bool)
 
 # Add a runtime from a local manifest file
 # Supports streaming: client may set more=true to receive per-message progress

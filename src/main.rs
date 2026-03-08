@@ -326,7 +326,7 @@ fn main() {
                     if let Some(url) = add_matches.get_one::<String>("url") {
                         let auth_token = std::env::var("AVOCADO_TUF_AUTH_TOKEN").ok();
                         let mut client = vl_rt::VarlinkClient::new(conn);
-                        match client.add_from_url(url.clone(), auth_token).more() {
+                        match client.add_from_url(url.clone(), auth_token, None).more() {
                             Ok(iter) => {
                                 for reply in iter {
                                     match reply {

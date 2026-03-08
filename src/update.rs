@@ -36,6 +36,7 @@ pub fn perform_update(
     url: &str,
     base_dir: &Path,
     auth_token: Option<&str>,
+    artifacts_url: Option<&str>,
     verbose: bool,
 ) -> Result<(), UpdateError> {
     let url = url.trim_end_matches('/');
@@ -214,6 +215,7 @@ pub fn perform_update(
             &staging_dir,
             &existing_images,
             auth_token,
+            artifacts_url,
             verbose,
         )?;
     }
@@ -227,6 +229,7 @@ pub fn perform_update(
             &staging_dir,
             &existing_images,
             auth_token,
+            artifacts_url,
             verbose,
         )?;
     }
@@ -280,6 +283,7 @@ pub fn perform_update(
 
 /// Download a single target file into the staging directory, verifying hash and length.
 /// Skips content-addressable image files that already exist on disk.
+#[allow(clippy::too_many_arguments)]
 fn download_target(
     url: &str,
     name_str: &str,
@@ -287,6 +291,7 @@ fn download_target(
     staging_dir: &Path,
     existing_images: &std::collections::HashSet<String>,
     auth_token: Option<&str>,
+    artifacts_url: Option<&str>,
     verbose: bool,
 ) -> Result<(), UpdateError> {
     // Content-addressable skip: if this target is an image that already
@@ -298,7 +303,18 @@ fn download_target(
         return Ok(());
     }
 
-    let target_url = format!("{url}/targets/{name_str}");
+    // .raw image files are fetched from the artifacts URL (shared blob storage)
+    // rather than the per-device TUF repo, but still verified against TUF hashes.
+    let target_url = if name_str.ends_with(".raw") {
+        if let Some(art_url) = artifacts_url {
+            let art_url = art_url.trim_end_matches('/');
+            format!("{art_url}/{name_str}")
+        } else {
+            format!("{url}/targets/{name_str}")
+        }
+    } else {
+        format!("{url}/targets/{name_str}")
+    };
     if verbose {
         println!("    Downloading {name_str}...");
     }
@@ -707,7 +723,7 @@ mod tests {
     #[test]
     fn test_no_trust_anchor() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let result = perform_update("http://localhost:9999", tmp.path(), None, false);
+        let result = perform_update("http://localhost:9999", tmp.path(), None, None, false);
         assert!(matches!(result, Err(UpdateError::NoTrustAnchor)));
     }
 
