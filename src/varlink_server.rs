@@ -46,7 +46,10 @@ where
     call.set_continues(false);
     match result {
         Ok(()) => done_fn(call),
-        Err(e) => error_fn(call, e),
+        Err(e) => {
+            eprintln!("  Error: {e}");
+            error_fn(call, e)
+        }
     }
 }
 
@@ -200,7 +203,8 @@ pub struct RuntimesHandler {
 }
 
 macro_rules! map_rt_error {
-    ($call:expr, $err:expr) => {
+    ($call:expr, $err:expr) => {{
+        eprintln!("  Error: {}", $err);
         match $err {
             AvocadoError::RuntimeNotFound { id } => $call.reply_runtime_not_found(id),
             AvocadoError::AmbiguousRuntimeId { id, candidates } => {
@@ -211,7 +215,7 @@ macro_rules! map_rt_error {
             AvocadoError::UpdateFailed { reason } => $call.reply_update_failed(reason),
             e => $call.reply_staging_failed(e.to_string()),
         }
-    };
+    }};
 }
 
 fn runtime_entry_to_varlink(entry: crate::service::types::RuntimeEntry) -> vl_rt::Runtime {
