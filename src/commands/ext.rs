@@ -1007,6 +1007,96 @@ pub fn status_extensions(config: &Config, output: &OutputManager) {
     }
 }
 
+/// Collect extension status data for the varlink Status RPC.
+///
+/// This gathers the same data as `show_enhanced_status` but returns it as
+/// structured `ExtensionStatus` values instead of printing to stdout.
+pub(crate) fn collect_extension_status(
+    config: &Config,
+) -> Result<Vec<crate::varlink::org_avocado_Extensions::ExtensionStatus>, SystemdError> {
+    use crate::varlink::org_avocado_Extensions::ExtensionStatus;
+
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = std::path::Path::new(&base_dir);
+    let active_manifest = crate::manifest::RuntimeManifest::load_active(base_path);
+    let manifest_extensions = active_manifest
+        .as_ref()
+        .map(|m| m.extensions.as_slice())
+        .unwrap_or(&[]);
+
+    let available_extensions = scan_extensions_from_all_sources_with_verbosity(false)?;
+    let mounted_sysext = get_mounted_systemd_extensions("systemd-sysext")?;
+    let mounted_confext = get_mounted_systemd_extensions("systemd-confext")?;
+
+    // Collect all unique extension names (with versions if present)
+    let mut all_names = std::collections::HashSet::new();
+    for ext in &available_extensions {
+        if let Some(ver) = &ext.version {
+            all_names.insert(format!("{}-{}", ext.name, ver));
+        } else {
+            all_names.insert(ext.name.clone());
+        }
+    }
+    for ext in &mounted_sysext {
+        all_names.insert(ext.name.clone());
+    }
+    for ext in &mounted_confext {
+        all_names.insert(ext.name.clone());
+    }
+
+    let mut result: Vec<ExtensionStatus> = all_names
+        .into_iter()
+        .map(|ext_name| {
+            let available_ext = available_extensions.iter().find(|e| {
+                if let Some(ver) = &e.version {
+                    format!("{}-{}", e.name, ver) == ext_name
+                } else {
+                    e.name == ext_name
+                }
+            });
+
+            let is_sysext_mounted = mounted_sysext.iter().any(|e| e.name == ext_name);
+            let is_confext_mounted = mounted_confext.iter().any(|e| e.name == ext_name);
+            let is_merged = is_sysext_mounted || is_confext_mounted;
+
+            let (is_sysext, is_confext) = if let Some(ext) = available_ext {
+                (ext.is_sysext, ext.is_confext)
+            } else {
+                (is_sysext_mounted, is_confext_mounted)
+            };
+
+            let origin = available_ext.map(get_extension_origin_short);
+
+            let image_id_str = lookup_extension_short_id(&ext_name, manifest_extensions);
+            let image_id = if image_id_str == "-" {
+                None
+            } else {
+                Some(image_id_str)
+            };
+
+            let (name, version) = if let Some(ext) = available_ext {
+                (ext.name.clone(), ext.version.clone())
+            } else {
+                (ext_name, None)
+            };
+
+            ExtensionStatus {
+                name,
+                version,
+                isSysext: is_sysext,
+                isConfext: is_confext,
+                isMerged: is_merged,
+                origin,
+                imageId: image_id,
+            }
+        })
+        .collect();
+
+    result.sort_by(|a, b| a.name.cmp(&b.name));
+
+    Ok(result)
+}
+
 /// Show enhanced status with extension origins and HITL information
 pub(crate) fn show_enhanced_status(
     config: &Config,

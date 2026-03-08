@@ -272,7 +272,5 @@ pub fn disable_extensions(
 pub fn status_extensions(
     config: &Config,
 ) -> Result<Vec<crate::varlink::org_avocado_Extensions::ExtensionStatus>, AvocadoError> {
-    let output = quiet_output();
-    ext::show_enhanced_status(config, &output).map_err(AvocadoError::from)?;
-    Ok(vec![])
+    ext::collect_extension_status(config).map_err(AvocadoError::from)
 }
