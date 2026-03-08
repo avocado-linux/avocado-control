@@ -120,12 +120,22 @@ pub fn unmount(extensions: &[String]) -> Result<(), AvocadoError> {
         }
     }
 
-    // Step 2: Clean up service drop-ins
+    // Step 2: Unmerge extensions before unmounting NFS shares.
+    // Extensions must be unmerged first so the sysext/confext overlay no longer
+    // references the HITL mount points we are about to remove.
+    let _ = crate::service::ext::unmerge_extensions(false);
+
+    // Step 3: Clean up service drop-ins
     for (extension, services) in &extension_services {
         let _ = hitl::cleanup_service_dropins(extension, services, &output);
     }
 
-    // Step 3: Unmount each extension
+    // Step 4: Reload systemd to apply drop-in removals
+    if !extension_services.is_empty() {
+        let _ = hitl::systemd_daemon_reload(&output);
+    }
+
+    // Step 5: Unmount each extension
     for extension in extensions {
         let mount_point = format!("{extensions_base_dir}/{extension}");
 
@@ -160,12 +170,9 @@ pub fn unmount(extensions: &[String]) -> Result<(), AvocadoError> {
         }
     }
 
-    // Reload systemd
-    let _ = hitl::systemd_daemon_reload(&output);
-
-    // Refresh extensions
+    // Step 6: Merge remaining extensions (without the removed HITL ones)
     let config = Config::default();
-    let _ = crate::service::ext::refresh_extensions(&config);
+    let _ = crate::service::ext::merge_extensions(&config);
 
     Ok(())
 }
