@@ -109,12 +109,11 @@ impl RuntimeManifest {
             }
         }
 
-        results.sort_by(|(a, _), (b, _)| {
-            a.runtime
-                .name
-                .cmp(&b.runtime.name)
-                .then_with(|| a.runtime.version.cmp(&b.runtime.version))
-                .then_with(|| b.built_at.cmp(&a.built_at)) // newest first
+        results.sort_by(|(a, a_active), (b, b_active)| {
+            // Active runtime always first, then newest-built first
+            b_active
+                .cmp(a_active)
+                .then_with(|| b.built_at.cmp(&a.built_at))
         });
 
         results
@@ -207,13 +206,12 @@ mod tests {
         let list = RuntimeManifest::list_all(tmp.path());
         assert_eq!(list.len(), 3);
 
-        // Same name+version group: newest first
+        // Active first, then newest-built first
         assert_eq!(list[0].0.id, "bbb");
         assert!(list[0].1); // active
-        assert_eq!(list[1].0.id, "aaa");
+        assert_eq!(list[1].0.id, "aaa"); // 2026-02-17
         assert!(!list[1].1);
-        // Different version
-        assert_eq!(list[2].0.id, "ccc");
+        assert_eq!(list[2].0.id, "ccc"); // 2026-02-16
         assert!(!list[2].1);
     }
 

@@ -1068,7 +1068,39 @@ pub(crate) fn collect_extension_status(
         })
         .collect();
 
-    result.sort_by(|a, b| a.name.cmp(&b.name));
+    // Sort descending by merge_index (highest priority / top layer first).
+    // Extensions without a merge_index sort to the bottom, then alphabetically.
+    result.sort_by(|a, b| {
+        let versioned_a = match &a.version {
+            Some(v) => format!("{}-{}", a.name, v),
+            None => a.name.clone(),
+        };
+        let versioned_b = match &b.version {
+            Some(v) => format!("{}-{}", b.name, v),
+            None => b.name.clone(),
+        };
+        let idx_a = available_extensions
+            .iter()
+            .find(|e| {
+                if let Some(ver) = &e.version {
+                    format!("{}-{}", e.name, ver) == versioned_a
+                } else {
+                    e.name == versioned_a
+                }
+            })
+            .and_then(|e| e.merge_index);
+        let idx_b = available_extensions
+            .iter()
+            .find(|e| {
+                if let Some(ver) = &e.version {
+                    format!("{}-{}", e.name, ver) == versioned_b
+                } else {
+                    e.name == versioned_b
+                }
+            })
+            .and_then(|e| e.merge_index);
+        idx_b.cmp(&idx_a).then_with(|| a.name.cmp(&b.name))
+    });
 
     Ok(result)
 }
