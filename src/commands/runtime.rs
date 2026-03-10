@@ -96,10 +96,19 @@ fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
             None,
             output.is_verbose(),
         ) {
-            Ok(()) => {
-                crate::commands::ext::refresh_extensions(config, output);
-                println!();
-                output.success("Runtime Add", "Runtime added successfully.");
+            Ok(reboot_required) => {
+                if reboot_required {
+                    println!();
+                    output.step(
+                        "Runtime Add",
+                        "OS update applied. Rebooting to activate new OS...",
+                    );
+                    let _ = std::process::Command::new("reboot").status();
+                } else {
+                    crate::commands::ext::refresh_extensions(config, output);
+                    println!();
+                    output.success("Runtime Add", "Runtime added successfully.");
+                }
             }
             Err(e) => {
                 println!();

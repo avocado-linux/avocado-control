@@ -369,13 +369,19 @@ pub(crate) fn merge_extensions_internal(
                     Ok(true) => {
                         output.step(
                             "OS Update",
-                            &format!("Verified initramfs — {} matches expected value", verify_initramfs.field),
+                            &format!(
+                                "Verified initramfs — {} matches expected value",
+                                verify_initramfs.field
+                            ),
                         );
                     }
                     Ok(false) => {
                         output.error(
                             "OS Update",
-                            &format!("Initramfs {} mismatch — rolling back to previous slot", verify_initramfs.field),
+                            &format!(
+                                "Initramfs {} mismatch — rolling back to previous slot",
+                                verify_initramfs.field
+                            ),
                         );
                         if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
                             output.error("OS Update", &format!("Rollback failed: {e}"));

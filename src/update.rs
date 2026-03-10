@@ -32,13 +32,16 @@ pub enum UpdateError {
     MetadataError(String),
 }
 
+/// Perform a TUF-based runtime update.
+/// Returns `Ok(true)` if an OS update was applied and a reboot is required
+/// before extensions can be merged. Returns `Ok(false)` otherwise.
 pub fn perform_update(
     url: &str,
     base_dir: &Path,
     auth_token: Option<&str>,
     artifacts_url: Option<&str>,
     verbose: bool,
-) -> Result<(), UpdateError> {
+) -> Result<bool, UpdateError> {
     let url = url.trim_end_matches('/');
 
     // 1. Load the local trust anchor
@@ -347,6 +350,7 @@ pub fn perform_update(
     );
 
     // Apply OS update if bundle is present and OS is not already at target version
+    let mut reboot_required = false;
     if let Some(ref os_bundle) = new_manifest.os_bundle {
         let skip = if let Some(ref expected_id) = os_bundle.os_build_id {
             crate::os_update::verify_os_release(&crate::os_update::VerifyConfig {
@@ -371,6 +375,7 @@ pub fn perform_update(
             println!("  OS bundle detected. Applying OS update...");
             crate::os_update::apply_os_update(&aos_path, base_dir, verbose)
                 .map_err(|e| UpdateError::StagingFailed(format!("OS update failed: {e}")))?;
+            reboot_required = true;
         }
     }
 
@@ -378,7 +383,7 @@ pub fn perform_update(
     let _ = fs::remove_dir_all(&staging_dir);
 
     println!("  Update staged successfully.");
-    Ok(())
+    Ok(reboot_required)
 }
 
 /// Download a single target file into the staging directory, verifying hash and length.

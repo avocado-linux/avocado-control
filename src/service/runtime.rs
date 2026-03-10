@@ -48,6 +48,18 @@ pub fn list_runtimes(config: &Config) -> Result<Vec<RuntimeEntry>, AvocadoError>
 
 // ── Streaming service functions ──────────────────────────────────────────────
 
+/// Create a streaming handle that sends a message, triggers reboot, and completes.
+fn reboot_streaming(message: &str) -> StreamHandle {
+    let msg = message.to_string();
+    let (tx, rx) = mpsc::sync_channel(4);
+    let handle = thread::spawn(move || {
+        let _ = tx.send(msg);
+        let _ = std::process::Command::new("reboot").status();
+        Ok(())
+    });
+    (rx, handle)
+}
+
 /// Add a runtime from a TUF repository URL with streaming output.
 /// Performs the TUF update synchronously, then streams the refresh operation.
 pub fn add_from_url_streaming(
@@ -58,7 +70,13 @@ pub fn add_from_url_streaming(
 ) -> Result<StreamHandle, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
-    update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
+    let reboot_required = update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
+
+    if reboot_required {
+        return Ok(reboot_streaming(
+            "OS update applied. Rebooting to activate new OS...",
+        ));
+    }
     Ok(super::ext::refresh_extensions_streaming(config))
 }
 
@@ -118,7 +136,15 @@ pub fn add_from_url(
 ) -> Result<Vec<String>, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
-    update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
+    let reboot_required = update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
+
+    if reboot_required {
+        println!("  OS update applied. Rebooting to activate new OS...");
+        let _ = std::process::Command::new("reboot").status();
+        return Ok(vec![
+            "OS update applied. Rebooting to activate new OS.".to_string()
+        ]);
+    }
     super::ext::refresh_extensions(config)
 }
 
