@@ -1,12 +1,14 @@
 #![allow(non_snake_case)]
 
 use crate::config::Config;
+use crate::manifest::RuntimeManifest;
 use crate::service;
 use crate::service::error::AvocadoError;
 use crate::varlink::{
     org_avocado_Extensions as vl_ext, org_avocado_Hitl as vl_hitl,
     org_avocado_RootAuthority as vl_ra, org_avocado_Runtimes as vl_rt,
 };
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use varlink::CallTrait;
@@ -240,6 +242,15 @@ fn runtime_entry_to_varlink(entry: crate::service::types::RuntimeEntry) -> vl_rt
     }
 }
 
+/// Load the active runtime and convert it to a varlink Runtime type.
+fn load_active_runtime_varlink(config: &Config) -> Option<vl_rt::Runtime> {
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+    let manifest = RuntimeManifest::load_active(base_path)?;
+    let entry = service::runtime::manifest_to_entry(&manifest, true);
+    Some(runtime_entry_to_varlink(entry))
+}
+
 impl vl_rt::VarlinkInterface for RuntimesHandler {
     fn list(&self, call: &mut dyn vl_rt::Call_List) -> varlink::Result<()> {
         match service::runtime::list_runtimes(&self.config) {
@@ -260,6 +271,7 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         r#artifactsUrl: Option<String>,
     ) -> varlink::Result<()> {
         if call.wants_more() {
+            let config = self.config.clone();
             match service::runtime::add_from_url_streaming(
                 &url,
                 authToken.as_deref(),
@@ -270,8 +282,11 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
                     call,
                     rx,
                     handle,
-                    |c, msg| c.reply(msg, false),
-                    |c| c.reply(String::new(), true),
+                    |c, msg| c.reply(msg, false, None),
+                    |c| {
+                        let rt = load_active_runtime_varlink(&config);
+                        c.reply(String::new(), true, rt)
+                    },
                     |c, e| map_rt_error!(c, e),
                 ),
                 Err(e) => map_rt_error!(call, e),
@@ -283,7 +298,10 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
                 artifactsUrl.as_deref(),
                 &self.config,
             ) {
-                Ok(log) => call.reply(log.join("\n"), true),
+                Ok(log) => {
+                    let rt = load_active_runtime_varlink(&self.config);
+                    call.reply(log.join("\n"), true, rt)
+                }
                 Err(e) => map_rt_error!(call, e),
             }
         }
@@ -295,20 +313,27 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         r#manifestPath: String,
     ) -> varlink::Result<()> {
         if call.wants_more() {
+            let config = self.config.clone();
             match service::runtime::add_from_manifest_streaming(&manifestPath, &self.config) {
                 Ok((rx, handle)) => drain_stream(
                     call,
                     rx,
                     handle,
-                    |c, msg| c.reply(msg, false),
-                    |c| c.reply(String::new(), true),
+                    |c, msg| c.reply(msg, false, None),
+                    |c| {
+                        let rt = load_active_runtime_varlink(&config);
+                        c.reply(String::new(), true, rt)
+                    },
                     |c, e| map_rt_error!(c, e),
                 ),
                 Err(e) => map_rt_error!(call, e),
             }
         } else {
             match service::runtime::add_from_manifest(&manifestPath, &self.config) {
-                Ok(log) => call.reply(log.join("\n"), true),
+                Ok(log) => {
+                    let rt = load_active_runtime_varlink(&self.config);
+                    call.reply(log.join("\n"), true, rt)
+                }
                 Err(e) => map_rt_error!(call, e),
             }
         }
@@ -323,24 +348,32 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
 
     fn activate(&self, call: &mut dyn vl_rt::Call_Activate, r#id: String) -> varlink::Result<()> {
         if call.wants_more() {
+            let config = self.config.clone();
             match service::runtime::activate_runtime_streaming(&id, &self.config) {
                 Ok(Some((rx, handle))) => drain_stream(
                     call,
                     rx,
                     handle,
-                    |c, msg| c.reply(msg, false),
-                    |c| c.reply(String::new(), true),
+                    |c, msg| c.reply(msg, false, None),
+                    |c| {
+                        let rt = load_active_runtime_varlink(&config);
+                        c.reply(String::new(), true, rt)
+                    },
                     |c, e| map_rt_error!(c, e),
                 ),
                 Ok(None) => {
-                    // Already active, nothing to stream
-                    call.reply(String::new(), true)
+                    // Already active, return current runtime info
+                    let rt = load_active_runtime_varlink(&self.config);
+                    call.reply(String::new(), true, rt)
                 }
                 Err(e) => map_rt_error!(call, e),
             }
         } else {
             match service::runtime::activate_runtime(&id, &self.config) {
-                Ok(log) => call.reply(log.join("\n"), true),
+                Ok(log) => {
+                    let rt = load_active_runtime_varlink(&self.config);
+                    call.reply(log.join("\n"), true, rt)
+                }
                 Err(e) => map_rt_error!(call, e),
             }
         }

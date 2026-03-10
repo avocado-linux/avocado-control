@@ -14,7 +14,7 @@ type StreamHandle = (
 );
 
 /// Convert a RuntimeManifest + active flag to a RuntimeEntry.
-fn manifest_to_entry(manifest: &RuntimeManifest, active: bool) -> RuntimeEntry {
+pub fn manifest_to_entry(manifest: &RuntimeManifest, active: bool) -> RuntimeEntry {
     RuntimeEntry {
         id: manifest.id.clone(),
         manifest_version: manifest.manifest_version,
