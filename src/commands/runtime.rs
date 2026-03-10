@@ -315,6 +315,19 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
 
     println!();
 
+    if let Some(ref os_bundle) = matched.os_bundle {
+        println!("  OS Bundle:");
+        println!("    Image ID:          {}", os_bundle.image_id);
+        println!("    SHA256:            {}", os_bundle.sha256);
+        if let Some(ref id) = os_bundle.os_build_id {
+            println!("    OS Build ID:       {id}");
+        }
+        if let Some(ref id) = os_bundle.initramfs_build_id {
+            println!("    Initramfs Build ID: {id}");
+        }
+        println!();
+    }
+
     if output.is_verbose() {
         println!("  Full image IDs:");
         for ext in &matched.extensions {

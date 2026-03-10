@@ -1227,13 +1227,24 @@ pub(crate) fn show_enhanced_status(
 
     if output.is_json() {
         let runtime_json = match &active_manifest {
-            Some(m) => serde_json::json!({
-                "name": m.runtime.name,
-                "version": m.runtime.version,
-                "id": m.id,
-                "built_at": m.built_at,
-                "manifest_version": m.manifest_version,
-            }),
+            Some(m) => {
+                let mut rj = serde_json::json!({
+                    "name": m.runtime.name,
+                    "version": m.runtime.version,
+                    "id": m.id,
+                    "built_at": m.built_at,
+                    "manifest_version": m.manifest_version,
+                });
+                if let Some(ref os_bundle) = m.os_bundle {
+                    rj["os_bundle"] = serde_json::json!({
+                        "image_id": os_bundle.image_id,
+                        "sha256": os_bundle.sha256,
+                        "os_build_id": os_bundle.os_build_id,
+                        "initramfs_build_id": os_bundle.initramfs_build_id,
+                    });
+                }
+                rj
+            }
             None => serde_json::Value::Null,
         };
 
@@ -1287,6 +1298,33 @@ fn display_active_runtime(config: &Config, output: &OutputManager) {
             );
             println!("  Built: {}", manifest.built_at);
             println!("  Extensions: {}", manifest.extensions.len());
+            if let Some(ref os_bundle) = manifest.os_bundle {
+                if let Some(ref id) = os_bundle.os_build_id {
+                    println!("  OS Build ID (manifest): {id}");
+                }
+                if let Some(ref id) = os_bundle.initramfs_build_id {
+                    println!("  Initramfs Build ID:     {id}");
+                }
+            }
+            // Show the running system's AVOCADO_OS_BUILD_ID for comparison
+            let os_release_path = if is_running_in_initrd() {
+                "/etc/os-release-initrd"
+            } else {
+                "/etc/os-release"
+            };
+            if let Ok(contents) = std::fs::read_to_string(os_release_path) {
+                for line in contents.lines() {
+                    if let Some(value) = line.strip_prefix("AVOCADO_OS_BUILD_ID=") {
+                        let label = if is_running_in_initrd() {
+                            "Initramfs Build ID (running)"
+                        } else {
+                            "OS Build ID (running)"
+                        };
+                        println!("  {label}:  {}", value.trim_matches('"'));
+                        break;
+                    }
+                }
+            }
             if output.is_verbose() {
                 println!("  Build ID: {}", manifest.id);
                 for ext in &manifest.extensions {
