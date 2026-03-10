@@ -185,7 +185,7 @@ pub fn perform_update(
         .collect();
 
     let all_count = inline_targets.len() + delegated_targets.len();
-    println!("  Downloading {all_count} target(s)...");
+    println!("  Processing {all_count} target(s)...");
 
     let staging_dir = base_dir.join(".update-staging");
     fs::create_dir_all(&staging_dir).map_err(|e| {
@@ -402,9 +402,7 @@ fn download_target(
     // Content-addressable skip: if this target is an image that already
     // exists locally, the UUIDv5 name guarantees identical content.
     if name_str != "manifest.json" && existing_images.contains(name_str) {
-        if verbose {
-            println!("    Already present, skipping: {name_str}");
-        }
+        println!("    Already on disk, skipping download: {name_str}");
         return Ok(());
     }
 
