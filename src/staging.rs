@@ -104,6 +104,7 @@ pub fn install_images_from_staging(
     manifest: &RuntimeManifest,
     staging_dir: &Path,
     base_dir: &Path,
+    skip_os_bundle: bool,
     verbose: bool,
 ) -> Result<(), StagingError> {
     let images_dir = base_dir.join(IMAGES_DIR_NAME);
@@ -149,24 +150,35 @@ pub fn install_images_from_staging(
 
     // Install os_bundle image if present
     if let Some(ref os_bundle) = manifest.os_bundle {
-        let image_id = &os_bundle.image_id;
-        let dest = images_dir.join(format!("{image_id}.raw"));
-        if dest.exists() {
-            if verbose {
-                println!("    OS bundle image already present: {image_id}");
-            }
+        if skip_os_bundle {
+            println!(
+                "    OS bundle skipped (OS already at target version): {}",
+                os_bundle.image_id
+            );
         } else {
-            let staged_file = staging_dir.join(format!("{image_id}.raw"));
-            if staged_file.exists() {
-                fs::copy(&staged_file, &dest).map_err(|e| {
-                    StagingError::StagingFailed(format!("Failed to install OS bundle image: {e}"))
-                })?;
+            let image_id = &os_bundle.image_id;
+            let dest = images_dir.join(format!("{image_id}.raw"));
+            if dest.exists() {
                 if verbose {
-                    println!("    Installed OS bundle image: {image_id}");
+                    println!("    OS bundle image already present: {image_id}");
                 }
             } else {
-                println!("    WARNING: OS bundle image not in staging and not on disk: {image_id}");
-                missing.push(format!("os_bundle ({image_id})"));
+                let staged_file = staging_dir.join(format!("{image_id}.raw"));
+                if staged_file.exists() {
+                    fs::copy(&staged_file, &dest).map_err(|e| {
+                        StagingError::StagingFailed(format!(
+                            "Failed to install OS bundle image: {e}"
+                        ))
+                    })?;
+                    if verbose {
+                        println!("    Installed OS bundle image: {image_id}");
+                    }
+                } else {
+                    println!(
+                        "    WARNING: OS bundle image not in staging and not on disk: {image_id}"
+                    );
+                    missing.push(format!("os_bundle ({image_id})"));
+                }
             }
         }
     }
@@ -377,7 +389,7 @@ mod tests {
         fs::create_dir_all(&base).unwrap();
 
         let manifest = make_manifest("test-id", "dev", "0.1.0");
-        install_images_from_staging(&manifest, &staging, &base, false).unwrap();
+        install_images_from_staging(&manifest, &staging, &base, false, false).unwrap();
 
         let installed = base.join("images").join(format!("{image_id}.raw"));
         assert!(installed.exists());
@@ -398,7 +410,7 @@ mod tests {
         fs::write(images_dir.join(format!("{image_id}.raw")), b"old content").unwrap();
 
         let manifest = make_manifest("test-id", "dev", "0.1.0");
-        install_images_from_staging(&manifest, &staging, &base, false).unwrap();
+        install_images_from_staging(&manifest, &staging, &base, false, false).unwrap();
 
         let content = fs::read_to_string(images_dir.join(format!("{image_id}.raw"))).unwrap();
         assert_eq!(content, "old content");

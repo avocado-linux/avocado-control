@@ -239,6 +239,7 @@ pub fn perform_update(
 
     // Check if OS bundle download can be skipped by comparing os_build_id
     let mut existing_images = existing_images;
+    let mut os_bundle_skipped = false;
     let manifest_path = staging_dir.join("manifest.json");
     if manifest_path.exists() {
         if let Ok(content) = fs::read_to_string(&manifest_path) {
@@ -255,12 +256,11 @@ pub fn perform_update(
                         if matches {
                             // OS is already at target version — skip downloading the bundle
                             let bundle_filename = format!("{}.raw", os_bundle.image_id);
-                            if verbose {
-                                println!(
-                                    "    OS already up to date (AVOCADO_OS_BUILD_ID={expected_id}), skipping {bundle_filename}"
-                                );
-                            }
+                            println!(
+                                "    OS already at target version (AVOCADO_OS_BUILD_ID={expected_id}), skipping OS bundle download"
+                            );
                             existing_images.insert(bundle_filename);
+                            os_bundle_skipped = true;
                         }
                     }
                 }
@@ -325,8 +325,14 @@ pub fn perform_update(
         println!("    {} {} (image: {})", ext.name, ext.version, img);
     }
 
-    staging::install_images_from_staging(&new_manifest, &staging_dir, base_dir, verbose)
-        .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
+    staging::install_images_from_staging(
+        &new_manifest,
+        &staging_dir,
+        base_dir,
+        os_bundle_skipped,
+        verbose,
+    )
+    .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
 
     staging::stage_manifest(&new_manifest, &manifest_content, base_dir, verbose)
         .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
