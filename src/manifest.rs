@@ -16,6 +16,8 @@ pub const AVOCADO_IMAGE_NAMESPACE: uuid::Uuid = uuid::uuid!("7488fa35-6390-425b-
 pub struct OsBundleRef {
     pub image_id: String,
     pub sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_build_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -338,6 +340,7 @@ mod tests {
         manifest.os_bundle = Some(OsBundleRef {
             image_id: "deadbeef-1234-5678-abcd-000000000000".to_string(),
             sha256: "abc".to_string(),
+            os_build_id: None,
         });
         assert_eq!(
             manifest

@@ -206,8 +206,73 @@ pub fn perform_update(
         })
         .unwrap_or_default();
 
-    // Download inline targets (empty for delegated format; kept for backward compat)
+    // Download manifest.json first so we can check os_build_id before
+    // downloading the (potentially large) OS bundle image.
     for (name_str, target_info) in &inline_targets {
+        if name_str == "manifest.json" {
+            download_target(
+                url,
+                name_str,
+                target_info,
+                &staging_dir,
+                &existing_images,
+                auth_token,
+                artifacts_url,
+                verbose,
+            )?;
+        }
+    }
+    for (name_str, target_info) in &delegated_targets {
+        if name_str == "manifest.json" {
+            download_target(
+                url,
+                name_str,
+                target_info,
+                &staging_dir,
+                &existing_images,
+                auth_token,
+                artifacts_url,
+                verbose,
+            )?;
+        }
+    }
+
+    // Check if OS bundle download can be skipped by comparing os_build_id
+    let mut existing_images = existing_images;
+    let manifest_path = staging_dir.join("manifest.json");
+    if manifest_path.exists() {
+        if let Ok(content) = fs::read_to_string(&manifest_path) {
+            if let Ok(manifest) = serde_json::from_str::<RuntimeManifest>(&content) {
+                if let Some(ref os_bundle) = manifest.os_bundle {
+                    if let Some(ref expected_id) = os_bundle.os_build_id {
+                        let matches =
+                            crate::os_update::verify_os_release(&crate::os_update::VerifyConfig {
+                                verify_type: "os-release".to_string(),
+                                field: "AVOCADO_OS_BUILD_ID".to_string(),
+                                expected: expected_id.clone(),
+                            })
+                            .unwrap_or(false);
+                        if matches {
+                            // OS is already at target version — skip downloading the bundle
+                            let bundle_filename = format!("{}.raw", os_bundle.image_id);
+                            if verbose {
+                                println!(
+                                    "    OS already up to date (AVOCADO_OS_BUILD_ID={expected_id}), skipping {bundle_filename}"
+                                );
+                            }
+                            existing_images.insert(bundle_filename);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Download remaining targets (skipping manifest.json which is already downloaded)
+    for (name_str, target_info) in &inline_targets {
+        if name_str == "manifest.json" {
+            continue;
+        }
         download_target(
             url,
             name_str,
@@ -219,9 +284,10 @@ pub fn perform_update(
             verbose,
         )?;
     }
-
-    // Download delegated targets
     for (name_str, target_info) in &delegated_targets {
+        if name_str == "manifest.json" {
+            continue;
+        }
         download_target(
             url,
             name_str,
@@ -274,14 +340,32 @@ pub fn perform_update(
         new_manifest.runtime.name, new_manifest.runtime.version,
     );
 
-    // Apply OS update if bundle is present
+    // Apply OS update if bundle is present and OS is not already at target version
     if let Some(ref os_bundle) = new_manifest.os_bundle {
-        let aos_path = base_dir
-            .join(IMAGES_DIR_NAME)
-            .join(format!("{}.raw", os_bundle.image_id));
-        println!("  OS bundle detected. Applying OS update...");
-        crate::os_update::apply_os_update(&aos_path, base_dir, verbose)
-            .map_err(|e| UpdateError::StagingFailed(format!("OS update failed: {e}")))?;
+        let skip = if let Some(ref expected_id) = os_bundle.os_build_id {
+            crate::os_update::verify_os_release(&crate::os_update::VerifyConfig {
+                verify_type: "os-release".to_string(),
+                field: "AVOCADO_OS_BUILD_ID".to_string(),
+                expected: expected_id.clone(),
+            })
+            .unwrap_or(false)
+        } else {
+            false
+        };
+
+        if skip {
+            println!(
+                "  OS already up to date (AVOCADO_OS_BUILD_ID={})",
+                os_bundle.os_build_id.as_deref().unwrap_or("unknown")
+            );
+        } else {
+            let aos_path = base_dir
+                .join(IMAGES_DIR_NAME)
+                .join(format!("{}.raw", os_bundle.image_id));
+            println!("  OS bundle detected. Applying OS update...");
+            crate::os_update::apply_os_update(&aos_path, base_dir, verbose)
+                .map_err(|e| UpdateError::StagingFailed(format!("OS update failed: {e}")))?;
+        }
     }
 
     // Clean up staging directory
