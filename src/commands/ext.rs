@@ -423,6 +423,24 @@ pub(crate) fn merge_extensions_internal(
     )?;
     handle_systemd_output("systemd-confext merge", &confext_result, output)?;
 
+    // Reload systemd's unit database so newly merged unit files are discoverable
+    // before AVOCADO_ON_MERGE commands try to start/restart them.
+    match std::process::Command::new("systemctl")
+        .arg("daemon-reload")
+        .output()
+    {
+        Ok(result) if result.status.success() => {
+            output.log_info("Reloaded systemd daemon after extension merge");
+        }
+        Ok(result) => {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            output.log_info(&format!("Warning: daemon-reload failed: {stderr}"));
+        }
+        Err(e) => {
+            output.log_info(&format!("Warning: Failed to run daemon-reload: {e}"));
+        }
+    }
+
     // Process post-merge tasks only for enabled extensions
     process_post_merge_tasks_for_extensions(&enabled_extensions, output)?;
 
