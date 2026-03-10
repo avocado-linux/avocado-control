@@ -30,7 +30,7 @@ pub fn validate_manifest_images(
     manifest: &RuntimeManifest,
     base_dir: &Path,
 ) -> Result<(), StagingError> {
-    let missing: Vec<MissingImage> = manifest
+    let mut missing: Vec<MissingImage> = manifest
         .extensions
         .iter()
         .filter_map(|ext| {
@@ -45,6 +45,19 @@ pub fn validate_manifest_images(
             }
         })
         .collect();
+
+    // Also check os_bundle image if present
+    if let Some(ref os_bundle) = manifest.os_bundle {
+        let path = base_dir
+            .join(IMAGES_DIR_NAME)
+            .join(format!("{}.raw", os_bundle.image_id));
+        if !path.exists() {
+            missing.push(MissingImage {
+                extension_name: format!("os_bundle ({})", os_bundle.image_id),
+                expected_path: path.display().to_string(),
+            });
+        }
+    }
 
     if missing.is_empty() {
         Ok(())
@@ -134,10 +147,34 @@ pub fn install_images_from_staging(
         }
     }
 
+    // Install os_bundle image if present
+    if let Some(ref os_bundle) = manifest.os_bundle {
+        let image_id = &os_bundle.image_id;
+        let dest = images_dir.join(format!("{image_id}.raw"));
+        if dest.exists() {
+            if verbose {
+                println!("    OS bundle image already present: {image_id}");
+            }
+        } else {
+            let staged_file = staging_dir.join(format!("{image_id}.raw"));
+            if staged_file.exists() {
+                fs::copy(&staged_file, &dest).map_err(|e| {
+                    StagingError::StagingFailed(format!("Failed to install OS bundle image: {e}"))
+                })?;
+                if verbose {
+                    println!("    Installed OS bundle image: {image_id}");
+                }
+            } else {
+                println!("    WARNING: OS bundle image not in staging and not on disk: {image_id}");
+                missing.push(format!("os_bundle ({image_id})"));
+            }
+        }
+    }
+
     if !missing.is_empty() {
         let details = missing.join(", ");
         return Err(StagingError::StagingFailed(format!(
-            "{} extension image(s) missing after staging: {details}",
+            "{} image(s) missing after staging: {details}",
             missing.len()
         )));
     }
@@ -213,6 +250,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             }],
+            os_bundle: None,
         }
     }
 

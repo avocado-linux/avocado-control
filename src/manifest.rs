@@ -13,12 +13,20 @@ pub const IMAGES_DIR_NAME: &str = "images";
 pub const AVOCADO_IMAGE_NAMESPACE: uuid::Uuid = uuid::uuid!("7488fa35-6390-425b-bbbf-b156cfe1eed2");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OsBundleRef {
+    pub image_id: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeManifest {
     pub manifest_version: u32,
     pub id: String,
     pub built_at: String,
     pub runtime: RuntimeInfo,
     pub extensions: Vec<ManifestExtension>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_bundle: Option<OsBundleRef>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +58,15 @@ impl ManifestExtension {
 }
 
 impl RuntimeManifest {
+    /// Resolve the on-disk path for the OS bundle image, if present.
+    pub fn resolve_os_bundle_path(&self, base_dir: &Path) -> Option<PathBuf> {
+        self.os_bundle.as_ref().map(|b| {
+            base_dir
+                .join(IMAGES_DIR_NAME)
+                .join(format!("{}.raw", b.image_id))
+        })
+    }
+
     /// Resolve the avocado base directory, checking env override for testing.
     pub fn base_dir() -> String {
         std::env::var("AVOCADO_BASE_DIR").unwrap_or_else(|_| DEFAULT_AVOCADO_DIR.to_string())
@@ -146,6 +163,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             }],
+            os_bundle: None,
         }
     }
 
@@ -275,6 +293,57 @@ mod tests {
         assert_eq!(
             path,
             Path::new("/var/lib/avocado/images/a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw")
+        );
+    }
+
+    #[test]
+    fn test_os_bundle_deserialization() {
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "test-id",
+            "built_at": "2026-03-01T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.1.0" },
+            "extensions": [],
+            "os_bundle": {
+                "image_id": "deadbeef-1234-5678-abcd-000000000000",
+                "sha256": "abcdef1234567890"
+            }
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        let bundle = parsed.os_bundle.unwrap();
+        assert_eq!(bundle.image_id, "deadbeef-1234-5678-abcd-000000000000");
+        assert_eq!(bundle.sha256, "abcdef1234567890");
+    }
+
+    #[test]
+    fn test_os_bundle_optional() {
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "test-id",
+            "built_at": "2026-03-01T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.1.0" },
+            "extensions": []
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        assert!(parsed.os_bundle.is_none());
+    }
+
+    #[test]
+    fn test_resolve_os_bundle_path() {
+        let mut manifest = make_manifest("test", "dev", "0.1.0", "2026-03-01T00:00:00Z");
+        assert!(manifest
+            .resolve_os_bundle_path(Path::new("/var/lib/avocado"))
+            .is_none());
+
+        manifest.os_bundle = Some(OsBundleRef {
+            image_id: "deadbeef-1234-5678-abcd-000000000000".to_string(),
+            sha256: "abc".to_string(),
+        });
+        assert_eq!(
+            manifest
+                .resolve_os_bundle_path(Path::new("/var/lib/avocado"))
+                .unwrap(),
+            Path::new("/var/lib/avocado/images/deadbeef-1234-5678-abcd-000000000000.raw")
         );
     }
 

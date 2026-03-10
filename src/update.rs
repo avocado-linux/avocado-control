@@ -274,6 +274,16 @@ pub fn perform_update(
         new_manifest.runtime.name, new_manifest.runtime.version,
     );
 
+    // Apply OS update if bundle is present
+    if let Some(ref os_bundle) = new_manifest.os_bundle {
+        let aos_path = base_dir
+            .join(IMAGES_DIR_NAME)
+            .join(format!("{}.raw", os_bundle.image_id));
+        println!("  OS bundle detected. Applying OS update...");
+        crate::os_update::apply_os_update(&aos_path, base_dir, verbose)
+            .map_err(|e| UpdateError::StagingFailed(format!("OS update failed: {e}")))?;
+    }
+
     // Clean up staging directory
     let _ = fs::remove_dir_all(&staging_dir);
 

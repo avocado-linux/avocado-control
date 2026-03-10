@@ -444,6 +444,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 image_id: Some("img-id".to_string()),
             }],
+            os_bundle: None,
         }
     }
 

@@ -1,0 +1,786 @@
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fs;
+use std::io::{self, BufReader, BufWriter, Read};
+use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
+use thiserror::Error;
+
+use crate::manifest::DEFAULT_AVOCADO_DIR;
+
+const PENDING_UPDATE_FILENAME: &str = "pending-update.json";
+const OS_UPDATE_STAGING_DIR: &str = ".os-update-staging";
+
+// --- Error types ---
+
+#[derive(Error, Debug)]
+pub enum OsUpdateError {
+    #[error("OS update failed: {0}")]
+    UpdateFailed(String),
+
+    #[error("Bundle extraction failed: {0}")]
+    ExtractionFailed(String),
+
+    #[error("Slot detection failed: {0}")]
+    SlotDetectionFailed(String),
+
+    #[error("Artifact write failed: {0}")]
+    ArtifactWriteFailed(String),
+
+    #[error("SHA256 mismatch for {artifact}: expected {expected}, got {actual}")]
+    Sha256Mismatch {
+        artifact: String,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("Slot activation failed: {0}")]
+    ActivationFailed(String),
+
+    #[error("Rollback failed: {0}")]
+    RollbackFailed(String),
+}
+
+// --- Bundle JSON types (mirrors stone's bundle.json output) ---
+
+#[derive(Debug, Deserialize)]
+pub struct OsBundle {
+    pub format_version: u32,
+    pub platform: String,
+    pub architecture: String,
+    pub os_build_id: String,
+    pub update: Option<UpdateConfig>,
+    pub verify: Option<VerifyConfig>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateConfig {
+    pub strategy: String,
+    pub slot_detection: SlotDetection,
+    pub artifacts: Vec<Artifact>,
+    pub activate: SlotAction,
+    pub rollback: Option<SlotAction>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type")]
+pub enum SlotDetection {
+    #[serde(rename = "uboot-env")]
+    UbootEnv { var: String },
+    #[serde(rename = "command")]
+    Command { command: Vec<String> },
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Artifact {
+    pub name: String,
+    pub file: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub slot_targets: HashMap<String, SlotTarget>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlotTarget {
+    pub partition: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "type")]
+pub enum SlotAction {
+    #[serde(rename = "uboot-env")]
+    UbootEnv { set: HashMap<String, String> },
+    #[serde(rename = "command")]
+    Command { command: Vec<String> },
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VerifyConfig {
+    #[serde(rename = "type")]
+    pub verify_type: String,
+    pub field: String,
+    pub expected: String,
+}
+
+// --- Pending update marker ---
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PendingUpdate {
+    pub os_build_id: String,
+    pub verify: Option<VerifyConfig>,
+    pub rollback: Option<SlotAction>,
+    pub previous_slot: String,
+}
+
+// --- Public API ---
+
+/// Apply an OS update from an .aos bundle file.
+///
+/// Extracts the bundle, parses bundle.json, writes artifacts to the inactive
+/// A/B slot, activates the new slot, and writes a pending-update marker for
+/// verification on next boot.
+pub fn apply_os_update(
+    aos_path: &Path,
+    base_dir: &Path,
+    verbose: bool,
+) -> Result<(), OsUpdateError> {
+    let staging_dir = base_dir.join(OS_UPDATE_STAGING_DIR);
+
+    // Clean up any previous staging
+    let _ = fs::remove_dir_all(&staging_dir);
+    fs::create_dir_all(&staging_dir).map_err(|e| {
+        OsUpdateError::ExtractionFailed(format!("Failed to create staging dir: {e}"))
+    })?;
+
+    // Extract .aos (tar.zst)
+    if verbose {
+        println!("    Extracting OS bundle: {}", aos_path.display());
+    }
+    extract_aos(aos_path, &staging_dir)?;
+
+    // Parse bundle.json
+    let bundle_json_path = staging_dir.join("bundle.json");
+    let bundle_content = fs::read_to_string(&bundle_json_path)
+        .map_err(|e| OsUpdateError::ExtractionFailed(format!("Failed to read bundle.json: {e}")))?;
+    let bundle: OsBundle = serde_json::from_str(&bundle_content).map_err(|e| {
+        OsUpdateError::ExtractionFailed(format!("Failed to parse bundle.json: {e}"))
+    })?;
+
+    if verbose {
+        println!(
+            "    Bundle: platform={}, arch={}, os_build_id={}",
+            bundle.platform, bundle.architecture, bundle.os_build_id
+        );
+    }
+
+    // Check if OS is already at the target version — skip if BUILD_ID matches
+    if let Some(ref verify) = bundle.verify {
+        if let Ok(true) = verify_os_release(verify) {
+            println!(
+                "  OS already up to date ({}={})",
+                verify.field, verify.expected
+            );
+            let _ = fs::remove_dir_all(&staging_dir);
+            return Ok(());
+        }
+    }
+
+    let update = bundle
+        .update
+        .as_ref()
+        .ok_or_else(|| OsUpdateError::UpdateFailed("Bundle has no update section".to_string()))?;
+
+    // Detect current slot
+    let current_slot = detect_current_slot(&update.slot_detection)?;
+    let inactive_slot = determine_inactive_slot(&current_slot, &update.strategy)?;
+
+    if verbose {
+        println!("    Current slot: {current_slot}, inactive slot: {inactive_slot}");
+    }
+
+    // Write each artifact to the inactive slot's partition
+    for artifact in &update.artifacts {
+        let target = artifact.slot_targets.get(&inactive_slot).ok_or_else(|| {
+            OsUpdateError::ArtifactWriteFailed(format!(
+                "No slot target for slot '{}' in artifact '{}'",
+                inactive_slot, artifact.name
+            ))
+        })?;
+
+        let source_path = staging_dir.join(&artifact.file);
+        let partition_path = resolve_partition(&target.partition)?;
+
+        if verbose {
+            println!(
+                "    Writing {} -> {} (partition: {})",
+                artifact.name,
+                partition_path.display(),
+                target.partition
+            );
+        }
+
+        // Verify SHA256 of source file
+        verify_sha256(&source_path, &artifact.sha256, &artifact.name)?;
+
+        // Write to partition
+        write_to_partition(&source_path, &partition_path, &artifact.name)?;
+    }
+
+    // Activate the new slot
+    if verbose {
+        println!("    Activating slot: {inactive_slot}");
+    }
+    execute_slot_action(&update.activate, &inactive_slot)?;
+
+    // Write pending-update marker
+    let pending = PendingUpdate {
+        os_build_id: bundle.os_build_id.clone(),
+        verify: bundle.verify.clone(),
+        rollback: update.rollback.clone(),
+        previous_slot: current_slot.clone(),
+    };
+    write_pending_update(&pending, base_dir)?;
+
+    // Clean up staging
+    let _ = fs::remove_dir_all(&staging_dir);
+
+    println!(
+        "  OS update applied (build_id: {}). Reboot required.",
+        bundle.os_build_id
+    );
+
+    Ok(())
+}
+
+/// Read the pending-update marker if it exists.
+pub fn read_pending_update() -> Option<PendingUpdate> {
+    read_pending_update_from(&pending_update_path())
+}
+
+/// Read the pending-update marker from a specific base directory (for testing).
+pub fn read_pending_update_from(path: &Path) -> Option<PendingUpdate> {
+    let content = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+/// Remove the pending-update marker.
+pub fn clear_pending_update() -> Result<(), OsUpdateError> {
+    clear_pending_update_at(&pending_update_path())
+}
+
+/// Remove the pending-update marker at a specific path (for testing).
+pub fn clear_pending_update_at(path: &Path) -> Result<(), OsUpdateError> {
+    if path.exists() {
+        fs::remove_file(path).map_err(|e| {
+            OsUpdateError::UpdateFailed(format!("Failed to clear pending-update marker: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+/// Verify an os-release field matches the expected value.
+pub fn verify_os_release(verify: &VerifyConfig) -> Result<bool, OsUpdateError> {
+    verify_os_release_from(verify, Path::new("/etc/os-release"))
+}
+
+/// Verify an os-release field from a specific file (for testing).
+pub fn verify_os_release_from(
+    verify: &VerifyConfig,
+    os_release_path: &Path,
+) -> Result<bool, OsUpdateError> {
+    let contents = fs::read_to_string(os_release_path)
+        .map_err(|e| OsUpdateError::UpdateFailed(format!("Failed to read os-release: {e}")))?;
+
+    let actual = parse_os_release_field(&contents, &verify.field);
+    match actual {
+        Some(value) => Ok(value == verify.expected),
+        None => Ok(false),
+    }
+}
+
+/// Execute rollback: switch back to previous slot and clear the pending marker.
+pub fn rollback_os_update(pending: &PendingUpdate, verbose: bool) -> Result<(), OsUpdateError> {
+    if let Some(ref rollback_action) = pending.rollback {
+        if verbose {
+            println!("    Rolling back to slot: {}", pending.previous_slot);
+        }
+        execute_slot_action(rollback_action, &pending.previous_slot)
+            .map_err(|e| OsUpdateError::RollbackFailed(e.to_string()))?;
+    }
+    clear_pending_update()?;
+    Ok(())
+}
+
+// --- Internal helpers ---
+
+fn pending_update_path() -> PathBuf {
+    let base =
+        std::env::var("AVOCADO_BASE_DIR").unwrap_or_else(|_| DEFAULT_AVOCADO_DIR.to_string());
+    Path::new(&base).join(PENDING_UPDATE_FILENAME)
+}
+
+fn write_pending_update(pending: &PendingUpdate, base_dir: &Path) -> Result<(), OsUpdateError> {
+    let path = base_dir.join(PENDING_UPDATE_FILENAME);
+    let json = serde_json::to_string_pretty(pending).map_err(|e| {
+        OsUpdateError::UpdateFailed(format!("Failed to serialize pending update: {e}"))
+    })?;
+    fs::write(&path, json).map_err(|e| {
+        OsUpdateError::UpdateFailed(format!("Failed to write pending-update marker: {e}"))
+    })?;
+    Ok(())
+}
+
+fn extract_aos(aos_path: &Path, dest_dir: &Path) -> Result<(), OsUpdateError> {
+    let file = fs::File::open(aos_path).map_err(|e| {
+        OsUpdateError::ExtractionFailed(format!("Failed to open {}: {e}", aos_path.display()))
+    })?;
+    let decoder = zstd::stream::Decoder::new(BufReader::new(file)).map_err(|e| {
+        OsUpdateError::ExtractionFailed(format!("Failed to create zstd decoder: {e}"))
+    })?;
+    let mut archive = tar::Archive::new(decoder);
+    archive.unpack(dest_dir).map_err(|e| {
+        OsUpdateError::ExtractionFailed(format!("Failed to extract tar archive: {e}"))
+    })?;
+    Ok(())
+}
+
+fn detect_current_slot(detection: &SlotDetection) -> Result<String, OsUpdateError> {
+    match detection {
+        SlotDetection::UbootEnv { var } => {
+            let output = ProcessCommand::new("fw_printenv")
+                .args(["-n", var])
+                .output()
+                .map_err(|e| {
+                    OsUpdateError::SlotDetectionFailed(format!("Failed to run fw_printenv: {e}"))
+                })?;
+            if !output.status.success() {
+                return Err(OsUpdateError::SlotDetectionFailed(format!(
+                    "fw_printenv -n {var} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+        SlotDetection::Command { command } => {
+            if command.is_empty() {
+                return Err(OsUpdateError::SlotDetectionFailed(
+                    "Empty slot detection command".to_string(),
+                ));
+            }
+            let output = ProcessCommand::new(&command[0])
+                .args(&command[1..])
+                .output()
+                .map_err(|e| {
+                    OsUpdateError::SlotDetectionFailed(format!(
+                        "Failed to run slot detection command: {e}"
+                    ))
+                })?;
+            if !output.status.success() {
+                return Err(OsUpdateError::SlotDetectionFailed(format!(
+                    "Slot detection command failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+        }
+    }
+}
+
+fn determine_inactive_slot(current: &str, strategy: &str) -> Result<String, OsUpdateError> {
+    match strategy {
+        "tegra-ab" => match current {
+            "0" => Ok("1".to_string()),
+            "1" => Ok("0".to_string()),
+            _ => Err(OsUpdateError::SlotDetectionFailed(format!(
+                "Unknown tegra slot: {current}"
+            ))),
+        },
+        // Default: uboot-ab and variants
+        _ => match current {
+            "a" => Ok("b".to_string()),
+            "b" => Ok("a".to_string()),
+            _ => Err(OsUpdateError::SlotDetectionFailed(format!(
+                "Unknown boot slot: {current}"
+            ))),
+        },
+    }
+}
+
+fn resolve_partition(partition_name: &str) -> Result<PathBuf, OsUpdateError> {
+    let path = PathBuf::from(format!("/dev/disk/by-partlabel/{partition_name}"));
+    if !path.exists() {
+        return Err(OsUpdateError::ArtifactWriteFailed(format!(
+            "Partition not found: /dev/disk/by-partlabel/{partition_name}"
+        )));
+    }
+    // Resolve the symlink to get the actual device
+    fs::canonicalize(&path).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Failed to resolve partition {partition_name}: {e}"
+        ))
+    })
+}
+
+fn verify_sha256(path: &Path, expected: &str, artifact_name: &str) -> Result<(), OsUpdateError> {
+    let file = fs::File::open(path).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!("Failed to open artifact {artifact_name}: {e}"))
+    })?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf).map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!(
+                "Failed to read artifact {artifact_name}: {e}"
+            ))
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        return Err(OsUpdateError::Sha256Mismatch {
+            artifact: artifact_name.to_string(),
+            expected: expected.to_string(),
+            actual,
+        });
+    }
+    Ok(())
+}
+
+fn write_to_partition(
+    source: &Path,
+    partition: &Path,
+    artifact_name: &str,
+) -> Result<(), OsUpdateError> {
+    let src = fs::File::open(source).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Failed to open source for {artifact_name}: {e}"
+        ))
+    })?;
+    let dest = fs::OpenOptions::new()
+        .write(true)
+        .open(partition)
+        .map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!(
+                "Failed to open partition {} for {artifact_name}: {e}",
+                partition.display()
+            ))
+        })?;
+
+    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, src);
+    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, dest);
+
+    io::copy(&mut reader, &mut writer).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Failed to write {artifact_name} to {}: {e}",
+            partition.display()
+        ))
+    })?;
+
+    writer
+        .into_inner()
+        .map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to flush {artifact_name}: {e}"))
+        })?
+        .sync_all()
+        .map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to sync {artifact_name}: {e}"))
+        })?;
+
+    Ok(())
+}
+
+/// Execute a slot action, replacing `{inactive_slot}` or `{previous_slot}`
+/// placeholders with the provided slot value.
+pub fn execute_slot_action(action: &SlotAction, slot: &str) -> Result<(), OsUpdateError> {
+    let replace_placeholders = |s: &str| -> String {
+        s.replace("{inactive_slot}", slot)
+            .replace("{previous_slot}", slot)
+    };
+
+    match action {
+        SlotAction::UbootEnv { set } => {
+            for (key, value) in set {
+                let resolved_value = replace_placeholders(value);
+                let output = ProcessCommand::new("fw_setenv")
+                    .args([key, &resolved_value])
+                    .output()
+                    .map_err(|e| {
+                        OsUpdateError::ActivationFailed(format!("Failed to run fw_setenv: {e}"))
+                    })?;
+                if !output.status.success() {
+                    return Err(OsUpdateError::ActivationFailed(format!(
+                        "fw_setenv {key} {resolved_value} failed: {}",
+                        String::from_utf8_lossy(&output.stderr)
+                    )));
+                }
+            }
+            Ok(())
+        }
+        SlotAction::Command { command } => {
+            if command.is_empty() {
+                return Err(OsUpdateError::ActivationFailed(
+                    "Empty slot action command".to_string(),
+                ));
+            }
+            let resolved: Vec<String> = command.iter().map(|s| replace_placeholders(s)).collect();
+            let output = ProcessCommand::new(&resolved[0])
+                .args(&resolved[1..])
+                .output()
+                .map_err(|e| {
+                    OsUpdateError::ActivationFailed(format!(
+                        "Failed to run slot action command: {e}"
+                    ))
+                })?;
+            if !output.status.success() {
+                return Err(OsUpdateError::ActivationFailed(format!(
+                    "Slot action command failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
+fn parse_os_release_field<'a>(contents: &'a str, field: &str) -> Option<&'a str> {
+    let prefix = format!("{field}=");
+    for line in contents.lines() {
+        if let Some(value) = line.strip_prefix(&prefix) {
+            let value = value.trim_matches('"').trim_matches('\'');
+            if !value.is_empty() {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_determine_inactive_slot_uboot() {
+        assert_eq!(determine_inactive_slot("a", "uboot-ab").unwrap(), "b");
+        assert_eq!(determine_inactive_slot("b", "uboot-ab").unwrap(), "a");
+        assert!(determine_inactive_slot("c", "uboot-ab").is_err());
+    }
+
+    #[test]
+    fn test_determine_inactive_slot_tegra() {
+        assert_eq!(determine_inactive_slot("0", "tegra-ab").unwrap(), "1");
+        assert_eq!(determine_inactive_slot("1", "tegra-ab").unwrap(), "0");
+        assert!(determine_inactive_slot("2", "tegra-ab").is_err());
+    }
+
+    #[test]
+    fn test_parse_os_release_field() {
+        let content = r#"NAME="Avocado Linux"
+VERSION_ID="2024.1"
+BUILD_ID=abc123-def456
+PRETTY_NAME="Avocado Linux 2024.1"
+"#;
+        assert_eq!(
+            parse_os_release_field(content, "BUILD_ID"),
+            Some("abc123-def456")
+        );
+        assert_eq!(
+            parse_os_release_field(content, "VERSION_ID"),
+            Some("2024.1")
+        );
+        assert_eq!(parse_os_release_field(content, "MISSING"), None);
+    }
+
+    #[test]
+    fn test_verify_os_release_match() {
+        let tmp = TempDir::new().unwrap();
+        let os_release = tmp.path().join("os-release");
+        fs::write(&os_release, "BUILD_ID=test-build-123\n").unwrap();
+
+        let verify = VerifyConfig {
+            verify_type: "os-release".to_string(),
+            field: "BUILD_ID".to_string(),
+            expected: "test-build-123".to_string(),
+        };
+        assert!(verify_os_release_from(&verify, &os_release).unwrap());
+    }
+
+    #[test]
+    fn test_verify_os_release_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let os_release = tmp.path().join("os-release");
+        fs::write(&os_release, "BUILD_ID=old-build\n").unwrap();
+
+        let verify = VerifyConfig {
+            verify_type: "os-release".to_string(),
+            field: "BUILD_ID".to_string(),
+            expected: "new-build".to_string(),
+        };
+        assert!(!verify_os_release_from(&verify, &os_release).unwrap());
+    }
+
+    #[test]
+    fn test_pending_update_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let pending = PendingUpdate {
+            os_build_id: "build-123".to_string(),
+            verify: Some(VerifyConfig {
+                verify_type: "os-release".to_string(),
+                field: "BUILD_ID".to_string(),
+                expected: "build-123".to_string(),
+            }),
+            rollback: Some(SlotAction::UbootEnv {
+                set: HashMap::from([(
+                    "avocado_boot_slot".to_string(),
+                    "{previous_slot}".to_string(),
+                )]),
+            }),
+            previous_slot: "a".to_string(),
+        };
+
+        write_pending_update(&pending, tmp.path()).unwrap();
+
+        let path = tmp.path().join(PENDING_UPDATE_FILENAME);
+        let loaded = read_pending_update_from(&path).unwrap();
+        assert_eq!(loaded.os_build_id, "build-123");
+        assert_eq!(loaded.previous_slot, "a");
+        assert!(loaded.verify.is_some());
+        assert!(loaded.rollback.is_some());
+
+        clear_pending_update_at(&path).unwrap();
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn test_pending_update_missing() {
+        let path = Path::new("/nonexistent/pending-update.json");
+        assert!(read_pending_update_from(path).is_none());
+    }
+
+    #[test]
+    fn test_bundle_json_deserialization() {
+        let json = r#"{
+            "format_version": 1,
+            "platform": "avocado-qemux86-64",
+            "architecture": "x86_64",
+            "os_build_id": "abc-123",
+            "update": {
+                "strategy": "uboot-ab",
+                "slot_detection": {
+                    "type": "uboot-env",
+                    "var": "avocado_boot_slot"
+                },
+                "artifacts": [
+                    {
+                        "name": "boot",
+                        "file": "images/boot.img",
+                        "sha256": "deadbeef",
+                        "slot_targets": {
+                            "a": { "partition": "boot-a" },
+                            "b": { "partition": "boot-b" }
+                        }
+                    },
+                    {
+                        "name": "rootfs",
+                        "file": "images/rootfs.erofs",
+                        "sha256": "cafebabe",
+                        "slot_targets": {
+                            "a": { "partition": "rootfs-a" },
+                            "b": { "partition": "rootfs-b" }
+                        }
+                    }
+                ],
+                "activate": {
+                    "type": "uboot-env",
+                    "set": { "avocado_boot_slot": "{inactive_slot}" }
+                },
+                "rollback": {
+                    "type": "uboot-env",
+                    "set": { "avocado_boot_slot": "{previous_slot}" }
+                }
+            },
+            "verify": {
+                "type": "os-release",
+                "field": "BUILD_ID",
+                "expected": "abc-123"
+            }
+        }"#;
+
+        let bundle: OsBundle = serde_json::from_str(json).unwrap();
+        assert_eq!(bundle.format_version, 1);
+        assert_eq!(bundle.platform, "avocado-qemux86-64");
+        assert_eq!(bundle.os_build_id, "abc-123");
+
+        let update = bundle.update.unwrap();
+        assert_eq!(update.strategy, "uboot-ab");
+        assert_eq!(update.artifacts.len(), 2);
+
+        let boot = &update.artifacts[0];
+        assert_eq!(boot.name, "boot");
+        assert_eq!(boot.slot_targets["a"].partition, "boot-a");
+        assert_eq!(boot.slot_targets["b"].partition, "boot-b");
+
+        let verify = bundle.verify.unwrap();
+        assert_eq!(verify.field, "BUILD_ID");
+        assert_eq!(verify.expected, "abc-123");
+    }
+
+    #[test]
+    fn test_bundle_json_tegra_deserialization() {
+        let json = r#"{
+            "format_version": 1,
+            "platform": "avocado-jetson-orin",
+            "architecture": "arm64",
+            "os_build_id": "xyz-789",
+            "update": {
+                "strategy": "tegra-ab",
+                "slot_detection": {
+                    "type": "command",
+                    "command": ["nvbootctrl", "-t", "rootfs", "get-current-slot"]
+                },
+                "artifacts": [
+                    {
+                        "name": "rootfs",
+                        "file": "images/rootfs.erofs",
+                        "sha256": "aabbccdd",
+                        "slot_targets": {
+                            "0": { "partition": "APP" },
+                            "1": { "partition": "APP_b" }
+                        }
+                    }
+                ],
+                "activate": {
+                    "type": "command",
+                    "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{inactive_slot}"]
+                },
+                "rollback": {
+                    "type": "command",
+                    "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{previous_slot}"]
+                }
+            },
+            "verify": {
+                "type": "os-release",
+                "field": "BUILD_ID",
+                "expected": "xyz-789"
+            }
+        }"#;
+
+        let bundle: OsBundle = serde_json::from_str(json).unwrap();
+        assert_eq!(bundle.platform, "avocado-jetson-orin");
+        let update = bundle.update.unwrap();
+        assert_eq!(update.strategy, "tegra-ab");
+
+        if let SlotDetection::Command { command } = &update.slot_detection {
+            assert_eq!(command[0], "nvbootctrl");
+        } else {
+            panic!("Expected Command slot detection");
+        }
+
+        assert_eq!(update.artifacts[0].slot_targets["0"].partition, "APP");
+        assert_eq!(update.artifacts[0].slot_targets["1"].partition, "APP_b");
+    }
+
+    #[test]
+    fn test_sha256_verification() {
+        let tmp = TempDir::new().unwrap();
+        let file_path = tmp.path().join("test.img");
+        let content = b"test image content";
+        fs::write(&file_path, content).unwrap();
+
+        let mut hasher = Sha256::new();
+        hasher.update(content);
+        let expected = format!("{:x}", hasher.finalize());
+
+        // Should pass with correct hash
+        verify_sha256(&file_path, &expected, "test").unwrap();
+
+        // Should fail with wrong hash
+        assert!(verify_sha256(&file_path, "wrong_hash", "test").is_err());
+    }
+}

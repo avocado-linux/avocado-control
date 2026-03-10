@@ -321,6 +321,52 @@ pub(crate) fn merge_extensions_internal(
     config: &Config,
     output: &OutputManager,
 ) -> Result<(), SystemdError> {
+    // Check for pending OS update and verify before merging extensions.
+    // This ensures extensions are never merged against a mismatched OS release.
+    if let Some(pending) = crate::os_update::read_pending_update() {
+        if let Some(ref verify) = pending.verify {
+            match crate::os_update::verify_os_release(verify) {
+                Ok(true) => {
+                    output.step(
+                        "OS Update",
+                        &format!("Verified — {} matches expected value", verify.field),
+                    );
+                    crate::os_update::clear_pending_update().ok();
+                }
+                Ok(false) => {
+                    output.error(
+                        "OS Update",
+                        &format!("{} mismatch — rolling back to previous slot", verify.field),
+                    );
+                    if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
+                        output.error("OS Update", &format!("Rollback failed: {e}"));
+                    }
+                    // Reboot to return to previous slot
+                    let _ = std::process::Command::new("reboot").status();
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    output.error(
+                        "OS Update",
+                        &format!("Verification failed: {e} — rolling back to previous slot"),
+                    );
+                    if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
+                        output.error("OS Update", &format!("Rollback failed: {e}"));
+                    }
+                    let _ = std::process::Command::new("reboot").status();
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            // No verify config — just clear the marker
+            output.step(
+                "OS Update",
+                "No verification configured, clearing pending marker",
+            );
+            crate::os_update::clear_pending_update().ok();
+        }
+    }
+
     let environment_info = if is_running_in_initrd() {
         "initrd environment"
     } else {

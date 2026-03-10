@@ -1,6 +1,7 @@
 mod commands;
 mod config;
 pub mod manifest;
+pub mod os_update;
 mod output;
 pub mod service;
 pub mod staging;
