@@ -324,14 +324,15 @@ pub(crate) fn merge_extensions_internal(
     // Check for pending OS update and verify before merging extensions.
     // This ensures extensions are never merged against a mismatched OS release.
     if let Some(pending) = crate::os_update::read_pending_update() {
-        if let Some(ref verify) = pending.verify {
+        // Verify rootfs os-release
+        let verified = if let Some(ref verify) = pending.verify {
             match crate::os_update::verify_os_release(verify) {
                 Ok(true) => {
                     output.step(
                         "OS Update",
                         &format!("Verified — {} matches expected value", verify.field),
                     );
-                    crate::os_update::clear_pending_update().ok();
+                    true
                 }
                 Ok(false) => {
                     output.error(
@@ -358,11 +359,53 @@ pub(crate) fn merge_extensions_internal(
                 }
             }
         } else {
-            // No verify config — just clear the marker
-            output.step(
-                "OS Update",
-                "No verification configured, clearing pending marker",
-            );
+            true
+        };
+
+        // Verify initramfs os-release when running in initrd
+        if verified && is_running_in_initrd() {
+            if let Some(ref verify_initramfs) = pending.verify_initramfs {
+                match crate::os_update::verify_os_release_initrd(verify_initramfs) {
+                    Ok(true) => {
+                        output.step(
+                            "OS Update",
+                            &format!("Verified initramfs — {} matches expected value", verify_initramfs.field),
+                        );
+                    }
+                    Ok(false) => {
+                        output.error(
+                            "OS Update",
+                            &format!("Initramfs {} mismatch — rolling back to previous slot", verify_initramfs.field),
+                        );
+                        if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
+                            output.error("OS Update", &format!("Rollback failed: {e}"));
+                        }
+                        let _ = std::process::Command::new("reboot").status();
+                        std::process::exit(1);
+                    }
+                    Err(e) => {
+                        output.error(
+                            "OS Update",
+                            &format!("Initramfs verification failed: {e} — rolling back to previous slot"),
+                        );
+                        if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
+                            output.error("OS Update", &format!("Rollback failed: {e}"));
+                        }
+                        let _ = std::process::Command::new("reboot").status();
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+
+        if verified {
+            // All verifications passed — clear the pending marker
+            if pending.verify.is_none() {
+                output.step(
+                    "OS Update",
+                    "No verification configured, clearing pending marker",
+                );
+            }
             crate::os_update::clear_pending_update().ok();
         }
     }
@@ -423,25 +466,10 @@ pub(crate) fn merge_extensions_internal(
     )?;
     handle_systemd_output("systemd-confext merge", &confext_result, output)?;
 
-    // Reload systemd's unit database so newly merged unit files are discoverable
-    // before AVOCADO_ON_MERGE commands try to start/restart them.
-    match std::process::Command::new("systemctl")
-        .arg("daemon-reload")
-        .output()
-    {
-        Ok(result) if result.status.success() => {
-            output.log_info("Reloaded systemd daemon after extension merge");
-        }
-        Ok(result) => {
-            let stderr = String::from_utf8_lossy(&result.stderr);
-            output.log_info(&format!("Warning: daemon-reload failed: {stderr}"));
-        }
-        Err(e) => {
-            output.log_info(&format!("Warning: Failed to run daemon-reload: {e}"));
-        }
-    }
-
-    // Process post-merge tasks only for enabled extensions
+    // Process post-merge tasks for enabled extensions, with daemon-reload
+    // happening after depmod/ldconfig/modprobe but before service commands.
+    // This ensures kernel modules and shared libraries are available when
+    // systemd re-evaluates units during daemon-reload.
     process_post_merge_tasks_for_extensions(&enabled_extensions, output)?;
 
     Ok(())
@@ -3599,6 +3627,16 @@ fn scan_directory_for_release_files(
 }
 
 /// Process post-merge tasks for only the enabled extensions
+/// Commands that must run before daemon-reload so that kernel modules
+/// and shared libraries are available when systemd re-evaluates units.
+const PRE_DAEMON_RELOAD_COMMANDS: &[&str] = &["depmod", "ldconfig"];
+
+/// Check if a command should run before daemon-reload
+fn is_pre_daemon_reload_command(command: &str) -> bool {
+    let first_word = command.split_whitespace().next().unwrap_or("");
+    PRE_DAEMON_RELOAD_COMMANDS.contains(&first_word)
+}
+
 fn process_post_merge_tasks_for_extensions(
     enabled_extensions: &[Extension],
     output: &OutputManager,
@@ -3614,14 +3652,42 @@ fn process_post_merge_tasks_for_extensions(
         }
     }
 
-    // Execute accumulated AVOCADO_ON_MERGE commands
-    if !unique_commands.is_empty() {
-        run_avocado_on_merge_commands(&unique_commands, output)?;
+    // Split commands into pre-daemon-reload (depmod, ldconfig) and post-daemon-reload
+    let (pre_reload, post_reload): (Vec<_>, Vec<_>) = unique_commands
+        .into_iter()
+        .partition(|cmd| is_pre_daemon_reload_command(cmd));
+
+    // Phase 1: Run depmod/ldconfig so modules and libraries are available
+    if !pre_reload.is_empty() {
+        run_avocado_on_merge_commands(&pre_reload, output)?;
     }
 
-    // Call modprobe for each module after commands complete
+    // Phase 2: Load kernel modules (requires depmod to have run first)
     if !modprobe_modules.is_empty() {
         run_modprobe(&modprobe_modules, output)?;
+    }
+
+    // Phase 3: Reload systemd's unit database now that modules and libraries
+    // are available, so units like proc-fs-nfsd.mount can start successfully
+    match std::process::Command::new("systemctl")
+        .arg("daemon-reload")
+        .output()
+    {
+        Ok(result) if result.status.success() => {
+            output.log_info("Reloaded systemd daemon after extension merge");
+        }
+        Ok(result) => {
+            let stderr = String::from_utf8_lossy(&result.stderr);
+            output.log_info(&format!("Warning: daemon-reload failed: {stderr}"));
+        }
+        Err(e) => {
+            output.log_info(&format!("Warning: Failed to run daemon-reload: {e}"));
+        }
+    }
+
+    // Phase 4: Run remaining post-merge commands (service restarts, etc.)
+    if !post_reload.is_empty() {
+        run_avocado_on_merge_commands(&post_reload, output)?;
     }
 
     Ok(())
