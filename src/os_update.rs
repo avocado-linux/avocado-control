@@ -50,8 +50,12 @@ pub struct OsBundle {
     pub platform: String,
     pub architecture: String,
     pub os_build_id: String,
+    #[serde(default)]
+    pub initramfs_build_id: Option<String>,
     pub update: Option<UpdateConfig>,
     pub verify: Option<VerifyConfig>,
+    #[serde(default)]
+    pub verify_initramfs: Option<VerifyConfig>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,7 +112,11 @@ pub struct VerifyConfig {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PendingUpdate {
     pub os_build_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initramfs_build_id: Option<String>,
     pub verify: Option<VerifyConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_initramfs: Option<VerifyConfig>,
     pub rollback: Option<SlotAction>,
     pub previous_slot: String,
 }
@@ -216,7 +224,9 @@ pub fn apply_os_update(
     // Write pending-update marker
     let pending = PendingUpdate {
         os_build_id: bundle.os_build_id.clone(),
+        initramfs_build_id: bundle.initramfs_build_id.clone(),
         verify: bundle.verify.clone(),
+        verify_initramfs: bundle.verify_initramfs.clone(),
         rollback: update.rollback.clone(),
         previous_slot: current_slot.clone(),
     };
@@ -262,6 +272,22 @@ pub fn clear_pending_update_at(path: &Path) -> Result<(), OsUpdateError> {
 /// Verify an os-release field matches the expected value.
 pub fn verify_os_release(verify: &VerifyConfig) -> Result<bool, OsUpdateError> {
     verify_os_release_from(verify, Path::new("/etc/os-release"))
+}
+
+/// Verify an initramfs os-release field matches the expected value.
+/// Checks /etc/os-release-initrd first, then /usr/lib/os-release-initrd.
+pub fn verify_os_release_initrd(verify: &VerifyConfig) -> Result<bool, OsUpdateError> {
+    let paths = [
+        Path::new("/etc/os-release-initrd"),
+        Path::new("/usr/lib/os-release-initrd"),
+    ];
+    for path in &paths {
+        if path.exists() {
+            return verify_os_release_from(verify, path);
+        }
+    }
+    // File not found — cannot verify
+    Ok(false)
 }
 
 /// Verify an os-release field from a specific file (for testing).
@@ -610,10 +636,16 @@ PRETTY_NAME="Avocado Linux 2024.1"
         let tmp = TempDir::new().unwrap();
         let pending = PendingUpdate {
             os_build_id: "build-123".to_string(),
+            initramfs_build_id: Some("initramfs-456".to_string()),
             verify: Some(VerifyConfig {
                 verify_type: "os-release".to_string(),
                 field: "BUILD_ID".to_string(),
                 expected: "build-123".to_string(),
+            }),
+            verify_initramfs: Some(VerifyConfig {
+                verify_type: "os-release".to_string(),
+                field: "AVOCADO_OS_BUILD_ID".to_string(),
+                expected: "initramfs-456".to_string(),
             }),
             rollback: Some(SlotAction::UbootEnv {
                 set: HashMap::from([(
@@ -629,8 +661,10 @@ PRETTY_NAME="Avocado Linux 2024.1"
         let path = tmp.path().join(PENDING_UPDATE_FILENAME);
         let loaded = read_pending_update_from(&path).unwrap();
         assert_eq!(loaded.os_build_id, "build-123");
+        assert_eq!(loaded.initramfs_build_id, Some("initramfs-456".to_string()));
         assert_eq!(loaded.previous_slot, "a");
         assert!(loaded.verify.is_some());
+        assert!(loaded.verify_initramfs.is_some());
         assert!(loaded.rollback.is_some());
 
         clear_pending_update_at(&path).unwrap();
@@ -782,5 +816,100 @@ PRETTY_NAME="Avocado Linux 2024.1"
 
         // Should fail with wrong hash
         assert!(verify_sha256(&file_path, "wrong_hash", "test").is_err());
+    }
+
+    #[test]
+    fn test_bundle_json_with_initramfs_build_id() {
+        let json = r#"{
+            "format_version": 1,
+            "platform": "avocado-qemux86-64",
+            "architecture": "x86_64",
+            "os_build_id": "rootfs-abc",
+            "initramfs_build_id": "initramfs-def",
+            "verify": {
+                "type": "os-release",
+                "field": "AVOCADO_OS_BUILD_ID",
+                "expected": "rootfs-abc"
+            },
+            "verify_initramfs": {
+                "type": "os-release",
+                "field": "AVOCADO_OS_BUILD_ID",
+                "expected": "initramfs-def"
+            }
+        }"#;
+
+        let bundle: OsBundle = serde_json::from_str(json).unwrap();
+        assert_eq!(bundle.os_build_id, "rootfs-abc");
+        assert_eq!(bundle.initramfs_build_id, Some("initramfs-def".to_string()));
+
+        let verify = bundle.verify.unwrap();
+        assert_eq!(verify.expected, "rootfs-abc");
+
+        let verify_initramfs = bundle.verify_initramfs.unwrap();
+        assert_eq!(verify_initramfs.expected, "initramfs-def");
+    }
+
+    #[test]
+    fn test_bundle_json_without_initramfs_build_id() {
+        // Backward compatibility: old bundle.json without initramfs fields
+        let json = r#"{
+            "format_version": 1,
+            "platform": "avocado-qemux86-64",
+            "architecture": "x86_64",
+            "os_build_id": "abc-123"
+        }"#;
+
+        let bundle: OsBundle = serde_json::from_str(json).unwrap();
+        assert_eq!(bundle.os_build_id, "abc-123");
+        assert!(bundle.initramfs_build_id.is_none());
+        assert!(bundle.verify_initramfs.is_none());
+    }
+
+    #[test]
+    fn test_pending_update_without_initramfs_fields() {
+        // Backward compatibility: old pending-update.json without initramfs fields
+        let json = r#"{
+            "os_build_id": "build-old",
+            "verify": {
+                "type": "os-release",
+                "field": "BUILD_ID",
+                "expected": "build-old"
+            },
+            "rollback": {
+                "type": "uboot-env",
+                "set": { "avocado_boot_slot": "{previous_slot}" }
+            },
+            "previous_slot": "a"
+        }"#;
+
+        let pending: PendingUpdate = serde_json::from_str(json).unwrap();
+        assert_eq!(pending.os_build_id, "build-old");
+        assert!(pending.initramfs_build_id.is_none());
+        assert!(pending.verify_initramfs.is_none());
+        assert!(pending.verify.is_some());
+    }
+
+    #[test]
+    fn test_verify_os_release_initrd_from_file() {
+        let tmp = TempDir::new().unwrap();
+        let initrd_release = tmp.path().join("os-release-initrd");
+        fs::write(&initrd_release, "AVOCADO_OS_BUILD_ID=initramfs-test-123\n").unwrap();
+
+        let verify = VerifyConfig {
+            verify_type: "os-release".to_string(),
+            field: "AVOCADO_OS_BUILD_ID".to_string(),
+            expected: "initramfs-test-123".to_string(),
+        };
+
+        // Direct verification via verify_os_release_from works
+        assert!(verify_os_release_from(&verify, &initrd_release).unwrap());
+
+        // Mismatch
+        let verify_wrong = VerifyConfig {
+            verify_type: "os-release".to_string(),
+            field: "AVOCADO_OS_BUILD_ID".to_string(),
+            expected: "wrong-id".to_string(),
+        };
+        assert!(!verify_os_release_from(&verify_wrong, &initrd_release).unwrap());
     }
 }

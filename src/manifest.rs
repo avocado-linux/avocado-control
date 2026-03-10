@@ -18,6 +18,8 @@ pub struct OsBundleRef {
     pub sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_build_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initramfs_build_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,6 +343,7 @@ mod tests {
             image_id: "deadbeef-1234-5678-abcd-000000000000".to_string(),
             sha256: "abc".to_string(),
             os_build_id: None,
+            initramfs_build_id: None,
         });
         assert_eq!(
             manifest
@@ -348,6 +351,48 @@ mod tests {
                 .unwrap(),
             Path::new("/var/lib/avocado/images/deadbeef-1234-5678-abcd-000000000000.raw")
         );
+    }
+
+    #[test]
+    fn test_os_bundle_with_initramfs_build_id() {
+        let json = r#"{
+            "manifest_version": 2,
+            "id": "test-id",
+            "built_at": "2026-03-01T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.1.0" },
+            "extensions": [],
+            "os_bundle": {
+                "image_id": "deadbeef-1234-5678-abcd-000000000000",
+                "sha256": "abcdef1234567890",
+                "os_build_id": "rootfs-abc",
+                "initramfs_build_id": "initramfs-def"
+            }
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        let bundle = parsed.os_bundle.unwrap();
+        assert_eq!(bundle.os_build_id, Some("rootfs-abc".to_string()));
+        assert_eq!(bundle.initramfs_build_id, Some("initramfs-def".to_string()));
+    }
+
+    #[test]
+    fn test_os_bundle_without_initramfs_build_id() {
+        // Backward compatibility
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "test-id",
+            "built_at": "2026-03-01T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.1.0" },
+            "extensions": [],
+            "os_bundle": {
+                "image_id": "deadbeef-1234-5678-abcd-000000000000",
+                "sha256": "abcdef1234567890",
+                "os_build_id": "rootfs-abc"
+            }
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        let bundle = parsed.os_bundle.unwrap();
+        assert_eq!(bundle.os_build_id, Some("rootfs-abc".to_string()));
+        assert!(bundle.initramfs_build_id.is_none());
     }
 
     #[test]
