@@ -1072,7 +1072,7 @@ PRETTY_NAME="Avocado Linux 2024.1"
                 "strategy": "tegra-ab",
                 "slot_detection": {
                     "type": "command",
-                    "command": ["nvbootctrl", "-t", "rootfs", "get-current-slot"]
+                    "command": ["nvbootctrl", "get-current-slot"]
                 },
                 "artifacts": [
                     {
@@ -1088,13 +1088,13 @@ PRETTY_NAME="Avocado Linux 2024.1"
                 "activate": [
                     {
                         "type": "command",
-                        "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{inactive_slot}"]
+                        "command": ["nvbootctrl", "set-active-boot-slot", "{inactive_slot}"]
                     }
                 ],
                 "rollback": [
                     {
                         "type": "command",
-                        "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{previous_slot}"]
+                        "command": ["nvbootctrl", "set-active-boot-slot", "{previous_slot}"]
                     }
                 ]
             },
