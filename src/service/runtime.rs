@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::manifest::RuntimeManifest;
+use crate::manifest::{RuntimeManifest, IMAGES_DIR_NAME};
 use crate::service::error::AvocadoError;
 use crate::service::types::{RuntimeEntry, RuntimeExtensionInfo};
 use crate::{staging, update};
@@ -121,7 +121,8 @@ pub fn add_from_manifest_streaming(
 }
 
 /// Activate a staged runtime by ID (or prefix) with streaming output.
-/// Performs activation synchronously, then streams the refresh operation.
+/// If the runtime requires a different OS, applies the OS update and reboots.
+/// Otherwise activates immediately and streams the refresh operation.
 pub fn activate_runtime_streaming(
     id_prefix: &str,
     config: &Config,
@@ -133,6 +134,12 @@ pub fn activate_runtime_streaming(
     let (matched, is_active) = resolve_runtime_with_active(id_prefix, &runtimes)?;
     if is_active {
         return Ok(None); // Already active, nothing to do
+    }
+
+    if runtime_requires_os_change(matched, base_path)? {
+        return Ok(Some(reboot_streaming(
+            "OS change required. Rebooting to activate new OS...",
+        )));
     }
 
     staging::activate_runtime(&matched.id, base_path)?;
@@ -207,6 +214,8 @@ pub fn remove_runtime(id_prefix: &str, config: &Config) -> Result<(), AvocadoErr
 }
 
 /// Activate a staged runtime by ID (or prefix).
+/// Activate a staged runtime by ID (or prefix).
+/// If the runtime requires a different OS, applies the OS update and reboots.
 /// Returns log messages from the refresh operation.
 pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<Vec<String>, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
@@ -216,6 +225,14 @@ pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<Vec<String>,
     let (matched, is_active) = resolve_runtime_with_active(id_prefix, &runtimes)?;
     if is_active {
         return Ok(Vec::new()); // Already active, nothing to do
+    }
+
+    if runtime_requires_os_change(matched, base_path)? {
+        println!("  OS change required. Rebooting to activate new OS...");
+        let _ = std::process::Command::new("reboot").status();
+        return Ok(vec![
+            "OS change required. Rebooting to activate new OS.".to_string()
+        ]);
     }
 
     staging::activate_runtime(&matched.id, base_path)?;
@@ -230,6 +247,69 @@ pub fn inspect_runtime(id_prefix: &str, config: &Config) -> Result<RuntimeEntry,
 
     let (matched, is_active) = resolve_runtime_with_active(id_prefix, &runtimes)?;
     Ok(manifest_to_entry(matched, is_active))
+}
+
+/// Check if activating a runtime requires an OS change (different os_build_id).
+/// If so, applies the OS update from the on-disk image and sets up the pending
+/// runtime marker for verification on next boot.
+/// Returns true if a reboot is required (caller should reboot, not refresh).
+fn runtime_requires_os_change(
+    manifest: &RuntimeManifest,
+    base_dir: &Path,
+) -> Result<bool, AvocadoError> {
+    let os_bundle = match &manifest.os_bundle {
+        Some(b) => b,
+        None => return Ok(false),
+    };
+    let expected_id = match &os_bundle.os_build_id {
+        Some(id) => id,
+        None => return Ok(false),
+    };
+
+    // Check if the running rootfs already matches
+    let already_matches = crate::os_update::verify_os_release(&crate::os_update::VerifyConfig {
+        verify_type: "os-release".to_string(),
+        field: "AVOCADO_OS_BUILD_ID".to_string(),
+        expected: expected_id.clone(),
+    })
+    .unwrap_or(false);
+
+    if already_matches {
+        return Ok(false);
+    }
+
+    // OS differs — apply the update from the on-disk image
+    let aos_path = base_dir
+        .join(IMAGES_DIR_NAME)
+        .join(format!("{}.raw", os_bundle.image_id));
+
+    if !aos_path.exists() {
+        return Err(AvocadoError::StagingFailed {
+            reason: format!("OS bundle image not found: {}", aos_path.display()),
+        });
+    }
+
+    println!(
+        "  OS change required: current rootfs does not match target AVOCADO_OS_BUILD_ID={}",
+        expected_id
+    );
+    println!("  Applying OS update from {}...", aos_path.display());
+
+    crate::os_update::apply_os_update(&aos_path, base_dir, false).map_err(|e| {
+        AvocadoError::StagingFailed {
+            reason: format!("OS update failed: {e}"),
+        }
+    })?;
+
+    // Mark the runtime as pending — it will be promoted to active on next boot
+    // after the OS build ID is verified.
+    crate::os_update::set_pending_runtime_id(&manifest.id, base_dir).map_err(|e| {
+        AvocadoError::StagingFailed {
+            reason: format!("Failed to set pending runtime: {e}"),
+        }
+    })?;
+
+    Ok(true)
 }
 
 /// Resolve a runtime ID prefix to a unique RuntimeManifest.

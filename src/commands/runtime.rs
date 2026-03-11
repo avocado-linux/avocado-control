@@ -1,5 +1,5 @@
 use crate::config::Config;
-use crate::manifest::RuntimeManifest;
+use crate::manifest::{RuntimeManifest, IMAGES_DIR_NAME};
 use crate::output::OutputManager;
 use crate::{staging, update};
 use clap::{Arg, ArgGroup, ArgMatches, Command};
@@ -218,6 +218,63 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
         return;
     }
 
+    // Check if the target runtime requires a different OS
+    if let Some(ref os_bundle) = matched.os_bundle {
+        if let Some(ref expected_id) = os_bundle.os_build_id {
+            let already_matches =
+                crate::os_update::verify_os_release(&crate::os_update::VerifyConfig {
+                    verify_type: "os-release".to_string(),
+                    field: "AVOCADO_OS_BUILD_ID".to_string(),
+                    expected: expected_id.clone(),
+                })
+                .unwrap_or(false);
+
+            if !already_matches {
+                // OS change required — apply update, mark pending, reboot
+                let aos_path = base_path
+                    .join(IMAGES_DIR_NAME)
+                    .join(format!("{}.raw", os_bundle.image_id));
+
+                if !aos_path.exists() {
+                    output.error(
+                        "Runtime Activate",
+                        &format!("OS bundle image not found: {}", aos_path.display()),
+                    );
+                    std::process::exit(1);
+                }
+
+                output.step(
+                    "Runtime Activate",
+                    &format!(
+                        "OS change required (target AVOCADO_OS_BUILD_ID={})",
+                        expected_id
+                    ),
+                );
+
+                if let Err(e) = crate::os_update::apply_os_update(&aos_path, base_path, false) {
+                    output.error("Runtime Activate", &format!("OS update failed: {e}"));
+                    std::process::exit(1);
+                }
+
+                if let Err(e) = crate::os_update::set_pending_runtime_id(&matched.id, base_path) {
+                    output.error(
+                        "Runtime Activate",
+                        &format!("Failed to set pending runtime: {e}"),
+                    );
+                    std::process::exit(1);
+                }
+
+                output.step(
+                    "Runtime Activate",
+                    "OS update applied. Rebooting to activate new OS...",
+                );
+                let _ = std::process::Command::new("reboot").status();
+                return;
+            }
+        }
+    }
+
+    // No OS change needed — activate immediately and refresh
     if let Err(e) = staging::activate_runtime(&matched.id, base_path) {
         output.error("Runtime Activate", &format!("{e}"));
         std::process::exit(1);
