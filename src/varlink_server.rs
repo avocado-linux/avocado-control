@@ -239,6 +239,8 @@ fn runtime_entry_to_varlink(entry: crate::service::types::RuntimeEntry) -> vl_rt
             })
             .collect(),
         r#active: entry.active,
+        r#osBuildId: entry.os_build_id,
+        r#initramfsBuildId: entry.initramfs_build_id,
     }
 }
 

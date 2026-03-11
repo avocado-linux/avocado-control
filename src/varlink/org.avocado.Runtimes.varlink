@@ -18,7 +18,9 @@ type Runtime (
     builtAt: string,
     runtime: RuntimeInfo,
     extensions: []ManifestExtension,
-    active: bool
+    active: bool,
+    osBuildId: ?string,
+    initramfsBuildId: ?string
 )
 
 # List all available runtimes

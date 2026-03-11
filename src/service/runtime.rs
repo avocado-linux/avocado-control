@@ -31,6 +31,14 @@ pub fn manifest_to_entry(manifest: &RuntimeManifest, active: bool) -> RuntimeEnt
             })
             .collect(),
         active,
+        os_build_id: manifest
+            .os_bundle
+            .as_ref()
+            .and_then(|b| b.os_build_id.clone()),
+        initramfs_build_id: manifest
+            .os_bundle
+            .as_ref()
+            .and_then(|b| b.initramfs_build_id.clone()),
     }
 }
 

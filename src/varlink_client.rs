@@ -243,6 +243,17 @@ pub fn print_runtime_detail(rt: &vl_rt::Runtime, output: &OutputManager) {
     println!("  Built:   {}", rt.builtAt);
     println!("  Active:  {}", if rt.active { "yes" } else { "no" });
 
+    if rt.osBuildId.is_some() || rt.initramfsBuildId.is_some() {
+        println!();
+        println!("  OS Release:");
+        if let Some(ref id) = rt.osBuildId {
+            println!("    Rootfs Build ID:    {id}");
+        }
+        if let Some(ref id) = rt.initramfsBuildId {
+            println!("    Initramfs Build ID: {id}");
+        }
+    }
+
     if !rt.extensions.is_empty() {
         println!();
         println!("  Extensions:");

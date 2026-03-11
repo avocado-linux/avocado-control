@@ -45,6 +45,10 @@ pub struct RuntimeEntry {
     pub version: String,
     pub extensions: Vec<RuntimeExtensionInfo>,
     pub active: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub os_build_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initramfs_build_id: Option<String>,
 }
 
 /// Extension info within a runtime

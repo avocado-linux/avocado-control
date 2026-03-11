@@ -429,10 +429,32 @@ fn main() {
         // ── status (top-level) ───────────────────────────────────────────────
         Some(("status", _)) => {
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
-            let mut client = vl_ext::VarlinkClient::new(conn);
-            match client.status().call() {
+            let conn2 = varlink_client::connect_or_exit(&socket_address, &output);
+            let mut ext_client = vl_ext::VarlinkClient::new(conn);
+            let mut rt_client = vl_rt::VarlinkClient::new(conn2);
+
+            output.status_header("System Status");
+
+            // Show active runtime OS release info
+            if let Ok(reply) = rt_client.list().call() {
+                if let Some(active) = reply.runtimes.iter().find(|r| r.active) {
+                    let short_id = &active.id[..active.id.len().min(8)];
+                    println!(
+                        "Runtime: {} {} ({short_id})",
+                        active.runtime.name, active.runtime.version
+                    );
+                    if let Some(ref id) = active.osBuildId {
+                        println!("Rootfs Build ID:    {id}");
+                    }
+                    if let Some(ref id) = active.initramfsBuildId {
+                        println!("Initramfs Build ID: {id}");
+                    }
+                    println!();
+                }
+            }
+
+            match ext_client.status().call() {
                 Ok(reply) => {
-                    output.status_header("System Status");
                     varlink_client::print_extension_status(&reply.extensions, &output);
                 }
                 Err(e) => varlink_client::exit_with_rpc_error(e, &output),
@@ -591,6 +613,20 @@ fn handle_direct(matches: &clap::ArgMatches, config: &Config, output: &OutputMan
         }
         Some(("status", _)) => {
             output.status_header("System Status");
+            // Show active runtime OS release info
+            if let Ok(runtimes) = crate::service::runtime::list_runtimes(config) {
+                if let Some(active) = runtimes.iter().find(|r| r.active) {
+                    let short_id = &active.id[..active.id.len().min(8)];
+                    println!("Runtime: {} {} ({short_id})", active.name, active.version);
+                    if let Some(ref id) = active.os_build_id {
+                        println!("Rootfs Build ID:    {id}");
+                    }
+                    if let Some(ref id) = active.initramfs_build_id {
+                        println!("Initramfs Build ID: {id}");
+                    }
+                    println!();
+                }
+            }
             ext::status_extensions(config, output);
         }
         Some(("merge", _)) => {
