@@ -381,8 +381,12 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
         }
     }
 
-    fn inspect(&self, call: &mut dyn vl_rt::Call_Inspect, r#id: String) -> varlink::Result<()> {
-        match service::runtime::inspect_runtime(&id, &self.config) {
+    fn inspect(
+        &self,
+        call: &mut dyn vl_rt::Call_Inspect,
+        r#id: Option<String>,
+    ) -> varlink::Result<()> {
+        match service::runtime::inspect_runtime(id.as_deref(), &self.config) {
             Ok(entry) => call.reply(runtime_entry_to_varlink(entry)),
             Err(e) => map_rt_error!(call, e),
         }

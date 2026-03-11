@@ -48,9 +48,9 @@ pub fn create_command() -> Command {
             Command::new("inspect")
                 .about("Inspect a runtime's details and extensions")
                 .arg(
-                    Arg::new("id")
-                        .required(true)
-                        .help("Runtime build ID (full or prefix)"),
+                    Arg::new("id").required(false).help(
+                        "Runtime build ID (full or prefix). Omit to inspect the active runtime",
+                    ),
                 ),
         )
 }
@@ -297,14 +297,24 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
 }
 
 fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager) {
-    let id_prefix = matches.get_one::<String>("id").expect("id is required");
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
 
     let runtimes = RuntimeManifest::list_all(base_path);
-    let (matched, is_active) = match resolve_runtime_id(id_prefix, &runtimes, output) {
-        Some(m) => m,
-        None => return,
+
+    let (matched, is_active) = if let Some(id_prefix) = matches.get_one::<String>("id") {
+        match resolve_runtime_id(id_prefix, &runtimes, output) {
+            Some(m) => m,
+            None => return,
+        }
+    } else {
+        match runtimes.iter().find(|(_, active)| *active) {
+            Some((m, _)) => (m, true),
+            None => {
+                output.error("Runtime Inspect", "No active runtime found.");
+                std::process::exit(1);
+            }
+        }
     };
 
     if output.is_json() {

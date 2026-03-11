@@ -398,10 +398,7 @@ fn main() {
                     json_ok(&output);
                 }
                 Some(("inspect", inspect_matches)) => {
-                    let id = inspect_matches
-                        .get_one::<String>("id")
-                        .expect("id is required")
-                        .clone();
+                    let id = inspect_matches.get_one::<String>("id").cloned();
                     let mut client = vl_rt::VarlinkClient::new(conn);
                     match client.inspect(id).call() {
                         Ok(reply) => varlink_client::print_runtime_detail(&reply.runtime, &output),

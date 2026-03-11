@@ -240,12 +240,25 @@ pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<Vec<String>,
 }
 
 /// Inspect a runtime's details by ID (or prefix).
-pub fn inspect_runtime(id_prefix: &str, config: &Config) -> Result<RuntimeEntry, AvocadoError> {
+/// If `id_prefix` is `None`, inspects the active runtime.
+pub fn inspect_runtime(
+    id_prefix: Option<&str>,
+    config: &Config,
+) -> Result<RuntimeEntry, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
     let runtimes = RuntimeManifest::list_all(base_path);
 
-    let (matched, is_active) = resolve_runtime_with_active(id_prefix, &runtimes)?;
+    let (matched, is_active) = match id_prefix {
+        Some(prefix) => resolve_runtime_with_active(prefix, &runtimes)?,
+        None => runtimes
+            .iter()
+            .find(|(_, active)| *active)
+            .map(|(m, _)| (m, true))
+            .ok_or_else(|| AvocadoError::RuntimeNotFound {
+                id: "active".to_string(),
+            })?,
+    };
     Ok(manifest_to_entry(matched, is_active))
 }
 

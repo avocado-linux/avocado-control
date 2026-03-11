@@ -385,7 +385,8 @@ pub struct Inspect_Reply {
 impl varlink::VarlinkReply for Inspect_Reply {}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Inspect_Args {
-    pub r#id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub r#id: Option<String>,
 }
 #[allow(dead_code)]
 pub trait Call_Inspect: VarlinkCallError {
@@ -437,7 +438,7 @@ pub trait VarlinkInterface {
         r#authToken: Option<String>,
         r#artifactsUrl: Option<String>,
     ) -> varlink::Result<()>;
-    fn inspect(&self, call: &mut dyn Call_Inspect, r#id: String) -> varlink::Result<()>;
+    fn inspect(&self, call: &mut dyn Call_Inspect, r#id: Option<String>) -> varlink::Result<()>;
     fn list(&self, call: &mut dyn Call_List) -> varlink::Result<()>;
     fn remove(&self, call: &mut dyn Call_Remove, r#id: String) -> varlink::Result<()>;
     fn call_upgraded(
@@ -464,7 +465,10 @@ pub trait VarlinkClientInterface {
         r#authToken: Option<String>,
         r#artifactsUrl: Option<String>,
     ) -> varlink::MethodCall<AddFromUrl_Args, AddFromUrl_Reply, Error>;
-    fn inspect(&mut self, r#id: String) -> varlink::MethodCall<Inspect_Args, Inspect_Reply, Error>;
+    fn inspect(
+        &mut self,
+        r#id: Option<String>,
+    ) -> varlink::MethodCall<Inspect_Args, Inspect_Reply, Error>;
     fn list(&mut self) -> varlink::MethodCall<List_Args, List_Reply, Error>;
     fn remove(&mut self, r#id: String) -> varlink::MethodCall<Remove_Args, Remove_Reply, Error>;
 }
@@ -515,7 +519,10 @@ impl VarlinkClientInterface for VarlinkClient {
             },
         )
     }
-    fn inspect(&mut self, r#id: String) -> varlink::MethodCall<Inspect_Args, Inspect_Reply, Error> {
+    fn inspect(
+        &mut self,
+        r#id: Option<String>,
+    ) -> varlink::MethodCall<Inspect_Args, Inspect_Reply, Error> {
         varlink::MethodCall::<Inspect_Args, Inspect_Reply, Error>::new(
             self.connection.clone(),
             "org.avocado.Runtimes.Inspect",
@@ -547,7 +554,7 @@ pub fn new(inner: Box<dyn VarlinkInterface + Send + Sync>) -> VarlinkInterfacePr
 }
 impl varlink::Interface for VarlinkInterfaceProxy {
     fn get_description(&self) -> &'static str {
-        "# Runtime lifecycle management for Avocado Linux\ninterface org.avocado.Runtimes\n\ntype RuntimeInfo (\n    name: string,\n    version: string\n)\n\ntype ManifestExtension (\n    name: string,\n    version: string,\n    imageId: ?string\n)\n\ntype Runtime (\n    id: string,\n    manifestVersion: int,\n    builtAt: string,\n    runtime: RuntimeInfo,\n    extensions: []ManifestExtension,\n    active: bool,\n    osBuildId: ?string,\n    initramfsBuildId: ?string\n)\n\n# List all available runtimes\nmethod List() -> (runtimes: []Runtime)\n\n# Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromUrl(url: string, authToken: ?string, artifactsUrl: ?string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Add a runtime from a local manifest file\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromManifest(manifestPath: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Remove a staged runtime by ID (or prefix)\nmethod Remove(id: string) -> ()\n\n# Activate a staged runtime by ID (or prefix)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Inspect a runtime's details\nmethod Inspect(id: string) -> (runtime: Runtime)\n\nerror RuntimeNotFound (id: string)\nerror AmbiguousRuntimeId (id: string, candidates: []string)\nerror RemoveActiveRuntime ()\nerror StagingFailed (reason: string)\nerror UpdateFailed (reason: string)\n"
+        "# Runtime lifecycle management for Avocado Linux\ninterface org.avocado.Runtimes\n\ntype RuntimeInfo (\n    name: string,\n    version: string\n)\n\ntype ManifestExtension (\n    name: string,\n    version: string,\n    imageId: ?string\n)\n\ntype Runtime (\n    id: string,\n    manifestVersion: int,\n    builtAt: string,\n    runtime: RuntimeInfo,\n    extensions: []ManifestExtension,\n    active: bool,\n    osBuildId: ?string,\n    initramfsBuildId: ?string\n)\n\n# List all available runtimes\nmethod List() -> (runtimes: []Runtime)\n\n# Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromUrl(url: string, authToken: ?string, artifactsUrl: ?string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Add a runtime from a local manifest file\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromManifest(manifestPath: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Remove a staged runtime by ID (or prefix)\nmethod Remove(id: string) -> ()\n\n# Activate a staged runtime by ID (or prefix)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Inspect a runtime's details (omit id to inspect the active runtime)\nmethod Inspect(id: ?string) -> (runtime: Runtime)\n\nerror RuntimeNotFound (id: string)\nerror AmbiguousRuntimeId (id: string, candidates: []string)\nerror RemoveActiveRuntime ()\nerror StagingFailed (reason: string)\nerror UpdateFailed (reason: string)\n"
     }
     fn get_name(&self) -> &'static str {
         "org.avocado.Runtimes"

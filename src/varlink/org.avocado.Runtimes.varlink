@@ -41,8 +41,8 @@ method Remove(id: string) -> ()
 # Supports streaming: client may set more=true to receive per-message progress
 method Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)
 
-# Inspect a runtime's details
-method Inspect(id: string) -> (runtime: Runtime)
+# Inspect a runtime's details (omit id to inspect the active runtime)
+method Inspect(id: ?string) -> (runtime: Runtime)
 
 error RuntimeNotFound (id: string)
 error AmbiguousRuntimeId (id: string, candidates: []string)
