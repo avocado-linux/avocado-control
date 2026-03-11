@@ -360,10 +360,56 @@ pub fn perform_update(
     staging::stage_manifest(&new_manifest, &manifest_content, base_dir, verbose)
         .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
 
+    // From here on, any failure must clean up the staged runtime directory
+    // so we don't leave untrusted/broken runtimes on disk.
+    let result = finish_update(
+        &new_manifest,
+        base_dir,
+        url,
+        auth_token,
+        artifacts_url,
+        stream_os_to_partition,
+        verbose,
+        os_bundle_skipped,
+    );
+
+    if result.is_err() {
+        let runtime_dir = base_dir.join("runtimes").join(&new_manifest.id);
+        if runtime_dir.exists() {
+            eprintln!(
+                "  Cleaning up failed runtime: {}",
+                &new_manifest.id[..8.min(new_manifest.id.len())]
+            );
+            let _ = fs::remove_dir_all(&runtime_dir);
+        }
+    }
+
+    // Clean up staging directory
+    let _ = fs::remove_dir_all(&staging_dir);
+
+    let reboot_required = result?;
+    println!("  Update staged successfully.");
+    Ok(reboot_required)
+}
+
+/// Complete the update after the runtime has been staged.
+/// Separated so the caller can clean up the runtime directory on failure.
+#[allow(clippy::too_many_arguments)]
+fn finish_update(
+    new_manifest: &RuntimeManifest,
+    base_dir: &Path,
+    url: &str,
+    auth_token: Option<&str>,
+    artifacts_url: Option<&str>,
+    stream_os_to_partition: bool,
+    verbose: bool,
+    _os_bundle_skipped: bool,
+) -> Result<bool, UpdateError> {
+    let mut reboot_required = false;
+
     // Apply OS update if bundle is present and OS is not already at target version.
     // When an OS update is applied, the runtime stays pending (not active) — it will
     // be promoted to active on the next boot after the OS build ID is verified.
-    let mut reboot_required = false;
     if let Some(ref os_bundle) = new_manifest.os_bundle {
         let skip = if let Some(ref expected_id) = os_bundle.os_build_id {
             crate::os_update::verify_os_release(&crate::os_update::VerifyConfig {
@@ -441,10 +487,6 @@ pub fn perform_update(
         );
     }
 
-    // Clean up staging directory
-    let _ = fs::remove_dir_all(&staging_dir);
-
-    println!("  Update staged successfully.");
     Ok(reboot_required)
 }
 

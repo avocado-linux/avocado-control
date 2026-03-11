@@ -1131,9 +1131,9 @@ pub fn refresh_extensions(config: &Config, output: &OutputManager) {
         &format!("Starting extension refresh process in {environment_info}"),
     );
 
-    // First unmerge (skip depmod since we'll call it after merge, unmount loops
-    // so the merge picks up updated .raw images instead of reusing stale mounts)
-    if let Err(e) = unmerge_extensions_internal_with_options(false, true, output) {
+    // First unmerge (skip depmod since we'll call it after merge, don't unmount loops —
+    // the caller may be running from a loop-mounted extension like avocado-connect)
+    if let Err(e) = unmerge_extensions_internal_with_options(false, false, output) {
         output.error(
             "Extension Refresh",
             &format!("Failed to unmerge extensions: {e}"),
@@ -2695,14 +2695,31 @@ fn analyze_raw_extension_with_loop(
     };
 
     let mount_point = if check_existing_loop_ref(&mount_name) {
-        if verbose {
-            println!("Using existing persistent loop for {mount_name}");
-        }
-        if std::env::var("AVOCADO_TEST_MODE").is_ok() {
-            let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
-            format!("{temp_base}/avocado/extensions/{mount_name}")
+        // Check if the existing loop is backed by the same .raw file
+        let needs_remount = loop_backing_file_changed(&mount_name, path);
+        if needs_remount {
+            if verbose {
+                println!("Backing file changed for {mount_name}, remounting...");
+            }
+            // Unmount stale loop, then fall through to create a new one
+            if let Err(e) = unmount_loop_ref(&mount_name) {
+                if verbose {
+                    println!("Warning: failed to unmount stale loop {mount_name}: {e}");
+                }
+            }
+            mount_raw_file_with_loop(&mount_name, path, verbose)?
+                .to_string_lossy()
+                .to_string()
         } else {
-            format!("/run/avocado/extensions/{mount_name}")
+            if verbose {
+                println!("Using existing persistent loop for {mount_name}");
+            }
+            if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+                let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+                format!("{temp_base}/avocado/extensions/{mount_name}")
+            } else {
+                format!("/run/avocado/extensions/{mount_name}")
+            }
         }
     } else {
         // Create new persistent loop
@@ -3184,6 +3201,38 @@ fn mount_raw_file_with_loop(
 fn check_existing_loop_ref(extension_name: &str) -> bool {
     let loop_ref_path = format!("/dev/disk/by-loop-ref/{extension_name}");
     Path::new(&loop_ref_path).exists()
+}
+
+/// Check if an existing loop device is backed by a different file than expected.
+/// Returns true if the loop needs to be remounted (backing file differs).
+fn loop_backing_file_changed(extension_name: &str, expected_path: &Path) -> bool {
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        return false;
+    }
+    let loop_ref = format!("/dev/disk/by-loop-ref/{extension_name}");
+    // Resolve /dev/disk/by-loop-ref/<name> → /dev/loopN
+    let loop_dev = match fs::read_link(&loop_ref) {
+        Ok(target) => target,
+        Err(_) => return false,
+    };
+    // Extract loopN from the device path
+    let dev_name = match loop_dev.file_name().and_then(|f| f.to_str()) {
+        Some(name) => name.to_string(),
+        None => return false,
+    };
+    // Read the backing file from /sys/block/loopN/loop/backing_file
+    let backing_path = format!("/sys/block/{dev_name}/loop/backing_file");
+    let backing_file = match fs::read_to_string(&backing_path) {
+        Ok(s) => s.trim().to_string(),
+        Err(_) => return false,
+    };
+    let expected = expected_path
+        .canonicalize()
+        .unwrap_or_else(|_| expected_path.to_path_buf());
+    let current = PathBuf::from(&backing_file)
+        .canonicalize()
+        .unwrap_or_else(|_| PathBuf::from(&backing_file));
+    expected != current
 }
 
 /// Cleanup stale loop refs for extensions that no longer exist
