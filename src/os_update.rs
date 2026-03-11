@@ -542,31 +542,51 @@ fn resolve_partition_offset(
     partition_name: &str,
     layout: &BundleLayout,
 ) -> Result<u64, OsUpdateError> {
-    let part = layout
+    // First, try to find the partition with an explicit offset
+    if let Some(part) = layout
         .partitions
         .iter()
         .find(|p| p.name.as_deref() == Some(partition_name))
-        .ok_or_else(|| {
-            OsUpdateError::ArtifactWriteFailed(format!(
-                "Partition '{partition_name}' not found in layout"
-            ))
-        })?;
+    {
+        if let Some(offset) = part.offset {
+            return Ok(convert_to_bytes(offset, part.offset_unit.as_deref()));
+        }
+    }
 
-    let offset = part.offset.ok_or_else(|| {
-        OsUpdateError::ArtifactWriteFailed(format!(
-            "Partition '{partition_name}' has no offset in layout"
-        ))
-    })?;
+    // Fallback: compute sequential offsets by walking partitions in order
+    let mut cursor: u64 = 0;
+    for p in &layout.partitions {
+        let offset = if let Some(o) = p.offset {
+            convert_to_bytes(o, p.offset_unit.as_deref())
+        } else {
+            cursor
+        };
 
-    Ok(convert_to_bytes(offset, part.offset_unit.as_deref()))
+        if p.name.as_deref() == Some(partition_name) {
+            return Ok(offset);
+        }
+
+        let size = convert_size_to_bytes(p);
+        cursor = offset + size;
+    }
+
+    Err(OsUpdateError::ArtifactWriteFailed(format!(
+        "Partition '{partition_name}' not found in layout"
+    )))
 }
 
 fn convert_to_bytes(value: f64, unit: Option<&str>) -> u64 {
-    let multiplier = match unit {
+    let multiplier: u64 = match unit {
+        Some("tebibytes") => 1024 * 1024 * 1024 * 1024,
+        Some("gibibytes") => 1024 * 1024 * 1024,
         Some("mebibytes") => 1024 * 1024,
         Some("kibibytes") => 1024,
+        Some("terabytes") => 1_000_000_000_000,
+        Some("gigabytes") => 1_000_000_000,
+        Some("megabytes") => 1_000_000,
+        Some("kilobytes") => 1_000,
         Some("bytes") | None => 1,
-        _ => 1, // default to bytes
+        _ => 1,
     };
     (value as u64) * multiplier
 }
