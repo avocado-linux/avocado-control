@@ -147,6 +147,8 @@ pub struct PendingUpdate {
     pub verify_initramfs: Option<VerifyConfig>,
     pub rollback: Option<Vec<SlotAction>>,
     pub previous_slot: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout: Option<BundleLayout>,
 }
 
 // --- Public API ---
@@ -267,6 +269,7 @@ pub fn apply_os_update(
         verify_initramfs: bundle.verify_initramfs.clone(),
         rollback: update.rollback.clone(),
         previous_slot: current_slot.clone(),
+        layout: bundle.layout.clone(),
     };
     write_pending_update(&pending, base_dir)?;
 
@@ -308,8 +311,22 @@ pub fn clear_pending_update_at(path: &Path) -> Result<(), OsUpdateError> {
 }
 
 /// Verify an os-release field matches the expected value.
+/// In the initrd, the rootfs is mounted at /sysroot, so check there.
 pub fn verify_os_release(verify: &VerifyConfig) -> Result<bool, OsUpdateError> {
-    verify_os_release_from(verify, Path::new("/etc/os-release"))
+    if Path::new("/etc/initrd-release").exists() {
+        let paths = [
+            Path::new("/sysroot/etc/os-release"),
+            Path::new("/sysroot/usr/lib/os-release"),
+        ];
+        for path in &paths {
+            if path.exists() {
+                return verify_os_release_from(verify, path);
+            }
+        }
+        Ok(false)
+    } else {
+        verify_os_release_from(verify, Path::new("/etc/os-release"))
+    }
 }
 
 /// Verify an initramfs os-release field matches the expected value.
@@ -344,15 +361,26 @@ pub fn verify_os_release_from(
 }
 
 /// Execute rollback: switch back to previous slot and clear the pending marker.
+/// Always clears the pending marker to prevent boot loops, even if rollback fails.
 pub fn rollback_os_update(pending: &PendingUpdate, verbose: bool) -> Result<(), OsUpdateError> {
+    let mut rollback_err = None;
     if let Some(ref rollback_actions) = pending.rollback {
         if verbose {
             println!("    Rolling back to slot: {}", pending.previous_slot);
         }
-        execute_slot_actions(rollback_actions, &pending.previous_slot, None)
-            .map_err(|e| OsUpdateError::RollbackFailed(e.to_string()))?;
+        if let Err(e) = execute_slot_actions(
+            rollback_actions,
+            &pending.previous_slot,
+            pending.layout.as_ref(),
+        ) {
+            rollback_err = Some(OsUpdateError::RollbackFailed(e.to_string()));
+        }
     }
+    // Always clear pending marker to prevent boot loops
     clear_pending_update()?;
+    if let Some(e) = rollback_err {
+        return Err(e);
+    }
     Ok(())
 }
 
@@ -936,6 +964,7 @@ PRETTY_NAME="Avocado Linux 2024.1"
                 )]),
             }]),
             previous_slot: "a".to_string(),
+            layout: None,
         };
 
         write_pending_update(&pending, tmp.path()).unwrap();
