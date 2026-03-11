@@ -661,6 +661,17 @@ fn write_mbr_partition_table(
 
     let block_size = layout.block_size.unwrap_or(512) as u64;
 
+    // Get total device size for expand partitions
+    let device_total_sectors = {
+        let mut dev = fs::File::open(devpath).map_err(|e| {
+            OsUpdateError::ActivationFailed(format!("Failed to open {devpath} for size query: {e}"))
+        })?;
+        let size = dev.seek(SeekFrom::End(0)).map_err(|e| {
+            OsUpdateError::ActivationFailed(format!("Failed to get device size for {devpath}: {e}"))
+        })?;
+        size / block_size
+    };
+
     // Clear partition table entries (bytes 446-509)
     mbr[446..510].fill(0);
 
@@ -680,9 +691,15 @@ fn write_mbr_partition_table(
             .offset
             .map(|o| convert_to_bytes(o, part.offset_unit.as_deref()))
             .unwrap_or(0);
-        let size_bytes = convert_size_to_bytes(part);
         let lba_start = (offset_bytes / block_size) as u32;
-        let lba_count = (size_bytes / block_size) as u32;
+
+        // For partitions with expand=true, use remaining device space
+        let lba_count = if part.expand.as_deref() == Some("true") {
+            (device_total_sectors - lba_start as u64) as u32
+        } else {
+            let size_bytes = convert_size_to_bytes(part);
+            (size_bytes / block_size) as u32
+        };
 
         // Determine partition type from name convention
         let part_type: u8 = if part_name.starts_with("boot") {
