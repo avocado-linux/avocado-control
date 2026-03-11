@@ -1131,8 +1131,9 @@ pub fn refresh_extensions(config: &Config, output: &OutputManager) {
         &format!("Starting extension refresh process in {environment_info}"),
     );
 
-    // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
-    if let Err(e) = unmerge_extensions_internal_with_options(false, false, output) {
+    // First unmerge (skip depmod since we'll call it after merge, unmount loops
+    // so the merge picks up updated .raw images instead of reusing stale mounts)
+    if let Err(e) = unmerge_extensions_internal_with_options(false, true, output) {
         output.error(
             "Extension Refresh",
             &format!("Failed to unmerge extensions: {e}"),

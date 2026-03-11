@@ -101,8 +101,9 @@ pub fn refresh_extensions_streaming(
     let handle = thread::spawn(move || {
         let output = OutputManager::new_streaming(tx);
 
-        // First unmerge (skip depmod since we'll call it after merge, don't unmount loops)
-        ext::unmerge_extensions_internal_with_options(false, false, &output)
+        // First unmerge (skip depmod since we'll call it after merge, unmount loops
+        // so the merge picks up updated .raw images instead of reusing stale mounts)
+        ext::unmerge_extensions_internal_with_options(false, true, &output)
             .map_err(AvocadoError::from)?;
 
         // Invalidate NFS caches for any HITL-mounted extensions
