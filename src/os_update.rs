@@ -151,6 +151,11 @@ pub struct PendingUpdate {
     pub previous_slot: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<BundleLayout>,
+    /// Runtime ID to activate on successful OS verification.
+    /// When set, the runtime is not yet active — it becomes active only after
+    /// the OS build ID is verified on the next boot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_id: Option<String>,
 }
 
 // --- Public API ---
@@ -263,6 +268,7 @@ pub fn apply_os_update(
         rollback: update.rollback.clone(),
         previous_slot: current_slot.clone(),
         layout: bundle.layout.clone(),
+        runtime_id: None,
     };
     write_pending_update(&pending, base_dir)?;
 
@@ -291,6 +297,26 @@ pub fn read_pending_update_from(path: &Path) -> Option<PendingUpdate> {
 /// Remove the pending-update marker.
 pub fn clear_pending_update() -> Result<(), OsUpdateError> {
     clear_pending_update_at(&pending_update_path())
+}
+
+/// Set the runtime_id on an existing pending-update marker.
+/// Called after apply_os_update writes the marker, to associate the pending runtime.
+pub fn set_pending_runtime_id(runtime_id: &str, base_dir: &Path) -> Result<(), OsUpdateError> {
+    let path = base_dir.join(PENDING_UPDATE_FILENAME);
+    let content = fs::read_to_string(&path).map_err(|e| {
+        OsUpdateError::UpdateFailed(format!("Failed to read pending-update marker: {e}"))
+    })?;
+    let mut pending: PendingUpdate = serde_json::from_str(&content).map_err(|e| {
+        OsUpdateError::UpdateFailed(format!("Failed to parse pending-update marker: {e}"))
+    })?;
+    pending.runtime_id = Some(runtime_id.to_string());
+    let json = serde_json::to_string_pretty(&pending).map_err(|e| {
+        OsUpdateError::UpdateFailed(format!("Failed to serialize pending update: {e}"))
+    })?;
+    fs::write(&path, json).map_err(|e| {
+        OsUpdateError::UpdateFailed(format!("Failed to write pending-update marker: {e}"))
+    })?;
+    Ok(())
 }
 
 /// Remove the pending-update marker at a specific path (for testing).
@@ -856,7 +882,7 @@ pub fn execute_slot_action(
     }
 }
 
-fn parse_os_release_field<'a>(contents: &'a str, field: &str) -> Option<&'a str> {
+pub(crate) fn parse_os_release_field<'a>(contents: &'a str, field: &str) -> Option<&'a str> {
     let prefix = format!("{field}=");
     for line in contents.lines() {
         if let Some(value) = line.strip_prefix(&prefix) {
@@ -1183,6 +1209,7 @@ pub fn apply_os_update_streaming<R: Read>(
         rollback: update.rollback.clone(),
         previous_slot: current_slot.clone(),
         layout: bundle.layout.clone(),
+        runtime_id: None,
     };
     write_pending_update(&pending, base_dir)?;
 
@@ -1283,6 +1310,7 @@ PRETTY_NAME="Avocado Linux 2024.1"
             }]),
             previous_slot: "a".to_string(),
             layout: None,
+            runtime_id: Some("test-runtime-uuid".to_string()),
         };
 
         write_pending_update(&pending, tmp.path()).unwrap();
@@ -1293,6 +1321,7 @@ PRETTY_NAME="Avocado Linux 2024.1"
         assert_eq!(loaded.initramfs_build_id, Some("initramfs-456".to_string()));
         assert_eq!(loaded.previous_slot, "a");
         assert!(loaded.verify.is_some());
+        assert_eq!(loaded.runtime_id, Some("test-runtime-uuid".to_string()));
         assert!(loaded.verify_initramfs.is_some());
         assert!(loaded.rollback.is_some());
 

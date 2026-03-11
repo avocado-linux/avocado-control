@@ -360,16 +360,9 @@ pub fn perform_update(
     staging::stage_manifest(&new_manifest, &manifest_content, base_dir, verbose)
         .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
 
-    staging::activate_runtime(&new_manifest.id, base_dir)
-        .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
-
-    let short_id = &new_manifest.id[..8.min(new_manifest.id.len())];
-    println!(
-        "  Activated runtime: {} {} ({short_id})",
-        new_manifest.runtime.name, new_manifest.runtime.version,
-    );
-
-    // Apply OS update if bundle is present and OS is not already at target version
+    // Apply OS update if bundle is present and OS is not already at target version.
+    // When an OS update is applied, the runtime stays pending (not active) — it will
+    // be promoted to active on the next boot after the OS build ID is verified.
     let mut reboot_required = false;
     if let Some(ref os_bundle) = new_manifest.os_bundle {
         let skip = if let Some(ref expected_id) = os_bundle.os_build_id {
@@ -389,7 +382,6 @@ pub fn perform_update(
                 os_bundle.os_build_id.as_deref().unwrap_or("unknown")
             );
         } else if stream_os_to_partition {
-            // Stream the .aos directly from HTTP to partitions
             let bundle_filename = format!("{}.raw", os_bundle.image_id);
             let target_url = if let Some(art_url) = artifacts_url {
                 let art_url = art_url.trim_end_matches('/');
@@ -419,6 +411,34 @@ pub fn perform_update(
                 reboot_required = true;
             }
         }
+
+        if reboot_required {
+            // Write runtime_id into the pending-update marker so the next boot
+            // can promote this runtime to active after verifying the OS.
+            crate::os_update::set_pending_runtime_id(&new_manifest.id, base_dir).map_err(|e| {
+                UpdateError::StagingFailed(format!("Failed to set pending runtime: {e}"))
+            })?;
+        }
+    }
+
+    if reboot_required {
+        // OS update applied — don't activate the runtime yet.
+        // It will be promoted on next boot after OS verification.
+        let short_id = &new_manifest.id[..8.min(new_manifest.id.len())];
+        println!(
+            "  Staged runtime: {} {} ({short_id}) — pending OS verification on next boot",
+            new_manifest.runtime.name, new_manifest.runtime.version,
+        );
+    } else {
+        // No OS update — activate the runtime immediately
+        staging::activate_runtime(&new_manifest.id, base_dir)
+            .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
+
+        let short_id = &new_manifest.id[..8.min(new_manifest.id.len())];
+        println!(
+            "  Activated runtime: {} {} ({short_id})",
+            new_manifest.runtime.name, new_manifest.runtime.version,
+        );
     }
 
     // Clean up staging directory

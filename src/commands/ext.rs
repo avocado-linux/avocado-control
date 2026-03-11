@@ -53,6 +53,27 @@ fn is_running_in_initrd() -> bool {
     Path::new("/etc/initrd-release").exists()
 }
 
+/// Read the running rootfs's AVOCADO_OS_BUILD_ID from the appropriate os-release file.
+/// Returns None if the field is not present (e.g. initial provisioned rootfs).
+fn read_running_os_build_id() -> Option<String> {
+    let paths: &[&str] = if is_running_in_initrd() {
+        &["/sysroot/etc/os-release", "/sysroot/usr/lib/os-release"]
+    } else {
+        &["/etc/os-release", "/usr/lib/os-release"]
+    };
+
+    for path in paths {
+        if let Ok(contents) = fs::read_to_string(path) {
+            if let Some(value) =
+                crate::os_update::parse_os_release_field(&contents, "AVOCADO_OS_BUILD_ID")
+            {
+                return Some(value.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Parse scope values from release file content (e.g., SYSEXT_SCOPE or CONFEXT_SCOPE)
 fn parse_scope_from_release_content(content: &str, scope_key: &str) -> Vec<String> {
     let mut scopes = Vec::new();
@@ -322,8 +343,11 @@ pub(crate) fn merge_extensions_internal(
     output: &OutputManager,
 ) -> Result<(), SystemdError> {
     // Check for pending OS update — verify the new OS booted correctly.
-    // On failure, log the mismatch and continue booting with previous runtime
-    // extensions (which are still stored). No rollback or reboot.
+    // If a runtime_id is set, the runtime hasn't been activated yet and depends
+    // on OS verification. On success, promote the pending runtime to active.
+    // On failure, rollback the boot slot and keep the current active runtime.
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
     if let Some(pending) = crate::os_update::read_pending_update() {
         let mut verified = true;
 
@@ -386,11 +410,35 @@ pub(crate) fn merge_extensions_internal(
 
         if verified {
             output.step("OS Update", "Verification passed, clearing pending marker");
+            // Promote pending runtime to active if one is set
+            if let Some(ref runtime_id) = pending.runtime_id {
+                match crate::staging::activate_runtime(runtime_id, base_path) {
+                    Ok(()) => {
+                        output.step(
+                            "OS Update",
+                            &format!("Activated pending runtime: {runtime_id}"),
+                        );
+                    }
+                    Err(e) => {
+                        output.error(
+                            "OS Update",
+                            &format!("Failed to activate pending runtime {runtime_id}: {e}"),
+                        );
+                    }
+                }
+            }
         } else {
-            output.error(
-                "OS Update",
-                "Pending update verification failed — booting with previous runtime extensions",
-            );
+            output.error("OS Update", "Pending update verification failed");
+            // Rollback boot slot to previous OS
+            if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
+                output.error("OS Update", &format!("Rollback failed: {e}"));
+            }
+            if pending.runtime_id.is_some() {
+                output.step(
+                    "OS Update",
+                    "Keeping current active runtime (OS update did not succeed)",
+                );
+            }
         }
         // Always clear pending marker to avoid re-checking on subsequent boots
         crate::os_update::clear_pending_update().ok();
@@ -398,41 +446,65 @@ pub(crate) fn merge_extensions_internal(
 
     // Verify rootfs matches what the active runtime expects.
     // If the runtime's os_bundle.os_build_id doesn't match the running rootfs,
-    // loading extensions built for a different rootfs would create an inconsistent state.
-    let base_dir = config.get_avocado_base_dir();
-    if let Some(manifest) = crate::manifest::RuntimeManifest::load_active(Path::new(&base_dir)) {
+    // try to fall back to a previous runtime that is compatible.
+    // Never refuse to merge extensions — always make a best effort.
+    if let Some(manifest) = crate::manifest::RuntimeManifest::load_active(base_path) {
         if let Some(ref os_bundle) = manifest.os_bundle {
             if let Some(ref expected_id) = os_bundle.os_build_id {
-                let verify = crate::os_update::VerifyConfig {
-                    verify_type: "os-release".to_string(),
-                    field: "AVOCADO_OS_BUILD_ID".to_string(),
-                    expected: expected_id.clone(),
-                };
-                match crate::os_update::verify_os_release(&verify) {
-                    Ok(true) => {
+                match read_running_os_build_id() {
+                    Some(ref running_id) if running_id == expected_id => {
                         // Rootfs matches — proceed normally
                     }
-                    Ok(false) => {
+                    Some(ref running_id) => {
+                        // Mismatch — try to fall back to a compatible runtime
                         output.error(
                             "Extension Merge",
                             &format!(
-                                "Rootfs mismatch: runtime expects AVOCADO_OS_BUILD_ID={} but running rootfs does not match. Refusing to load extensions for wrong rootfs.",
-                                expected_id
+                                "Rootfs mismatch: active runtime expects AVOCADO_OS_BUILD_ID={} but running rootfs has {}",
+                                expected_id, running_id
                             ),
                         );
-                        return Err(SystemdError::ConfigurationError {
-                            message: format!(
-                                "Rootfs AVOCADO_OS_BUILD_ID mismatch: runtime expects {}",
-                                expected_id
-                            ),
+
+                        let all_runtimes = crate::manifest::RuntimeManifest::list_all(base_path);
+                        let fallback = all_runtimes.iter().find(|(rt, is_active)| {
+                            !is_active
+                                && match &rt.os_bundle {
+                                    Some(bundle) => match &bundle.os_build_id {
+                                        Some(rt_id) => rt_id == running_id,
+                                        None => true,
+                                    },
+                                    None => true,
+                                }
                         });
+
+                        if let Some((fallback_rt, _)) = fallback {
+                            output.step(
+                                "Extension Merge",
+                                &format!(
+                                    "Falling back to runtime {} {} ({})",
+                                    fallback_rt.runtime.name,
+                                    fallback_rt.runtime.version,
+                                    fallback_rt.id
+                                ),
+                            );
+                            if let Err(e) =
+                                crate::staging::activate_runtime(&fallback_rt.id, base_path)
+                            {
+                                output.error(
+                                    "Extension Merge",
+                                    &format!("Failed to activate fallback runtime: {e}"),
+                                );
+                            }
+                        } else {
+                            output.error(
+                                "Extension Merge",
+                                "No compatible runtime found — proceeding with current runtime (best effort)",
+                            );
+                        }
                     }
-                    Err(e) => {
-                        output.error(
-                            "Extension Merge",
-                            &format!("Failed to verify rootfs os-release: {e}"),
-                        );
-                        // Don't block on verification errors — proceed with merge
+                    None => {
+                        // AVOCADO_OS_BUILD_ID not present in os-release — skip check
+                        // (initial provisioned rootfs or pre-avocado-cli image)
                     }
                 }
             }
