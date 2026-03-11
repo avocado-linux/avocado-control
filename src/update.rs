@@ -2,8 +2,8 @@ use crate::manifest::{RuntimeManifest, IMAGES_DIR_NAME};
 use crate::staging;
 use ed25519_compact::PublicKey;
 use sha2::{Digest, Sha256};
-use std::fs;
-use std::io::Read;
+use std::fs::{self, File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
 use thiserror::Error;
 
@@ -40,6 +40,7 @@ pub fn perform_update(
     base_dir: &Path,
     auth_token: Option<&str>,
     artifacts_url: Option<&str>,
+    stream_os_to_partition: bool,
     verbose: bool,
 ) -> Result<bool, UpdateError> {
     let url = url.trim_end_matches('/');
@@ -221,6 +222,7 @@ pub fn perform_update(
                 &existing_images,
                 auth_token,
                 artifacts_url,
+                None,
                 verbose,
             )?;
         }
@@ -235,12 +237,15 @@ pub fn perform_update(
                 &existing_images,
                 auth_token,
                 artifacts_url,
+                None,
                 verbose,
             )?;
         }
     }
 
-    // Check if OS bundle download can be skipped by comparing os_build_id
+    // Check if OS bundle download can be skipped by comparing os_build_id.
+    // When streaming mode is enabled, the OS bundle is never downloaded to staging —
+    // it will be streamed directly to partitions after runtime activation.
     let mut existing_images = existing_images;
     let mut os_bundle_skipped = false;
     let manifest_path = staging_dir.join("manifest.json");
@@ -248,6 +253,13 @@ pub fn perform_update(
         if let Ok(content) = fs::read_to_string(&manifest_path) {
             if let Ok(manifest) = serde_json::from_str::<RuntimeManifest>(&content) {
                 if let Some(ref os_bundle) = manifest.os_bundle {
+                    let bundle_filename = format!("{}.raw", os_bundle.image_id);
+
+                    if stream_os_to_partition {
+                        // In streaming mode, skip downloading the .aos — we'll stream it later
+                        existing_images.insert(bundle_filename.clone());
+                    }
+
                     if let Some(ref expected_id) = os_bundle.os_build_id {
                         let matches =
                             crate::os_update::verify_os_release(&crate::os_update::VerifyConfig {
@@ -258,7 +270,6 @@ pub fn perform_update(
                             .unwrap_or(false);
                         if matches {
                             // OS is already at target version — skip downloading the bundle
-                            let bundle_filename = format!("{}.raw", os_bundle.image_id);
                             println!(
                                 "    OS already at target version (AVOCADO_OS_BUILD_ID={expected_id}), skipping OS bundle download"
                             );
@@ -270,6 +281,13 @@ pub fn perform_update(
             }
         }
     }
+
+    // When streaming mode is enabled, download extension .raw files directly to images/
+    let direct_images = if stream_os_to_partition {
+        Some(images_dir.as_path())
+    } else {
+        None
+    };
 
     // Download remaining targets (skipping manifest.json which is already downloaded)
     for (name_str, target_info) in &inline_targets {
@@ -284,6 +302,7 @@ pub fn perform_update(
             &existing_images,
             auth_token,
             artifacts_url,
+            direct_images,
             verbose,
         )?;
     }
@@ -299,6 +318,7 @@ pub fn perform_update(
             &existing_images,
             auth_token,
             artifacts_url,
+            direct_images,
             verbose,
         )?;
     }
@@ -368,6 +388,23 @@ pub fn perform_update(
                 "  OS already up to date (AVOCADO_OS_BUILD_ID={})",
                 os_bundle.os_build_id.as_deref().unwrap_or("unknown")
             );
+        } else if stream_os_to_partition {
+            // Stream the .aos directly from HTTP to partitions
+            let bundle_filename = format!("{}.raw", os_bundle.image_id);
+            let target_url = if let Some(art_url) = artifacts_url {
+                let art_url = art_url.trim_end_matches('/');
+                format!("{art_url}/{bundle_filename}")
+            } else {
+                format!("{url}/targets/{bundle_filename}")
+            };
+
+            println!("  OS bundle detected. Streaming directly to partitions...");
+            let mut body = fetch_url_response(&target_url, auth_token)?;
+            crate::os_update::apply_os_update_streaming(body.as_reader(), base_dir, verbose)
+                .map_err(|e| {
+                    UpdateError::StagingFailed(format!("Streaming OS update failed: {e}"))
+                })?;
+            reboot_required = true;
         } else {
             let aos_path = base_dir
                 .join(IMAGES_DIR_NAME)
@@ -386,8 +423,12 @@ pub fn perform_update(
     Ok(reboot_required)
 }
 
-/// Download a single target file into the staging directory, verifying hash and length.
+/// Download a single target file, verifying hash and length.
 /// Skips content-addressable image files that already exist on disk.
+/// Large `.raw` files use resumable streaming downloads; small files use in-memory fetch.
+///
+/// When `direct_images_dir` is set, `.raw` extension images are downloaded directly
+/// to the images directory (skipping the staging copy step).
 #[allow(clippy::too_many_arguments)]
 fn download_target(
     url: &str,
@@ -397,6 +438,7 @@ fn download_target(
     existing_images: &std::collections::HashSet<String>,
     auth_token: Option<&str>,
     artifacts_url: Option<&str>,
+    direct_images_dir: Option<&Path>,
     verbose: bool,
 ) -> Result<(), UpdateError> {
     // Content-addressable skip: if this target is an image that already
@@ -418,37 +460,261 @@ fn download_target(
     } else {
         format!("{url}/targets/{name_str}")
     };
-    if verbose {
-        println!("    Downloading {name_str}...");
+
+    let expected_hex = hex_encode(target_info.hashes.sha256.as_ref());
+
+    // When streaming mode is on, download .raw extension images directly to images/
+    let dest_path = if name_str.ends_with(".raw") {
+        if let Some(images_dir) = direct_images_dir {
+            images_dir.join(name_str)
+        } else {
+            staging_dir.join(name_str)
+        }
+    } else {
+        staging_dir.join(name_str)
+    };
+
+    // Use resumable streaming for .raw files (can be 100MB+)
+    if name_str.ends_with(".raw") {
+        download_target_streaming(
+            &target_url,
+            &dest_path,
+            target_info.length,
+            &expected_hex,
+            auth_token,
+            verbose,
+        )?;
+    } else {
+        if verbose {
+            println!("    Downloading {name_str}...");
+        }
+        let data = fetch_url_bytes(&target_url, auth_token)?;
+
+        if data.len() as u64 != target_info.length {
+            return Err(UpdateError::HashMismatch {
+                target: name_str.to_string(),
+                expected: format!("{} bytes", target_info.length),
+                actual: format!("{} bytes", data.len()),
+            });
+        }
+
+        let actual_hash = sha256_hex(&data);
+        if actual_hash != expected_hex {
+            return Err(UpdateError::HashMismatch {
+                target: name_str.to_string(),
+                expected: expected_hex,
+                actual: actual_hash,
+            });
+        }
+
+        fs::write(&dest_path, &data)
+            .map_err(|e| UpdateError::StagingFailed(format!("Failed to write {name_str}: {e}")))?;
     }
 
-    let data = fetch_url_bytes(&target_url, auth_token)?;
+    Ok(())
+}
 
-    // Verify length
-    if data.len() as u64 != target_info.length {
+/// Resumable streaming download for large target files.
+///
+/// Downloads to a `.part` temp file, resuming from the last byte on interruption.
+/// On completion, verifies SHA256 + length against TUF metadata and atomically
+/// renames to the final path. Handles servers that don't support Range requests
+/// by falling back to a full download.
+fn download_target_streaming(
+    url: &str,
+    dest_path: &Path,
+    expected_len: u64,
+    expected_sha256: &str,
+    auth_token: Option<&str>,
+    verbose: bool,
+) -> Result<(), UpdateError> {
+    let name = dest_path.file_name().unwrap_or_default().to_string_lossy();
+
+    // 1. Check if the final file already exists and is valid
+    if dest_path.exists() {
+        if let Ok(meta) = dest_path.metadata() {
+            if meta.len() == expected_len {
+                let actual = sha256_file(dest_path)?;
+                if actual == expected_sha256 {
+                    println!("    Already in staging, verified: {name}");
+                    return Ok(());
+                }
+            }
+        }
+        // Wrong size or hash — remove and re-download
+        let _ = fs::remove_file(dest_path);
+    }
+
+    // 2. Check for a partial download from a previous interrupted attempt
+    let part_path = dest_path.with_extension("raw.part");
+    let mut existing_len: u64 = 0;
+
+    if part_path.exists() {
+        if let Ok(meta) = part_path.metadata() {
+            let len = meta.len();
+            if len > expected_len {
+                // Corrupted — larger than expected, start fresh
+                let _ = fs::remove_file(&part_path);
+            } else if len == expected_len {
+                // Looks complete — verify hash
+                let actual = sha256_file(&part_path)?;
+                if actual == expected_sha256 {
+                    fs::rename(&part_path, dest_path).map_err(|e| {
+                        UpdateError::StagingFailed(format!("Failed to rename {name}: {e}"))
+                    })?;
+                    println!("    Completed partial verified: {name}");
+                    return Ok(());
+                }
+                // Hash mismatch — start fresh
+                let _ = fs::remove_file(&part_path);
+            } else {
+                existing_len = len;
+            }
+        }
+    }
+
+    // 3. Download (with Range header if resuming)
+    if existing_len > 0 {
+        println!(
+            "    Resuming {name} from {} / {} bytes",
+            existing_len, expected_len
+        );
+    } else if verbose {
+        println!("    Downloading {name} ({expected_len} bytes)...");
+    }
+
+    let (mut file, bytes_before) = fetch_streaming(url, &part_path, existing_len, auth_token)?;
+
+    // 4. Stream response body to disk
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = bytes_before;
+    let mut reader = file.1.as_reader();
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
+        if n == 0 {
+            break;
+        }
+        file.0
+            .write_all(&buf[..n])
+            .map_err(|e| UpdateError::StagingFailed(format!("Write failed for {name}: {e}")))?;
+        total += n as u64;
+    }
+    file.0
+        .sync_all()
+        .map_err(|e| UpdateError::StagingFailed(format!("Sync failed for {name}: {e}")))?;
+
+    // 5. Verify length
+    if total != expected_len {
+        let _ = fs::remove_file(&part_path);
         return Err(UpdateError::HashMismatch {
-            target: name_str.to_string(),
-            expected: format!("{} bytes", target_info.length),
-            actual: format!("{} bytes", data.len()),
+            target: name.to_string(),
+            expected: format!("{expected_len} bytes"),
+            actual: format!("{total} bytes"),
         });
     }
 
-    // Verify sha256 hash
-    let expected_hex = hex_encode(target_info.hashes.sha256.as_ref());
-    let actual_hash = sha256_hex(&data);
-    if actual_hash != expected_hex {
+    // 6. Verify SHA256 of the complete file
+    let actual_hash = sha256_file(&part_path)?;
+    if actual_hash != expected_sha256 {
+        let _ = fs::remove_file(&part_path);
         return Err(UpdateError::HashMismatch {
-            target: name_str.to_string(),
-            expected: expected_hex,
+            target: name.to_string(),
+            expected: expected_sha256.to_string(),
             actual: actual_hash,
         });
     }
 
-    let target_path = staging_dir.join(name_str);
-    fs::write(&target_path, &data)
-        .map_err(|e| UpdateError::StagingFailed(format!("Failed to write {name_str}: {e}")))?;
+    // 7. Atomic rename
+    fs::rename(&part_path, dest_path)
+        .map_err(|e| UpdateError::StagingFailed(format!("Failed to rename {name}: {e}")))?;
 
+    println!("    Downloaded and verified: {name}");
     Ok(())
+}
+
+/// Issue an HTTP GET (optionally with Range header), returning the open file
+/// handle and a body reader. If the server doesn't support Range (returns 200
+/// instead of 206), the file is truncated and download starts from the beginning.
+/// Returns (file, body_reader) and the effective byte offset we're writing from.
+fn fetch_streaming(
+    url: &str,
+    part_path: &Path,
+    existing_len: u64,
+    auth_token: Option<&str>,
+) -> Result<((File, ureq::Body), u64), UpdateError> {
+    let make_request = |range_from: Option<u64>| {
+        let mut req = ureq::get(url);
+        if let Some(token) = auth_token {
+            req = req.header("Authorization", format!("Bearer {token}"));
+        }
+        if let Some(from) = range_from {
+            req = req.header("Range", format!("bytes={from}-"));
+        }
+        req.call()
+            .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))
+    };
+
+    if existing_len > 0 {
+        match make_request(Some(existing_len)) {
+            Ok(response) => {
+                let status = response.status().as_u16();
+                if status == 206 {
+                    // Server supports Range — append to existing .part file
+                    let file = OpenOptions::new()
+                        .append(true)
+                        .open(part_path)
+                        .map_err(|e| {
+                            UpdateError::StagingFailed(format!(
+                                "Failed to open .part for append: {e}"
+                            ))
+                        })?;
+                    return Ok(((file, response.into_body()), existing_len));
+                }
+                // 200 or other — server sent the full file; start fresh
+                let file = File::create(part_path).map_err(|e| {
+                    UpdateError::StagingFailed(format!("Failed to create .part: {e}"))
+                })?;
+                return Ok(((file, response.into_body()), 0));
+            }
+            Err(_) => {
+                // Request failed (possibly 416) — delete .part and try fresh
+                let _ = fs::remove_file(part_path);
+            }
+        }
+    }
+
+    // Full download from scratch
+    let response = make_request(None)?;
+    let file = File::create(part_path)
+        .map_err(|e| UpdateError::StagingFailed(format!("Failed to create .part: {e}")))?;
+    Ok(((file, response.into_body()), 0))
+}
+
+/// Compute SHA256 hash of a file by streaming, avoiding loading the full file into memory.
+fn sha256_file(path: &Path) -> Result<String, UpdateError> {
+    let mut file = File::open(path).map_err(|e| {
+        UpdateError::StagingFailed(format!(
+            "Failed to open {} for hashing: {e}",
+            path.display()
+        ))
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf).map_err(|e| {
+            UpdateError::StagingFailed(format!(
+                "Failed to read {} for hashing: {e}",
+                path.display()
+            ))
+        })?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex_encode(&hasher.finalize()))
 }
 
 /// Verify a delegation file's hash and length against the snapshot metadata.
@@ -686,6 +952,19 @@ fn fetch_url_bytes(url: &str, auth_token: Option<&str>) -> Result<Vec<u8>, Updat
     Ok(body)
 }
 
+/// Fetch a URL and return the response body for streaming.
+fn fetch_url_response(url: &str, auth_token: Option<&str>) -> Result<ureq::Body, UpdateError> {
+    let req = ureq::get(url);
+    let response = match auth_token {
+        Some(token) => req.header("Authorization", format!("Bearer {token}")),
+        None => req,
+    }
+    .call()
+    .map_err(|e| UpdateError::FetchFailed(url.to_string(), e.to_string()))?;
+
+    Ok(response.into_body())
+}
+
 fn parse_metadata<T: serde::de::DeserializeOwned>(
     name: &str,
     raw: &str,
@@ -809,6 +1088,78 @@ mod tests {
     }
 
     #[test]
+    fn test_sha256_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("test.bin");
+        fs::write(&path, b"hello world").unwrap();
+
+        let hash = sha256_file(&path).unwrap();
+        // Known SHA256 of "hello world"
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn test_sha256_file_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let path = tmp.path().join("empty.bin");
+        fs::write(&path, b"").unwrap();
+
+        let hash = sha256_file(&path).unwrap();
+        // Known SHA256 of empty string
+        assert_eq!(
+            hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    #[test]
+    fn test_download_target_streaming_skips_valid_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("test.raw");
+        let data = b"test content for streaming";
+        fs::write(&dest, data).unwrap();
+
+        let hash = sha256_hex(data);
+        let result = download_target_streaming(
+            "http://localhost:1/nonexistent",
+            &dest,
+            data.len() as u64,
+            &hash,
+            None,
+            false,
+        );
+        assert!(
+            result.is_ok(),
+            "Should skip download for valid existing file"
+        );
+    }
+
+    #[test]
+    fn test_download_target_streaming_rejects_wrong_size() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dest = tmp.path().join("bad.raw");
+        // File has wrong size — should be removed
+        fs::write(&dest, b"short").unwrap();
+
+        let hash = sha256_hex(b"this is the expected content");
+        // This will try to download from a nonexistent URL after removing the bad file
+        let result = download_target_streaming(
+            "http://127.0.0.1:1/nonexistent",
+            &dest,
+            28,
+            &hash,
+            None,
+            false,
+        );
+        // Should fail because the URL is unreachable, but the bad file should be gone
+        assert!(result.is_err());
+        assert!(!dest.exists(), "Bad file should have been removed");
+    }
+
+    #[test]
     fn test_hex_roundtrip() {
         let data = vec![0xab, 0xcd, 0xef, 0x01, 0x23];
         let hex = hex_encode(&data);
@@ -826,7 +1177,14 @@ mod tests {
     #[test]
     fn test_no_trust_anchor() {
         let tmp = tempfile::TempDir::new().unwrap();
-        let result = perform_update("http://localhost:9999", tmp.path(), None, None, false);
+        let result = perform_update(
+            "http://localhost:9999",
+            tmp.path(),
+            None,
+            None,
+            false,
+            false,
+        );
         assert!(matches!(result, Err(UpdateError::NoTrustAnchor)));
     }
 

@@ -24,6 +24,19 @@ pub struct AvocadoConfig {
     /// (default: unix:/run/avocado/avocadoctl.sock)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub socket: Option<String>,
+    /// Update settings (streaming, etc.)
+    #[serde(default)]
+    pub update: UpdateSettings,
+}
+
+/// Update configuration
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct UpdateSettings {
+    /// Stream OS bundle artifacts directly from HTTP to partitions without staging to disk.
+    /// Reduces disk I/O and temporary storage but disables resumable downloads for the OS bundle.
+    /// Default: false
+    #[serde(default)]
+    pub stream_os_to_partition: bool,
 }
 
 /// Extension configuration
@@ -52,6 +65,7 @@ impl Default for Config {
                 },
                 runtimes_dir: None,
                 socket: None,
+                update: UpdateSettings::default(),
             },
         }
     }
@@ -93,6 +107,11 @@ impl Config {
             .socket
             .as_deref()
             .unwrap_or("unix:/run/avocado/avocadoctl.sock")
+    }
+
+    /// Whether to stream OS bundle artifacts directly to partitions (default: false)
+    pub fn stream_os_to_partition(&self) -> bool {
+        self.avocado.update.stream_os_to_partition
     }
 
     /// Get the extensions directory, checking environment variable first
@@ -534,6 +553,31 @@ mutable = "yes"
         assert!(error_message.contains("Invalid mutable value 'invalid_value'"));
         assert!(error_message
             .contains("Must be one of: no, auto, yes, import, ephemeral, ephemeral-import"));
+    }
+
+    #[test]
+    fn test_stream_os_to_partition_default_false() {
+        let config = Config::default();
+        assert!(!config.stream_os_to_partition());
+    }
+
+    #[test]
+    fn test_stream_os_to_partition_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("stream_test.toml");
+
+        let config_content = r#"
+[avocado.ext]
+dir = "/var/lib/avocado/images"
+
+[avocado.update]
+stream_os_to_partition = true
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert!(config.stream_os_to_partition());
     }
 
     #[test]

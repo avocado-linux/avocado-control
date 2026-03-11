@@ -94,6 +94,7 @@ fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
             base_path,
             auth_token.as_deref(),
             None,
+            config.stream_os_to_partition(),
             output.is_verbose(),
         ) {
             Ok(reboot_required) => {

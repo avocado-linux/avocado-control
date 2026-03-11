@@ -78,7 +78,14 @@ pub fn add_from_url_streaming(
 ) -> Result<StreamHandle, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
-    let reboot_required = update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
+    let reboot_required = update::perform_update(
+        url,
+        base_path,
+        auth_token,
+        artifacts_url,
+        config.stream_os_to_partition(),
+        false,
+    )?;
 
     if reboot_required {
         return Ok(reboot_streaming(
@@ -144,7 +151,14 @@ pub fn add_from_url(
 ) -> Result<Vec<String>, AvocadoError> {
     let base_dir = config.get_avocado_base_dir();
     let base_path = Path::new(&base_dir);
-    let reboot_required = update::perform_update(url, base_path, auth_token, artifacts_url, false)?;
+    let reboot_required = update::perform_update(
+        url,
+        base_path,
+        auth_token,
+        artifacts_url,
+        config.stream_os_to_partition(),
+        false,
+    )?;
 
     if reboot_required {
         println!("  OS update applied. Rebooting to activate new OS...");
