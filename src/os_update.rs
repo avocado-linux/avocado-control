@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
-use std::io::{self, BufReader, BufWriter, Read};
+use std::io::{self, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use thiserror::Error;
@@ -56,6 +56,8 @@ pub struct OsBundle {
     pub verify: Option<VerifyConfig>,
     #[serde(default)]
     pub verify_initramfs: Option<VerifyConfig>,
+    #[serde(default)]
+    pub layout: Option<BundleLayout>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,8 +65,29 @@ pub struct UpdateConfig {
     pub strategy: String,
     pub slot_detection: SlotDetection,
     pub artifacts: Vec<Artifact>,
-    pub activate: SlotAction,
-    pub rollback: Option<SlotAction>,
+    pub activate: Vec<SlotAction>,
+    #[serde(default)]
+    pub rollback: Option<Vec<SlotAction>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BundleLayout {
+    pub device: String,
+    #[serde(default)]
+    pub block_size: Option<u32>,
+    #[serde(default)]
+    pub partitions: Vec<LayoutPartition>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LayoutPartition {
+    pub name: Option<String>,
+    pub offset: Option<f64>,
+    pub offset_unit: Option<String>,
+    pub size: f64,
+    pub size_unit: String,
+    #[serde(default)]
+    pub expand: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -97,6 +120,11 @@ pub enum SlotAction {
     UbootEnv { set: HashMap<String, String> },
     #[serde(rename = "command")]
     Command { command: Vec<String> },
+    #[serde(rename = "mbr-switch")]
+    MbrSwitch {
+        devpath: String,
+        slot_layouts: HashMap<String, Vec<String>>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -117,7 +145,7 @@ pub struct PendingUpdate {
     pub verify: Option<VerifyConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_initramfs: Option<VerifyConfig>,
-    pub rollback: Option<SlotAction>,
+    pub rollback: Option<Vec<SlotAction>>,
     pub previous_slot: String,
 }
 
@@ -197,29 +225,39 @@ pub fn apply_os_update(
         })?;
 
         let source_path = staging_dir.join(&artifact.file);
-        let partition_path = resolve_partition(&target.partition)?;
-
-        if verbose {
-            println!(
-                "    Writing {} -> {} (partition: {})",
-                artifact.name,
-                partition_path.display(),
-                target.partition
-            );
-        }
 
         // Verify SHA256 of source file
         verify_sha256(&source_path, &artifact.sha256, &artifact.name)?;
 
-        // Write to partition
-        write_to_partition(&source_path, &partition_path, &artifact.name)?;
+        // Write to partition: use layout-based offset if available (MBR), else PARTLABEL (GPT)
+        if let Some(ref layout) = bundle.layout {
+            let byte_offset = resolve_partition_offset(&target.partition, layout)?;
+            if verbose {
+                println!(
+                    "    Writing {} -> {}@{} (partition: {})",
+                    artifact.name, layout.device, byte_offset, target.partition
+                );
+            }
+            write_to_device_at_offset(&source_path, &layout.device, byte_offset, &artifact.name)?;
+        } else {
+            let partition_path = resolve_partition(&target.partition)?;
+            if verbose {
+                println!(
+                    "    Writing {} -> {} (partition: {})",
+                    artifact.name,
+                    partition_path.display(),
+                    target.partition
+                );
+            }
+            write_to_partition(&source_path, &partition_path, &artifact.name)?;
+        }
     }
 
     // Activate the new slot
     if verbose {
         println!("    Activating slot: {inactive_slot}");
     }
-    execute_slot_action(&update.activate, &inactive_slot)?;
+    execute_slot_actions(&update.activate, &inactive_slot, bundle.layout.as_ref())?;
 
     // Write pending-update marker
     let pending = PendingUpdate {
@@ -307,11 +345,11 @@ pub fn verify_os_release_from(
 
 /// Execute rollback: switch back to previous slot and clear the pending marker.
 pub fn rollback_os_update(pending: &PendingUpdate, verbose: bool) -> Result<(), OsUpdateError> {
-    if let Some(ref rollback_action) = pending.rollback {
+    if let Some(ref rollback_actions) = pending.rollback {
         if verbose {
             println!("    Rolling back to slot: {}", pending.previous_slot);
         }
-        execute_slot_action(rollback_action, &pending.previous_slot)
+        execute_slot_actions(rollback_actions, &pending.previous_slot, None)
             .map_err(|e| OsUpdateError::RollbackFailed(e.to_string()))?;
     }
     clear_pending_update()?;
@@ -500,9 +538,204 @@ fn write_to_partition(
     Ok(())
 }
 
+fn resolve_partition_offset(
+    partition_name: &str,
+    layout: &BundleLayout,
+) -> Result<u64, OsUpdateError> {
+    let part = layout
+        .partitions
+        .iter()
+        .find(|p| p.name.as_deref() == Some(partition_name))
+        .ok_or_else(|| {
+            OsUpdateError::ArtifactWriteFailed(format!(
+                "Partition '{partition_name}' not found in layout"
+            ))
+        })?;
+
+    let offset = part.offset.ok_or_else(|| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Partition '{partition_name}' has no offset in layout"
+        ))
+    })?;
+
+    Ok(convert_to_bytes(offset, part.offset_unit.as_deref()))
+}
+
+fn convert_to_bytes(value: f64, unit: Option<&str>) -> u64 {
+    let multiplier = match unit {
+        Some("mebibytes") => 1024 * 1024,
+        Some("kibibytes") => 1024,
+        Some("bytes") | None => 1,
+        _ => 1, // default to bytes
+    };
+    (value as u64) * multiplier
+}
+
+fn convert_size_to_bytes(part: &LayoutPartition) -> u64 {
+    convert_to_bytes(part.size, Some(&part.size_unit))
+}
+
+fn write_to_device_at_offset(
+    source: &Path,
+    devpath: &str,
+    byte_offset: u64,
+    artifact_name: &str,
+) -> Result<(), OsUpdateError> {
+    let src = fs::File::open(source).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Failed to open source for {artifact_name}: {e}"
+        ))
+    })?;
+    let mut dest = fs::OpenOptions::new()
+        .write(true)
+        .open(devpath)
+        .map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!(
+                "Failed to open device {devpath} for {artifact_name}: {e}"
+            ))
+        })?;
+
+    dest.seek(SeekFrom::Start(byte_offset)).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Failed to seek to offset {byte_offset} on {devpath} for {artifact_name}: {e}"
+        ))
+    })?;
+
+    let mut reader = BufReader::with_capacity(4 * 1024 * 1024, src);
+    let mut writer = BufWriter::with_capacity(4 * 1024 * 1024, &mut dest);
+
+    io::copy(&mut reader, &mut writer).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Failed to write {artifact_name} to {devpath}@{byte_offset}: {e}"
+        ))
+    })?;
+
+    writer
+        .into_inner()
+        .map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to flush {artifact_name}: {e}"))
+        })?
+        .sync_all()
+        .map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to sync {artifact_name}: {e}"))
+        })?;
+
+    Ok(())
+}
+
+fn write_mbr_partition_table(
+    devpath: &str,
+    partition_names: &[String],
+    layout: &BundleLayout,
+) -> Result<(), OsUpdateError> {
+    // Read existing MBR (preserve bootstrap code in bytes 0-445)
+    let mut mbr = [0u8; 512];
+    {
+        let mut dev = fs::File::open(devpath).map_err(|e| {
+            OsUpdateError::ActivationFailed(format!("Failed to open {devpath} for MBR read: {e}"))
+        })?;
+        dev.read_exact(&mut mbr).map_err(|e| {
+            OsUpdateError::ActivationFailed(format!("Failed to read MBR from {devpath}: {e}"))
+        })?;
+    }
+
+    let block_size = layout.block_size.unwrap_or(512) as u64;
+
+    // Clear partition table entries (bytes 446-509)
+    mbr[446..510].fill(0);
+
+    // Write up to 4 partition entries
+    for (i, part_name) in partition_names.iter().enumerate().take(4) {
+        let part = layout
+            .partitions
+            .iter()
+            .find(|p| p.name.as_deref() == Some(part_name.as_str()))
+            .ok_or_else(|| {
+                OsUpdateError::ActivationFailed(format!(
+                    "MBR layout references unknown partition '{part_name}'"
+                ))
+            })?;
+
+        let offset_bytes = part
+            .offset
+            .map(|o| convert_to_bytes(o, part.offset_unit.as_deref()))
+            .unwrap_or(0);
+        let size_bytes = convert_size_to_bytes(part);
+        let lba_start = (offset_bytes / block_size) as u32;
+        let lba_count = (size_bytes / block_size) as u32;
+
+        // Determine partition type from name convention
+        let part_type: u8 = if part_name.starts_with("boot") {
+            0x0C // FAT32 LBA
+        } else {
+            0x83 // Linux
+        };
+
+        let entry_offset = 446 + i * 16;
+
+        // Status: 0x80 = bootable for first entry, 0x00 otherwise
+        mbr[entry_offset] = if i == 0 { 0x80 } else { 0x00 };
+
+        // CHS start (use LBA-mode filler)
+        mbr[entry_offset + 1] = 0xFE;
+        mbr[entry_offset + 2] = 0xFF;
+        mbr[entry_offset + 3] = 0xFF;
+
+        // Partition type
+        mbr[entry_offset + 4] = part_type;
+
+        // CHS end (use LBA-mode filler)
+        mbr[entry_offset + 5] = 0xFE;
+        mbr[entry_offset + 6] = 0xFF;
+        mbr[entry_offset + 7] = 0xFF;
+
+        // LBA start (little-endian u32)
+        mbr[entry_offset + 8..entry_offset + 12].copy_from_slice(&lba_start.to_le_bytes());
+
+        // LBA size (little-endian u32)
+        mbr[entry_offset + 12..entry_offset + 16].copy_from_slice(&lba_count.to_le_bytes());
+    }
+
+    // Boot signature
+    mbr[510] = 0x55;
+    mbr[511] = 0xAA;
+
+    // Write MBR back atomically
+    let mut dev = fs::OpenOptions::new()
+        .write(true)
+        .open(devpath)
+        .map_err(|e| {
+            OsUpdateError::ActivationFailed(format!("Failed to open {devpath} for MBR write: {e}"))
+        })?;
+    dev.write_all(&mbr).map_err(|e| {
+        OsUpdateError::ActivationFailed(format!("Failed to write MBR to {devpath}: {e}"))
+    })?;
+    dev.sync_all().map_err(|e| {
+        OsUpdateError::ActivationFailed(format!("Failed to sync MBR on {devpath}: {e}"))
+    })?;
+
+    Ok(())
+}
+
+/// Execute a sequence of slot actions.
+pub fn execute_slot_actions(
+    actions: &[SlotAction],
+    slot: &str,
+    layout: Option<&BundleLayout>,
+) -> Result<(), OsUpdateError> {
+    for action in actions {
+        execute_slot_action(action, slot, layout)?;
+    }
+    Ok(())
+}
+
 /// Execute a slot action, replacing `{inactive_slot}` or `{previous_slot}`
 /// placeholders with the provided slot value.
-pub fn execute_slot_action(action: &SlotAction, slot: &str) -> Result<(), OsUpdateError> {
+pub fn execute_slot_action(
+    action: &SlotAction,
+    slot: &str,
+    layout: Option<&BundleLayout>,
+) -> Result<(), OsUpdateError> {
     let replace_placeholders = |s: &str| -> String {
         s.replace("{inactive_slot}", slot)
             .replace("{previous_slot}", slot)
@@ -549,6 +782,18 @@ pub fn execute_slot_action(action: &SlotAction, slot: &str) -> Result<(), OsUpda
                 )));
             }
             Ok(())
+        }
+        SlotAction::MbrSwitch {
+            devpath,
+            slot_layouts,
+        } => {
+            let layout = layout.ok_or_else(|| {
+                OsUpdateError::ActivationFailed("MBR switch requires layout in bundle".to_string())
+            })?;
+            let partition_names = slot_layouts.get(slot).ok_or_else(|| {
+                OsUpdateError::ActivationFailed(format!("No MBR layout for slot '{slot}'"))
+            })?;
+            write_mbr_partition_table(devpath, partition_names, layout)
         }
     }
 }
@@ -647,12 +892,12 @@ PRETTY_NAME="Avocado Linux 2024.1"
                 field: "AVOCADO_OS_BUILD_ID".to_string(),
                 expected: "initramfs-456".to_string(),
             }),
-            rollback: Some(SlotAction::UbootEnv {
+            rollback: Some(vec![SlotAction::UbootEnv {
                 set: HashMap::from([(
                     "avocado_boot_slot".to_string(),
                     "{previous_slot}".to_string(),
                 )]),
-            }),
+            }]),
             previous_slot: "a".to_string(),
         };
 
@@ -710,14 +955,18 @@ PRETTY_NAME="Avocado Linux 2024.1"
                         }
                     }
                 ],
-                "activate": {
-                    "type": "uboot-env",
-                    "set": { "avocado_boot_slot": "{inactive_slot}" }
-                },
-                "rollback": {
-                    "type": "uboot-env",
-                    "set": { "avocado_boot_slot": "{previous_slot}" }
-                }
+                "activate": [
+                    {
+                        "type": "uboot-env",
+                        "set": { "avocado_boot_slot": "{inactive_slot}" }
+                    }
+                ],
+                "rollback": [
+                    {
+                        "type": "uboot-env",
+                        "set": { "avocado_boot_slot": "{previous_slot}" }
+                    }
+                ]
             },
             "verify": {
                 "type": "os-release",
@@ -734,6 +983,7 @@ PRETTY_NAME="Avocado Linux 2024.1"
         let update = bundle.update.unwrap();
         assert_eq!(update.strategy, "uboot-ab");
         assert_eq!(update.artifacts.len(), 2);
+        assert_eq!(update.activate.len(), 1);
 
         let boot = &update.artifacts[0];
         assert_eq!(boot.name, "boot");
@@ -769,14 +1019,18 @@ PRETTY_NAME="Avocado Linux 2024.1"
                         }
                     }
                 ],
-                "activate": {
-                    "type": "command",
-                    "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{inactive_slot}"]
-                },
-                "rollback": {
-                    "type": "command",
-                    "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{previous_slot}"]
-                }
+                "activate": [
+                    {
+                        "type": "command",
+                        "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{inactive_slot}"]
+                    }
+                ],
+                "rollback": [
+                    {
+                        "type": "command",
+                        "command": ["nvbootctrl", "-t", "rootfs", "set-active-boot-slot", "{previous_slot}"]
+                    }
+                ]
             },
             "verify": {
                 "type": "os-release",
@@ -875,10 +1129,12 @@ PRETTY_NAME="Avocado Linux 2024.1"
                 "field": "BUILD_ID",
                 "expected": "build-old"
             },
-            "rollback": {
-                "type": "uboot-env",
-                "set": { "avocado_boot_slot": "{previous_slot}" }
-            },
+            "rollback": [
+                {
+                    "type": "uboot-env",
+                    "set": { "avocado_boot_slot": "{previous_slot}" }
+                }
+            ],
             "previous_slot": "a"
         }"#;
 
