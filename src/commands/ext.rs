@@ -321,57 +321,48 @@ pub(crate) fn merge_extensions_internal(
     config: &Config,
     output: &OutputManager,
 ) -> Result<(), SystemdError> {
-    // Check for pending OS update and verify before merging extensions.
-    // This ensures extensions are never merged against a mismatched OS release.
+    // Check for pending OS update — verify the new OS booted correctly.
+    // On failure, log the mismatch and continue booting with previous runtime
+    // extensions (which are still stored). No rollback or reboot.
     if let Some(pending) = crate::os_update::read_pending_update() {
-        // Verify rootfs os-release
-        let verified = if let Some(ref verify) = pending.verify {
+        let mut verified = true;
+
+        // Verify rootfs os-release (/sysroot/etc/os-release when in initrd)
+        if let Some(ref verify) = pending.verify {
             match crate::os_update::verify_os_release(verify) {
                 Ok(true) => {
                     output.step(
                         "OS Update",
-                        &format!("Verified — {} matches expected value", verify.field),
+                        &format!("Verified rootfs — {}={}", verify.field, verify.expected),
                     );
-                    true
                 }
                 Ok(false) => {
                     output.error(
                         "OS Update",
-                        &format!("{} mismatch — rolling back to previous slot", verify.field),
+                        &format!(
+                            "Rootfs {} mismatch — expected '{}'",
+                            verify.field, verify.expected
+                        ),
                     );
-                    if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
-                        output.error("OS Update", &format!("Rollback failed: {e}"));
-                    }
-                    // Reboot to return to previous slot
-                    let _ = std::process::Command::new("reboot").status();
-                    std::process::exit(1);
+                    verified = false;
                 }
                 Err(e) => {
-                    output.error(
-                        "OS Update",
-                        &format!("Verification failed: {e} — rolling back to previous slot"),
-                    );
-                    if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
-                        output.error("OS Update", &format!("Rollback failed: {e}"));
-                    }
-                    let _ = std::process::Command::new("reboot").status();
-                    std::process::exit(1);
+                    output.error("OS Update", &format!("Rootfs verification error: {e}"));
+                    verified = false;
                 }
             }
-        } else {
-            true
-        };
+        }
 
-        // Verify initramfs os-release when running in initrd
-        if verified && is_running_in_initrd() {
+        // Verify initrd identity (/etc/initrd-release when in initrd)
+        if is_running_in_initrd() {
             if let Some(ref verify_initramfs) = pending.verify_initramfs {
                 match crate::os_update::verify_os_release_initrd(verify_initramfs) {
                     Ok(true) => {
                         output.step(
                             "OS Update",
                             &format!(
-                                "Verified initramfs — {} matches expected value",
-                                verify_initramfs.field
+                                "Verified initramfs — {}={}",
+                                verify_initramfs.field, verify_initramfs.expected
                             ),
                         );
                     }
@@ -379,41 +370,30 @@ pub(crate) fn merge_extensions_internal(
                         output.error(
                             "OS Update",
                             &format!(
-                                "Initramfs {} mismatch — rolling back to previous slot",
-                                verify_initramfs.field
+                                "Initramfs {} mismatch — expected '{}'",
+                                verify_initramfs.field, verify_initramfs.expected
                             ),
                         );
-                        if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
-                            output.error("OS Update", &format!("Rollback failed: {e}"));
-                        }
-                        let _ = std::process::Command::new("reboot").status();
-                        std::process::exit(1);
+                        verified = false;
                     }
                     Err(e) => {
-                        output.error(
-                            "OS Update",
-                            &format!("Initramfs verification failed: {e} — rolling back to previous slot"),
-                        );
-                        if let Err(e) = crate::os_update::rollback_os_update(&pending, false) {
-                            output.error("OS Update", &format!("Rollback failed: {e}"));
-                        }
-                        let _ = std::process::Command::new("reboot").status();
-                        std::process::exit(1);
+                        output.error("OS Update", &format!("Initramfs verification error: {e}"));
+                        verified = false;
                     }
                 }
             }
         }
 
         if verified {
-            // All verifications passed — clear the pending marker
-            if pending.verify.is_none() {
-                output.step(
-                    "OS Update",
-                    "No verification configured, clearing pending marker",
-                );
-            }
-            crate::os_update::clear_pending_update().ok();
+            output.step("OS Update", "Verification passed, clearing pending marker");
+        } else {
+            output.error(
+                "OS Update",
+                "Pending update verification failed — booting with previous runtime extensions",
+            );
         }
+        // Always clear pending marker to avoid re-checking on subsequent boots
+        crate::os_update::clear_pending_update().ok();
     }
 
     let environment_info = if is_running_in_initrd() {

@@ -330,11 +330,11 @@ pub fn verify_os_release(verify: &VerifyConfig) -> Result<bool, OsUpdateError> {
 }
 
 /// Verify an initramfs os-release field matches the expected value.
-/// Checks /etc/os-release-initrd first, then /usr/lib/os-release-initrd.
+/// Checks /etc/initrd-release first, then /usr/lib/initrd-release.
 pub fn verify_os_release_initrd(verify: &VerifyConfig) -> Result<bool, OsUpdateError> {
     let paths = [
-        Path::new("/etc/os-release-initrd"),
-        Path::new("/usr/lib/os-release-initrd"),
+        Path::new("/etc/initrd-release"),
+        Path::new("/usr/lib/initrd-release"),
     ];
     for path in &paths {
         if path.exists() {
