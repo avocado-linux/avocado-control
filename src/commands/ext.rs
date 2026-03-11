@@ -396,6 +396,49 @@ pub(crate) fn merge_extensions_internal(
         crate::os_update::clear_pending_update().ok();
     }
 
+    // Verify rootfs matches what the active runtime expects.
+    // If the runtime's os_bundle.os_build_id doesn't match the running rootfs,
+    // loading extensions built for a different rootfs would create an inconsistent state.
+    let base_dir = config.get_avocado_base_dir();
+    if let Some(manifest) = crate::manifest::RuntimeManifest::load_active(Path::new(&base_dir)) {
+        if let Some(ref os_bundle) = manifest.os_bundle {
+            if let Some(ref expected_id) = os_bundle.os_build_id {
+                let verify = crate::os_update::VerifyConfig {
+                    verify_type: "os-release".to_string(),
+                    field: "AVOCADO_OS_BUILD_ID".to_string(),
+                    expected: expected_id.clone(),
+                };
+                match crate::os_update::verify_os_release(&verify) {
+                    Ok(true) => {
+                        // Rootfs matches — proceed normally
+                    }
+                    Ok(false) => {
+                        output.error(
+                            "Extension Merge",
+                            &format!(
+                                "Rootfs mismatch: runtime expects AVOCADO_OS_BUILD_ID={} but running rootfs does not match. Refusing to load extensions for wrong rootfs.",
+                                expected_id
+                            ),
+                        );
+                        return Err(SystemdError::ConfigurationError {
+                            message: format!(
+                                "Rootfs AVOCADO_OS_BUILD_ID mismatch: runtime expects {}",
+                                expected_id
+                            ),
+                        });
+                    }
+                    Err(e) => {
+                        output.error(
+                            "Extension Merge",
+                            &format!("Failed to verify rootfs os-release: {e}"),
+                        );
+                        // Don't block on verification errors — proceed with merge
+                    }
+                }
+            }
+        }
+    }
+
     let environment_info = if is_running_in_initrd() {
         "initrd environment"
     } else {

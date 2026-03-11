@@ -160,11 +160,14 @@ pub struct PendingUpdate {
 /// Extracts the bundle, parses bundle.json, writes artifacts to the inactive
 /// A/B slot, activates the new slot, and writes a pending-update marker for
 /// verification on next boot.
+///
+/// Returns `Ok(true)` if the update was applied and a reboot is needed,
+/// or `Ok(false)` if the OS was already at the target version (skipped).
 pub fn apply_os_update(
     aos_path: &Path,
     base_dir: &Path,
-    verbose: bool,
-) -> Result<(), OsUpdateError> {
+    _verbose: bool,
+) -> Result<bool, OsUpdateError> {
     let staging_dir = base_dir.join(OS_UPDATE_STAGING_DIR);
 
     // Clean up any previous staging
@@ -174,9 +177,7 @@ pub fn apply_os_update(
     })?;
 
     // Extract .aos (tar.zst)
-    if verbose {
-        println!("    Extracting OS bundle: {}", aos_path.display());
-    }
+    println!("    Extracting OS bundle: {}", aos_path.display());
     extract_aos(aos_path, &staging_dir)?;
 
     // Parse bundle.json
@@ -187,22 +188,20 @@ pub fn apply_os_update(
         OsUpdateError::ExtractionFailed(format!("Failed to parse bundle.json: {e}"))
     })?;
 
-    if verbose {
-        println!(
-            "    Bundle: platform={}, arch={}, os_build_id={}",
-            bundle.platform, bundle.architecture, bundle.os_build_id
-        );
-    }
+    println!(
+        "    Bundle: platform={}, arch={}, os_build_id={}",
+        bundle.platform, bundle.architecture, bundle.os_build_id
+    );
 
     // Check if OS is already at the target version — skip if BUILD_ID matches
     if let Some(ref verify) = bundle.verify {
         if let Ok(true) = verify_os_release(verify) {
             println!(
-                "  OS already up to date ({}={})",
+                "  OS already up to date ({}={}), skipping write",
                 verify.field, verify.expected
             );
             let _ = fs::remove_dir_all(&staging_dir);
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -215,9 +214,7 @@ pub fn apply_os_update(
     let current_slot = detect_current_slot(&update.slot_detection)?;
     let inactive_slot = determine_inactive_slot(&current_slot, &update.strategy)?;
 
-    if verbose {
-        println!("    Current slot: {current_slot}, inactive slot: {inactive_slot}");
-    }
+    println!("    Current slot: {current_slot}, inactive slot: {inactive_slot}");
 
     // Write each artifact to the inactive slot's partition
     for artifact in &update.artifacts {
@@ -236,31 +233,25 @@ pub fn apply_os_update(
         // Write to partition: use layout-based offset if available (MBR), else PARTLABEL (GPT)
         if let Some(ref layout) = bundle.layout {
             let byte_offset = resolve_partition_offset(&target.partition, layout)?;
-            if verbose {
-                println!(
-                    "    Writing {} -> {}@{} (partition: {})",
-                    artifact.name, layout.device, byte_offset, target.partition
-                );
-            }
+            println!(
+                "    Writing {} -> {}@{} (partition: {})",
+                artifact.name, layout.device, byte_offset, target.partition
+            );
             write_to_device_at_offset(&source_path, &layout.device, byte_offset, &artifact.name)?;
         } else {
             let partition_path = resolve_partition(&target.partition)?;
-            if verbose {
-                println!(
-                    "    Writing {} -> {} (partition: {})",
-                    artifact.name,
-                    partition_path.display(),
-                    target.partition
-                );
-            }
+            println!(
+                "    Writing {} -> {} (partition: {})",
+                artifact.name,
+                partition_path.display(),
+                target.partition
+            );
             write_to_partition(&source_path, &partition_path, &artifact.name)?;
         }
     }
 
     // Activate the new slot
-    if verbose {
-        println!("    Activating slot: {inactive_slot}");
-    }
+    println!("    Activating slot: {inactive_slot}");
     execute_slot_actions(&update.activate, &inactive_slot, bundle.layout.as_ref())?;
 
     // Write pending-update marker
@@ -283,7 +274,7 @@ pub fn apply_os_update(
         bundle.os_build_id
     );
 
-    Ok(())
+    Ok(true)
 }
 
 /// Read the pending-update marker if it exists.
@@ -1028,11 +1019,14 @@ fn stream_to_device_at_offset(
 /// This mode is not resumable — if interrupted, the entire stream must be restarted.
 /// The A/B slot design ensures safety: writes target the inactive partition, and slot
 /// activation only happens after all artifacts are verified.
+///
+/// Returns `Ok(true)` if the update was applied and a reboot is needed,
+/// or `Ok(false)` if the OS was already at the target version (skipped).
 pub fn apply_os_update_streaming<R: Read>(
     reader: R,
     base_dir: &Path,
-    verbose: bool,
-) -> Result<(), OsUpdateError> {
+    _verbose: bool,
+) -> Result<bool, OsUpdateError> {
     // Build streaming pipeline: reader → zstd decoder → tar archive
     let decoder = zstd::stream::Decoder::new(BufReader::new(reader)).map_err(|e| {
         OsUpdateError::ExtractionFailed(format!("Failed to create zstd decoder: {e}"))
@@ -1074,21 +1068,19 @@ pub fn apply_os_update_streaming<R: Read>(
         OsUpdateError::ExtractionFailed(format!("Failed to parse bundle.json: {e}"))
     })?;
 
-    if verbose {
-        println!(
-            "    Bundle: platform={}, arch={}, os_build_id={}",
-            bundle.platform, bundle.architecture, bundle.os_build_id
-        );
-    }
+    println!(
+        "    Bundle: platform={}, arch={}, os_build_id={}",
+        bundle.platform, bundle.architecture, bundle.os_build_id
+    );
 
     // 2. Check if OS is already at the target version
     if let Some(ref verify) = bundle.verify {
         if let Ok(true) = verify_os_release(verify) {
             println!(
-                "  OS already up to date ({}={})",
+                "  OS already up to date ({}={}), skipping write",
                 verify.field, verify.expected
             );
-            return Ok(());
+            return Ok(false);
         }
     }
 
@@ -1101,9 +1093,7 @@ pub fn apply_os_update_streaming<R: Read>(
     let current_slot = detect_current_slot(&update.slot_detection)?;
     let inactive_slot = determine_inactive_slot(&current_slot, &update.strategy)?;
 
-    if verbose {
-        println!("    Current slot: {current_slot}, inactive slot: {inactive_slot}");
-    }
+    println!("    Current slot: {current_slot}, inactive slot: {inactive_slot}");
 
     // 4. Build lookup: archive path → artifact metadata
     let artifact_map: HashMap<&str, &Artifact> = update
@@ -1142,12 +1132,10 @@ pub fn apply_os_update_streaming<R: Read>(
             ))
         })?;
 
-        if verbose {
-            println!(
-                "    Streaming {} -> partition {}",
-                artifact.name, target.partition
-            );
-        }
+        println!(
+            "    Streaming {} -> partition {}",
+            artifact.name, target.partition
+        );
 
         // Route to the appropriate write function based on layout (MBR vs GPT)
         if let Some(ref layout) = bundle.layout {
@@ -1183,9 +1171,7 @@ pub fn apply_os_update_streaming<R: Read>(
     }
 
     // 7. Activate the new slot
-    if verbose {
-        println!("    Activating slot: {inactive_slot}");
-    }
+    println!("    Activating slot: {inactive_slot}");
     execute_slot_actions(&update.activate, &inactive_slot, bundle.layout.as_ref())?;
 
     // 8. Write pending-update marker
@@ -1205,7 +1191,7 @@ pub fn apply_os_update_streaming<R: Read>(
         bundle.os_build_id
     );
 
-    Ok(())
+    Ok(true)
 }
 
 #[cfg(test)]
@@ -1650,7 +1636,7 @@ PRETTY_NAME="Avocado Linux 2024.1"
         // Either succeeds (OS already up to date) or fails on slot detection —
         // both are valid outcomes that prove the streaming pipeline works up to that point.
         match &result {
-            Ok(()) => {} // OS matched, early return
+            Ok(_) => {} // OS matched (skipped) or applied
             Err(OsUpdateError::UpdateFailed(msg)) if msg.contains("no update section") => {}
             Err(OsUpdateError::SlotDetectionFailed(_)) => {} // Expected when no uboot
             Err(e) => panic!("Unexpected error: {e}"),

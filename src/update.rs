@@ -400,19 +400,24 @@ pub fn perform_update(
 
             println!("  OS bundle detected. Streaming directly to partitions...");
             let mut body = fetch_url_response(&target_url, auth_token)?;
-            crate::os_update::apply_os_update_streaming(body.as_reader(), base_dir, verbose)
-                .map_err(|e| {
-                    UpdateError::StagingFailed(format!("Streaming OS update failed: {e}"))
-                })?;
-            reboot_required = true;
+            let applied =
+                crate::os_update::apply_os_update_streaming(body.as_reader(), base_dir, verbose)
+                    .map_err(|e| {
+                        UpdateError::StagingFailed(format!("Streaming OS update failed: {e}"))
+                    })?;
+            if applied {
+                reboot_required = true;
+            }
         } else {
             let aos_path = base_dir
                 .join(IMAGES_DIR_NAME)
                 .join(format!("{}.raw", os_bundle.image_id));
             println!("  OS bundle detected. Applying OS update...");
-            crate::os_update::apply_os_update(&aos_path, base_dir, verbose)
+            let applied = crate::os_update::apply_os_update(&aos_path, base_dir, verbose)
                 .map_err(|e| UpdateError::StagingFailed(format!("OS update failed: {e}")))?;
-            reboot_required = true;
+            if applied {
+                reboot_required = true;
+            }
         }
     }
 
