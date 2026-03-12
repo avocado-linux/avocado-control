@@ -97,6 +97,8 @@ pub enum SlotDetection {
     UbootEnv { var: String },
     #[serde(rename = "command")]
     Command { command: Vec<String> },
+    #[serde(rename = "sdboot-efi")]
+    SdbootEfi { partitions: HashMap<String, String> },
 }
 
 #[derive(Debug, Deserialize)]
@@ -126,6 +128,10 @@ pub enum SlotAction {
     MbrSwitch {
         devpath: String,
         slot_layouts: HashMap<String, Vec<String>>,
+    },
+    #[serde(rename = "efibootmgr")]
+    Efibootmgr {
+        slot_entries: HashMap<String, String>,
     },
 }
 
@@ -254,6 +260,9 @@ pub fn apply_os_update(
             write_to_partition(&source_path, &partition_path, &artifact.name)?;
         }
     }
+
+    // Patch BLS entries if needed (sdboot-ab: fix rootfs PARTLABEL in boot partition)
+    maybe_patch_bls_entries(update, &inactive_slot)?;
 
     // Activate the new slot
     println!("    Activating slot: {inactive_slot}");
@@ -475,7 +484,65 @@ fn detect_current_slot(detection: &SlotDetection) -> Result<String, OsUpdateErro
             }
             Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
         }
+        SlotDetection::SdbootEfi { partitions } => {
+            let uuid = read_loader_device_part_uuid()?;
+            let slot = partitions.get(&uuid).ok_or_else(|| {
+                OsUpdateError::SlotDetectionFailed(format!(
+                    "LoaderDevicePartUUID '{uuid}' not found in partition map. \
+                     Known UUIDs: {:?}",
+                    partitions.keys().collect::<Vec<_>>()
+                ))
+            })?;
+            Ok(slot.clone())
+        }
     }
+}
+
+/// Read the LoaderDevicePartUUID EFI variable set by systemd-boot.
+/// This variable contains the GPT partition UUID of the ESP that was booted from.
+/// EFI variable path: /sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+/// Format: 4 bytes of EFI variable attributes, followed by UTF-16LE encoded UUID string.
+fn read_loader_device_part_uuid() -> Result<String, OsUpdateError> {
+    let efi_var_path =
+        "/sys/firmware/efi/efivars/LoaderDevicePartUUID-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f";
+    let raw = fs::read(efi_var_path).map_err(|e| {
+        OsUpdateError::SlotDetectionFailed(format!(
+            "Failed to read EFI variable at {efi_var_path}: {e}. \
+             Is this an EFI system with systemd-boot?"
+        ))
+    })?;
+
+    if raw.len() < 6 {
+        return Err(OsUpdateError::SlotDetectionFailed(format!(
+            "EFI variable too short ({} bytes), expected at least 6",
+            raw.len()
+        )));
+    }
+
+    // Skip the first 4 bytes (EFI variable attributes), rest is UTF-16LE
+    let utf16_bytes = &raw[4..];
+    let utf16: Vec<u16> = utf16_bytes
+        .chunks_exact(2)
+        .map(|chunk| u16::from_le_bytes([chunk[0], chunk[1]]))
+        .collect();
+
+    let uuid_str = String::from_utf16(&utf16)
+        .map_err(|e| {
+            OsUpdateError::SlotDetectionFailed(format!(
+                "Failed to decode LoaderDevicePartUUID as UTF-16LE: {e}"
+            ))
+        })?
+        .trim_end_matches('\0')
+        .trim()
+        .to_lowercase();
+
+    if uuid_str.is_empty() {
+        return Err(OsUpdateError::SlotDetectionFailed(
+            "LoaderDevicePartUUID is empty".to_string(),
+        ));
+    }
+
+    Ok(uuid_str)
 }
 
 fn determine_inactive_slot(current: &str, strategy: &str) -> Result<String, OsUpdateError> {
@@ -879,7 +946,193 @@ pub fn execute_slot_action(
             })?;
             write_mbr_partition_table(devpath, partition_names, layout)
         }
+        SlotAction::Efibootmgr { slot_entries } => {
+            let entry_label = slot_entries.get(slot).ok_or_else(|| {
+                OsUpdateError::ActivationFailed(format!(
+                    "No EFI boot entry label for slot '{slot}'"
+                ))
+            })?;
+
+            // Find the boot entry number matching this label via efibootmgr -v
+            let output = ProcessCommand::new("efibootmgr")
+                .arg("-v")
+                .output()
+                .map_err(|e| {
+                    OsUpdateError::ActivationFailed(format!("Failed to run efibootmgr: {e}"))
+                })?;
+            if !output.status.success() {
+                return Err(OsUpdateError::ActivationFailed(format!(
+                    "efibootmgr -v failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+
+            let efi_output = String::from_utf8_lossy(&output.stdout);
+            let boot_num = parse_efi_boot_num(&efi_output, entry_label).ok_or_else(|| {
+                OsUpdateError::ActivationFailed(format!(
+                    "No EFI boot entry found with label '{entry_label}'. \
+                     efibootmgr output:\n{efi_output}"
+                ))
+            })?;
+
+            // Set BootNext to boot the target slot on next reboot
+            let output = ProcessCommand::new("efibootmgr")
+                .args(["-n", &boot_num])
+                .output()
+                .map_err(|e| {
+                    OsUpdateError::ActivationFailed(format!(
+                        "Failed to run efibootmgr -n {boot_num}: {e}"
+                    ))
+                })?;
+            if !output.status.success() {
+                return Err(OsUpdateError::ActivationFailed(format!(
+                    "efibootmgr -n {boot_num} failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                )));
+            }
+
+            Ok(())
+        }
     }
+}
+
+/// Parse efibootmgr -v output to find the boot entry number for a given label.
+/// Lines look like: "Boot0001* boot-a\tHD(1,GPT,<uuid>,...)/File(\EFI\BOOT\BOOTX64.EFI)"
+/// Returns the 4-digit hex number (e.g. "0001").
+fn parse_efi_boot_num(efibootmgr_output: &str, label: &str) -> Option<String> {
+    for line in efibootmgr_output.lines() {
+        // Match lines like "Boot0001* boot-a" or "Boot0001  boot-a"
+        if let Some(rest) = line.strip_prefix("Boot") {
+            if rest.len() < 5 {
+                continue;
+            }
+            let num = &rest[..4];
+            // Skip the status character (* or space) after the number
+            let after_num = &rest[4..];
+            let description = after_num
+                .trim_start_matches('*')
+                .trim_start_matches(' ')
+                .trim_start();
+            // The description may contain a tab before the device path
+            let desc_label = description.split('\t').next().unwrap_or(description).trim();
+            if desc_label == label {
+                return Some(num.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Patch the BLS entry on a boot partition to reference the correct rootfs slot.
+/// This is needed for sdboot-ab: the boot.img in the bundle always references rootfs-a,
+/// but when written to slot b's boot partition, we need it to point at rootfs-b.
+///
+/// Mounts the target boot partition (FAT32), replaces root=PARTLABEL=rootfs-{old}
+/// with root=PARTLABEL=rootfs-{new} in loader/entries/avocado.conf, then unmounts.
+fn patch_bls_entry_for_slot(
+    boot_partition_label: &str,
+    target_slot: &str,
+) -> Result<(), OsUpdateError> {
+    let partition_path = resolve_partition(boot_partition_label)?;
+    let mount_point = format!("/tmp/avocado-bls-patch-{target_slot}");
+
+    // Create mount point
+    fs::create_dir_all(&mount_point).map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!("Failed to create mount point: {e}"))
+    })?;
+
+    // Mount the FAT32 partition
+    let output = ProcessCommand::new("mount")
+        .args([partition_path.to_str().unwrap_or(""), &mount_point])
+        .output()
+        .map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to mount boot partition: {e}"))
+        })?;
+    if !output.status.success() {
+        let _ = fs::remove_dir(&mount_point);
+        return Err(OsUpdateError::ArtifactWriteFailed(format!(
+            "mount {} {} failed: {}",
+            partition_path.display(),
+            mount_point,
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    // Patch the BLS entry
+    let bls_path = format!("{mount_point}/loader/entries/avocado.conf");
+    let patch_result = (|| -> Result<(), OsUpdateError> {
+        let content = fs::read_to_string(&bls_path).map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to read BLS entry {bls_path}: {e}"))
+        })?;
+
+        // Replace root=PARTLABEL=rootfs-X with root=PARTLABEL=rootfs-{target_slot}
+        let patched = content
+            .lines()
+            .map(|line| {
+                if line.starts_with("options ") && line.contains("root=PARTLABEL=rootfs-") {
+                    let replacement = format!("root=PARTLABEL=rootfs-{target_slot}");
+                    // Simple string replacement since pattern is well-known
+                    if let Some(start) = line.find("root=PARTLABEL=rootfs-") {
+                        let end = start + "root=PARTLABEL=rootfs-a".len();
+                        if end <= line.len() {
+                            return format!("{}{}{}", &line[..start], replacement, &line[end..]);
+                        }
+                    }
+                    line.to_string()
+                } else {
+                    line.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Add trailing newline if original had one
+        let patched = if content.ends_with('\n') && !patched.ends_with('\n') {
+            patched + "\n"
+        } else {
+            patched
+        };
+
+        fs::write(&bls_path, &patched).map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to write BLS entry {bls_path}: {e}"))
+        })?;
+
+        println!("    Patched BLS entry: root=PARTLABEL=rootfs-{target_slot}");
+        Ok(())
+    })();
+
+    // Always unmount, even if patching failed
+    let umount_output = ProcessCommand::new("umount").arg(&mount_point).output();
+    let _ = fs::remove_dir(&mount_point);
+
+    if let Err(e) = umount_output {
+        eprintln!("Warning: failed to unmount {mount_point}: {e}");
+    }
+
+    patch_result
+}
+
+/// Check if this update strategy requires BLS entry patching and do it if so.
+/// Called after all artifacts are written, before slot activation.
+fn maybe_patch_bls_entries(
+    update: &UpdateConfig,
+    inactive_slot: &str,
+) -> Result<(), OsUpdateError> {
+    if update.strategy != "sdboot-ab" {
+        return Ok(());
+    }
+
+    // Find the boot artifact's target partition for the inactive slot
+    for artifact in &update.artifacts {
+        if artifact.name == "boot" {
+            if let Some(target) = artifact.slot_targets.get(inactive_slot) {
+                println!("    Patching BLS entry on partition: {}", target.partition);
+                patch_bls_entry_for_slot(&target.partition, inactive_slot)?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn parse_os_release_field<'a>(contents: &'a str, field: &str) -> Option<&'a str> {
@@ -1196,11 +1449,14 @@ pub fn apply_os_update_streaming<R: Read>(
         }
     }
 
-    // 7. Activate the new slot
+    // 7. Patch BLS entries if needed (sdboot-ab: fix rootfs PARTLABEL in boot partition)
+    maybe_patch_bls_entries(update, &inactive_slot)?;
+
+    // 8. Activate the new slot
     println!("    Activating slot: {inactive_slot}");
     execute_slot_actions(&update.activate, &inactive_slot, bundle.layout.as_ref())?;
 
-    // 8. Write pending-update marker
+    // 9. Write pending-update marker
     let pending = PendingUpdate {
         os_build_id: bundle.os_build_id.clone(),
         initramfs_build_id: bundle.initramfs_build_id.clone(),
