@@ -496,7 +496,7 @@ pub fn run_server(address: &str, config: Config) -> varlink::Result<()> {
     );
 
     let listen_config = varlink::ListenConfig {
-        idle_timeout: 0,
+        idle_timeout: 300,
         ..Default::default()
     };
 
