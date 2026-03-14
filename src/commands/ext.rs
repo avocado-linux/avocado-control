@@ -18,6 +18,7 @@ struct Extension {
     is_sysext: bool,
     is_confext: bool,
     is_directory: bool, // true for directories, false for .raw files
+    is_kab: bool,       // true when mounted from a KAB file
     /// Merge priority index derived from manifest ordering.
     /// Used to compute a numerical prefix for deterministic systemd merge order.
     /// None for extensions discovered outside the manifest (legacy behavior).
@@ -1786,7 +1787,12 @@ fn display_extension_info(
     let type_str = if types.is_empty() {
         "?".to_string()
     } else {
-        types.join("+")
+        let base = types.join("+");
+        if available_ext.map_or(false, |e| e.is_kab) {
+            format!("kab:{base}")
+        } else {
+            base
+        }
     };
 
     // Determine origin
@@ -1843,6 +1849,12 @@ fn get_extension_origin_short(ext: &Extension) -> String {
         "HITL".to_string()
     } else if ext.is_directory {
         "Dir".to_string()
+    } else if ext.is_kab {
+        if let Some(filename) = ext.path.file_name() {
+            format!("KAB:{}", filename.to_string_lossy())
+        } else {
+            "KAB".to_string()
+        }
     } else {
         // Extract just the filename from loop path
         if let Some(filename) = ext.path.file_name() {
@@ -2247,6 +2259,33 @@ fn scan_extensions_from_all_sources_with_verbosity(
                                 }
                                 extension_map.insert(ext.name.clone(), ext);
                             }
+                        }
+                    }
+                } else if mext.is_kab() {
+                    // KAB file extension
+                    match analyze_kab_extension(
+                        &mext.name,
+                        &Some(mext.version.clone()),
+                        &raw_path,
+                        verbose,
+                    ) {
+                        Ok(mut ext) => {
+                            ext.merge_index = Some(merge_idx);
+                            if verbose {
+                                println!(
+                                    "Found manifest KAB extension: {} at {} (priority #{:02})",
+                                    ext.name,
+                                    ext.path.display(),
+                                    merge_idx
+                                );
+                            }
+                            extension_map.insert(ext.name.clone(), ext);
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "Warning: Failed to analyze KAB extension '{}': {e}",
+                                mext.name
+                            );
                         }
                     }
                 } else {
@@ -2672,6 +2711,7 @@ fn analyze_directory_extension(name: &str, path: &Path) -> Result<Extension, Sys
         is_sysext: sysext_enabled,
         is_confext: confext_enabled,
         is_directory: true,
+        is_kab: false,
         merge_index: None,
     })
 }
@@ -2812,6 +2852,414 @@ fn analyze_raw_extension_with_loop(
         is_sysext: sysext_enabled,
         is_confext: confext_enabled,
         is_directory: false, // Still track that this originated from a .raw file
+        is_kab: false,
+        merge_index: None,
+    })
+}
+
+/// KAB footer structure (12 bytes, big-endian):
+///   u16 symbol_table_len
+///   u16 directory_count
+///   u32 directory_len
+///   u32 marker (0x11223344)
+const KAB_SIGNATURE_LEN: u64 = 256;
+const KAB_FOOTER_LEN: u64 = 12;
+const KAB_DIRECTORY_MARKER: u32 = 0x11223344;
+
+/// Information about an embedded file within a KAB.
+struct KabEntry {
+    offset: u64,
+    len: u64,
+}
+
+/// Parse the KAB footer and directory table to find the "layer.img" entry.
+/// Returns the byte offset and length of the embedded image.
+fn find_kab_image_entry(path: &Path) -> Result<KabEntry, SystemdError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(path).map_err(|e| SystemdError::CommandFailed {
+        command: format!("open KAB file {}", path.display()),
+        source: e,
+    })?;
+
+    let file_len = file.metadata().map_err(|e| SystemdError::CommandFailed {
+        command: "stat KAB file".to_string(),
+        source: e,
+    })?.len();
+
+    if file_len < KAB_SIGNATURE_LEN + KAB_FOOTER_LEN {
+        return Err(SystemdError::ConfigurationError {
+            message: format!("KAB file too small: {} bytes ({})", file_len, path.display()),
+        });
+    }
+
+    // Read footer (12 bytes before the 256-byte signature at EOF)
+    let footer_offset = file_len - KAB_SIGNATURE_LEN - KAB_FOOTER_LEN;
+    file.seek(SeekFrom::Start(footer_offset)).map_err(|e| SystemdError::CommandFailed {
+        command: "seek to KAB footer".to_string(),
+        source: e,
+    })?;
+
+    let mut footer_buf = [0u8; 12];
+    file.read_exact(&mut footer_buf).map_err(|e| SystemdError::CommandFailed {
+        command: "read KAB footer".to_string(),
+        source: e,
+    })?;
+
+    let symbol_table_len = u16::from_be_bytes([footer_buf[0], footer_buf[1]]) as u64;
+    let directory_count = u16::from_be_bytes([footer_buf[2], footer_buf[3]]) as usize;
+    let directory_len = u32::from_be_bytes([footer_buf[4], footer_buf[5], footer_buf[6], footer_buf[7]]) as u64;
+    let marker = u32::from_be_bytes([footer_buf[8], footer_buf[9], footer_buf[10], footer_buf[11]]);
+
+    if marker != KAB_DIRECTORY_MARKER {
+        return Err(SystemdError::ConfigurationError {
+            message: format!(
+                "Invalid KAB directory marker: 0x{:08X} (expected 0x{:08X}) in {}",
+                marker, KAB_DIRECTORY_MARKER, path.display()
+            ),
+        });
+    }
+
+    // Read directory table
+    let dir_offset = footer_offset - symbol_table_len - directory_len;
+    file.seek(SeekFrom::Start(dir_offset)).map_err(|e| SystemdError::CommandFailed {
+        command: "seek to KAB directory".to_string(),
+        source: e,
+    })?;
+
+    let mut dir_buf = vec![0u8; directory_len as usize];
+    file.read_exact(&mut dir_buf).map_err(|e| SystemdError::CommandFailed {
+        command: "read KAB directory".to_string(),
+        source: e,
+    })?;
+
+    // Parse directory entries to find "layer.img"
+    // Each entry: u16 name_len, name bytes, u32 offset, u32 len, u8 flags, u16 user_idx, u16 group_idx, u16 perms
+    let mut pos = 0usize;
+    for _ in 0..directory_count {
+        if pos + 2 > dir_buf.len() {
+            break;
+        }
+        let name_len = u16::from_be_bytes([dir_buf[pos], dir_buf[pos + 1]]) as usize;
+        pos += 2;
+
+        if pos + name_len + 11 > dir_buf.len() {
+            break;
+        }
+        let name = &dir_buf[pos..pos + name_len];
+        pos += name_len;
+
+        let entry_offset = u32::from_be_bytes([dir_buf[pos], dir_buf[pos + 1], dir_buf[pos + 2], dir_buf[pos + 3]]) as u64;
+        let entry_len = u32::from_be_bytes([dir_buf[pos + 4], dir_buf[pos + 5], dir_buf[pos + 6], dir_buf[pos + 7]]) as u64;
+        // skip flags (1), user_idx (2), group_idx (2), perms (2) = 7 bytes
+        pos += 8 + 7;
+
+        // Match "/layer.img" or "layer.img"
+        let name_str = std::str::from_utf8(name).unwrap_or("");
+        let basename = name_str.trim_start_matches('/');
+        if basename == "layer.img" {
+            return Ok(KabEntry {
+                offset: entry_offset,
+                len: entry_len,
+            });
+        }
+    }
+
+    Err(SystemdError::ConfigurationError {
+        message: format!("No layer.img entry found in KAB directory table ({})", path.display()),
+    })
+}
+
+/// Detect the filesystem type of the embedded image by reading magic bytes at the given offset.
+/// Returns "squashfs" or "erofs".
+fn detect_image_fs_type(path: &Path, image_offset: u64) -> Result<&'static str, SystemdError> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = fs::File::open(path).map_err(|e| SystemdError::CommandFailed {
+        command: format!("open KAB file {}", path.display()),
+        source: e,
+    })?;
+
+    file.seek(SeekFrom::Start(image_offset)).map_err(|e| SystemdError::CommandFailed {
+        command: "seek to image in KAB".to_string(),
+        source: e,
+    })?;
+
+    let mut magic = [0u8; 4];
+    file.read_exact(&mut magic).map_err(|e| SystemdError::CommandFailed {
+        command: "read image magic".to_string(),
+        source: e,
+    })?;
+
+    // squashfs: "hsqs" (0x73717368 LE), erofs: 0xE0F5E1E2 LE → bytes [0xE2, 0xE1, 0xF5, 0xE0] at offset +1024
+    if &magic == b"hsqs" {
+        return Ok("squashfs");
+    }
+
+    // EROFS superblock magic is at offset 1024 within the image
+    file.seek(SeekFrom::Start(image_offset + 1024)).map_err(|e| SystemdError::CommandFailed {
+        command: "seek to erofs magic".to_string(),
+        source: e,
+    })?;
+
+    let mut erofs_magic = [0u8; 4];
+    file.read_exact(&mut erofs_magic).map_err(|e| SystemdError::CommandFailed {
+        command: "read erofs magic".to_string(),
+        source: e,
+    })?;
+
+    if erofs_magic == [0xE2, 0xE1, 0xF5, 0xE0] {
+        return Ok("erofs");
+    }
+
+    Err(SystemdError::ConfigurationError {
+        message: format!(
+            "Unknown image filesystem in KAB at offset {} (magic: {:02x}{:02x}{:02x}{:02x}) in {}",
+            image_offset, magic[0], magic[1], magic[2], magic[3], path.display()
+        ),
+    })
+}
+
+/// Mount a KAB file by parsing its directory to find the embedded image and mounting with offset.
+fn mount_kab_file(
+    extension_name: &str,
+    kab_path: &Path,
+    verbose: bool,
+) -> Result<PathBuf, SystemdError> {
+    let mount_point = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/extensions/{extension_name}")
+    } else {
+        format!("/run/avocado/extensions/{extension_name}")
+    };
+
+    // Create mount point directory
+    fs::create_dir_all(&mount_point).map_err(|e| SystemdError::CommandFailed {
+        command: "create_dir_all".to_string(),
+        source: e,
+    })?;
+
+    let entry = find_kab_image_entry(kab_path)?;
+    let fs_type = detect_image_fs_type(kab_path, entry.offset)?;
+
+    if verbose {
+        println!("KAB {extension_name}: layer.img at offset={}, len={}, fs={fs_type}", entry.offset, entry.len);
+    }
+
+    // In test mode, skip the actual mount
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        if verbose {
+            println!("Test mode: skipping mount for KAB {extension_name}");
+        }
+        return Ok(PathBuf::from(mount_point));
+    }
+
+    let offset_opt = format!("loop,ro,offset={}", entry.offset);
+
+    let output = ProcessCommand::new("mount")
+        .args([
+            "-t",
+            fs_type,
+            "-o",
+            &offset_opt,
+            kab_path.to_str().unwrap_or(""),
+            &mount_point,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| SystemdError::CommandFailed {
+            command: "mount (kab)".to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SystemdError::CommandExitedWithError {
+            command: "mount (kab)".to_string(),
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
+    }
+
+    if verbose {
+        println!("Mounted KAB {extension_name} to {mount_point}");
+    }
+    Ok(PathBuf::from(mount_point))
+}
+
+/// Check if a KAB extension is already mounted by checking /proc/mounts.
+fn is_kab_mounted(extension_name: &str) -> bool {
+    let mount_point = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/extensions/{extension_name}")
+    } else {
+        format!("/run/avocado/extensions/{extension_name}")
+    };
+
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        return Path::new(&mount_point).exists();
+    }
+
+    if let Ok(mounts) = fs::read_to_string("/proc/mounts") {
+        mounts.lines().any(|line| {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            parts.len() >= 2 && parts[1] == mount_point
+        })
+    } else {
+        false
+    }
+}
+
+/// Unmount a KAB extension using plain umount.
+fn unmount_kab(extension_name: &str, verbose: bool) -> Result<(), SystemdError> {
+    let mount_point = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/extensions/{extension_name}")
+    } else {
+        format!("/run/avocado/extensions/{extension_name}")
+    };
+
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        if verbose {
+            println!("Test mode: skipping umount for KAB {extension_name}");
+        }
+        return Ok(());
+    }
+
+    let output = ProcessCommand::new("umount")
+        .arg(&mount_point)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| SystemdError::CommandFailed {
+            command: "umount (kab)".to_string(),
+            source: e,
+        })?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(SystemdError::CommandExitedWithError {
+            command: "umount (kab)".to_string(),
+            exit_code: output.status.code(),
+            stderr: stderr.to_string(),
+        });
+    }
+
+    if verbose {
+        println!("Unmounted KAB for {extension_name}");
+    }
+    Ok(())
+}
+
+/// Analyze a KAB file extension — similar to analyze_raw_extension_with_loop but
+/// uses mount -o offset instead of systemd-dissect.
+fn analyze_kab_extension(
+    name: &str,
+    version: &Option<String>,
+    path: &Path,
+    verbose: bool,
+) -> Result<Extension, SystemdError> {
+    if verbose {
+        println!("Analyzing KAB extension: {name}");
+    }
+
+    let mount_name = if let Some(ver) = version {
+        format!("{name}-{ver}")
+    } else {
+        name.to_string()
+    };
+
+    let mount_point = if is_kab_mounted(&mount_name) {
+        if verbose {
+            println!("KAB {mount_name} already mounted");
+        }
+        if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+            let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+            format!("{temp_base}/avocado/extensions/{mount_name}")
+        } else {
+            format!("/run/avocado/extensions/{mount_name}")
+        }
+    } else {
+        mount_kab_file(&mount_name, path, verbose)?
+            .to_string_lossy()
+            .to_string()
+    };
+
+    // Analyze as a directory to detect sysext/confext types
+    let mount_path = PathBuf::from(&mount_point);
+    let mut is_sysext = false;
+    let mut is_confext = false;
+
+    // Check for sysext release file
+    let sysext_dir = mount_path.join("usr/lib/extension-release.d");
+    if sysext_dir.exists() {
+        let sysext_release = sysext_dir.join(format!("extension-release.{name}"));
+        if sysext_release.exists() {
+            is_sysext = true;
+        } else if let Ok(entries) = fs::read_dir(&sysext_dir) {
+            for entry in entries.flatten() {
+                let filename = entry.file_name();
+                let filename_str = filename.to_string_lossy();
+                if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                    is_sysext = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Check for confext release file
+    let confext_dir = mount_path.join("etc/extension-release.d");
+    if confext_dir.exists() {
+        let confext_release = confext_dir.join(format!("extension-release.{name}"));
+        if confext_release.exists() {
+            is_confext = true;
+        } else if let Ok(entries) = fs::read_dir(&confext_dir) {
+            for entry in entries.flatten() {
+                let filename = entry.file_name();
+                let filename_str = filename.to_string_lossy();
+                if filename_str.starts_with(&format!("extension-release.{name}-")) {
+                    is_confext = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    // Default to both if no release files found
+    if !is_sysext && !is_confext {
+        is_sysext = true;
+        is_confext = true;
+    }
+
+    // Check scope for current environment
+    let scope_check_name = if let Some(ref ver) = version {
+        format!("{name}-{ver}")
+    } else {
+        name.to_string()
+    };
+
+    let sysext_enabled = if is_sysext {
+        is_sysext_enabled_for_current_environment(&mount_path, &scope_check_name)
+    } else {
+        false
+    };
+
+    let confext_enabled = if is_confext {
+        is_confext_enabled_for_current_environment(&mount_path, &scope_check_name)
+    } else {
+        false
+    };
+
+    Ok(Extension {
+        name: name.to_string(),
+        version: version.clone(),
+        path: mount_path,
+        is_sysext: sysext_enabled,
+        is_confext: confext_enabled,
+        is_directory: false,
+        is_kab: true,
         merge_index: None,
     })
 }
@@ -3307,23 +3755,69 @@ fn unmount_all_persistent_loops() -> Result<(), SystemdError> {
     println!("Unmounting all persistent loops...");
 
     let loop_ref_dir = "/dev/disk/by-loop-ref";
-    if !Path::new(loop_ref_dir).exists() {
-        println!("No persistent loops found.");
-        return Ok(());
-    }
+    if Path::new(loop_ref_dir).exists() {
+        let entries = fs::read_dir(loop_ref_dir).map_err(|e| SystemdError::CommandFailed {
+            command: "read_dir".to_string(),
+            source: e,
+        })?;
 
-    let entries = fs::read_dir(loop_ref_dir).map_err(|e| SystemdError::CommandFailed {
-        command: "read_dir".to_string(),
-        source: e,
-    })?;
-
-    for entry in entries.flatten() {
-        if let Some(loop_name) = entry.file_name().to_str() {
-            unmount_loop_ref(loop_name)?;
+        for entry in entries.flatten() {
+            if let Some(loop_name) = entry.file_name().to_str() {
+                unmount_loop_ref(loop_name)?;
+            }
         }
     }
 
-    println!("All persistent loops unmounted.");
+    // Also unmount any KAB squashfs mounts under /run/avocado/extensions/
+    unmount_all_kab_mounts()?;
+
+    println!("All persistent loops and KAB mounts unmounted.");
+    Ok(())
+}
+
+/// Unmount all KAB-mounted extensions by scanning /proc/mounts for squashfs
+/// mounts under /run/avocado/extensions/.
+fn unmount_all_kab_mounts() -> Result<(), SystemdError> {
+    let ext_mount_base = if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        let temp_base = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
+        format!("{temp_base}/avocado/extensions")
+    } else {
+        "/run/avocado/extensions".to_string()
+    };
+
+    if std::env::var("AVOCADO_TEST_MODE").is_ok() {
+        return Ok(());
+    }
+
+    let mounts_content = match fs::read_to_string("/proc/mounts") {
+        Ok(c) => c,
+        Err(_) => return Ok(()),
+    };
+
+    for line in mounts_content.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 3 && parts[1].starts_with(&ext_mount_base) && parts[2] == "squashfs" {
+            let mount_point = parts[1];
+            let ext_name = mount_point
+                .strip_prefix(&format!("{ext_mount_base}/"))
+                .unwrap_or(mount_point);
+            println!("Unmounting KAB: {ext_name}");
+            let output = ProcessCommand::new("umount")
+                .arg(mount_point)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .map_err(|e| SystemdError::CommandFailed {
+                    command: "umount (kab)".to_string(),
+                    source: e,
+                })?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!("Warning: failed to unmount KAB at {mount_point}: {stderr}");
+            }
+        }
+    }
+
     Ok(())
 }
 
@@ -4542,6 +5036,7 @@ mod tests {
             is_sysext: true,
             is_confext: false,
             is_directory: false,
+            is_kab: false,
             merge_index: None,
         };
         extension_map.insert("test_ext".to_string(), raw_extension);
@@ -4554,6 +5049,7 @@ mod tests {
             is_sysext: true,
             is_confext: true,
             is_directory: true,
+            is_kab: false,
             merge_index: None,
         };
         extension_map.insert("test_ext".to_string(), dir_extension);
@@ -4585,6 +5081,7 @@ mod tests {
             is_sysext: true,
             is_confext: true,
             is_directory: true,
+            is_kab: false,
             merge_index: None,
         };
 
@@ -4596,6 +5093,7 @@ mod tests {
             is_sysext: true,
             is_confext: false,
             is_directory: false, // Still false to track origin, but path points to mounted dir
+            is_kab: false,
             merge_index: None,
         };
 
@@ -5132,6 +5630,7 @@ OTHER_KEY=value
             is_sysext: true,
             is_confext: false,
             is_directory: false,
+            is_kab: false,
             merge_index: Some(2),
         };
         assert_eq!(compute_prefixed_name(&ext), "02-app-1.0.0");
@@ -5146,6 +5645,7 @@ OTHER_KEY=value
             is_sysext: true,
             is_confext: false,
             is_directory: true,
+            is_kab: false,
             merge_index: Some(1),
         };
         assert_eq!(compute_prefixed_name(&ext), "01-networking");
@@ -5161,6 +5661,7 @@ OTHER_KEY=value
             is_sysext: true,
             is_confext: false,
             is_directory: true,
+            is_kab: false,
             merge_index: None,
         };
         assert_eq!(compute_prefixed_name(&ext), "legacy-0.5.0");
@@ -5184,6 +5685,7 @@ OTHER_KEY=value
                 is_sysext: true,
                 is_confext: false,
                 is_directory: true,
+                is_kab: false,
                 merge_index: Some(n - 1 - index),
             };
             assert_eq!(
@@ -5206,6 +5708,7 @@ OTHER_KEY=value
             is_sysext: true,
             is_confext: false,
             is_directory: true,
+            is_kab: false,
             merge_index: None, // Initially no index (HITL discovery)
         };
 

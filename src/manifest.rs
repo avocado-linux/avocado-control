@@ -46,17 +46,26 @@ pub struct ManifestExtension {
     /// UUIDv5 content-addressable image identifier
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_id: Option<String>,
+    /// Image type: absent/null = raw squashfs/erofs, "kab" = KAB-wrapped image
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_type: Option<String>,
 }
 
 impl ManifestExtension {
+    /// Returns true if this extension image is a KAB file.
+    pub fn is_kab(&self) -> bool {
+        self.image_type.as_deref() == Some("kab")
+    }
+
     /// Resolve the on-disk path for this extension image.
     pub fn resolve_path(&self, base_dir: &Path) -> PathBuf {
+        let ext = if self.is_kab() { "kab" } else { "raw" };
         if let Some(ref id) = self.image_id {
-            base_dir.join(IMAGES_DIR_NAME).join(format!("{id}.raw"))
+            base_dir.join(IMAGES_DIR_NAME).join(format!("{id}.{ext}"))
         } else {
             base_dir
                 .join(IMAGES_DIR_NAME)
-                .join(format!("{}-{}.raw", self.name, self.version))
+                .join(format!("{}-{}.{ext}", self.name, self.version))
         }
     }
 }
@@ -166,6 +175,7 @@ mod tests {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
+                image_type: None,
             }],
             os_bundle: None,
         }
@@ -291,6 +301,7 @@ mod tests {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
+            image_type: None,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
@@ -401,9 +412,102 @@ mod tests {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: None,
+            image_type: None,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
         assert_eq!(path, Path::new("/var/lib/avocado/images/app-0.1.0.raw"));
+    }
+
+    #[test]
+    fn test_is_kab() {
+        let raw_ext = ManifestExtension {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            image_id: None,
+            image_type: None,
+        };
+        assert!(!raw_ext.is_kab());
+
+        let kab_ext = ManifestExtension {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            image_id: None,
+            image_type: Some("kab".to_string()),
+        };
+        assert!(kab_ext.is_kab());
+    }
+
+    #[test]
+    fn test_resolve_path_kab_with_image_id() {
+        let ext = ManifestExtension {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
+            image_type: Some("kab".to_string()),
+        };
+        let base = Path::new("/var/lib/avocado");
+        let path = ext.resolve_path(base);
+        assert_eq!(
+            path,
+            Path::new("/var/lib/avocado/images/a1b2c3d4-e5f6-5789-abcd-ef0123456789.kab")
+        );
+    }
+
+    #[test]
+    fn test_resolve_path_kab_without_image_id() {
+        let ext = ManifestExtension {
+            name: "app".to_string(),
+            version: "0.1.0".to_string(),
+            image_id: None,
+            image_type: Some("kab".to_string()),
+        };
+        let base = Path::new("/var/lib/avocado");
+        let path = ext.resolve_path(base);
+        assert_eq!(path, Path::new("/var/lib/avocado/images/app-0.1.0.kab"));
+    }
+
+    #[test]
+    fn test_manifest_deserialize_image_type() {
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "test-id",
+            "built_at": "2026-02-19T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.2.0" },
+            "extensions": [
+                { "name": "app", "version": "0.1.0", "image_id": "a1b2c3d4-e5f6-5789-abcd-ef0123456789", "image_type": "kab" }
+            ]
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        let ext = &parsed.extensions[0];
+        assert!(ext.is_kab());
+        assert_eq!(ext.image_type, Some("kab".to_string()));
+    }
+
+    #[test]
+    fn test_manifest_deserialize_missing_image_type() {
+        let json = r#"{
+            "manifest_version": 1,
+            "id": "test-id",
+            "built_at": "2026-02-19T00:00:00Z",
+            "runtime": { "name": "dev", "version": "0.2.0" },
+            "extensions": [
+                { "name": "app", "version": "0.1.0", "image_id": "a1b2c3d4-e5f6-5789-abcd-ef0123456789" }
+            ]
+        }"#;
+        let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
+        let ext = &parsed.extensions[0];
+        assert!(!ext.is_kab());
+        assert_eq!(ext.image_type, None);
+    }
+
+    #[test]
+    fn test_manifest_serialization_skips_none_image_type() {
+        let manifest = make_manifest("test-id", "dev", "0.2.0", "2026-02-19T00:00:00Z");
+        let json = serde_json::to_string(&manifest).unwrap();
+        assert!(
+            !json.contains("image_type"),
+            "manifest should not contain image_type when None"
+        );
     }
 }

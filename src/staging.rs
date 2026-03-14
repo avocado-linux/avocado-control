@@ -261,6 +261,7 @@ mod tests {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
+                image_type: None,
             }],
             os_bundle: None,
         }
