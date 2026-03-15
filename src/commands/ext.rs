@@ -1259,6 +1259,7 @@ pub(crate) fn collect_extension_status(
                 isMerged: is_merged,
                 origin,
                 imageId: image_id,
+                imageType: available_ext.and_then(|e| if e.is_kab { Some("kab".to_string()) } else { None }),
             }
         })
         .collect();

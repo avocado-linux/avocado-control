@@ -169,7 +169,12 @@ pub fn print_extension_status(extensions: &[vl_ext::ExtensionStatus], output: &O
         let type_str = if types.is_empty() {
             "?".to_string()
         } else {
-            types.join("+")
+            let base = types.join("+");
+            if ext.imageType.as_deref() == Some("kab") {
+                format!("kab:{base}")
+            } else {
+                base
+            }
         };
 
         let merged_str = if ext.isMerged { "yes" } else { "no" };
@@ -259,7 +264,8 @@ pub fn print_runtime_detail(rt: &vl_rt::Runtime, output: &OutputManager) {
         println!("  Extensions:");
         for ext in &rt.extensions {
             let img = ext.imageId.as_deref().unwrap_or("-");
-            println!("    {} {} (image: {})", ext.name, ext.version, img);
+            let type_str = ext.imageType.as_deref().unwrap_or("raw");
+            println!("    {} {} (image: {}, type: {})", ext.name, ext.version, img, type_str);
         }
     }
     println!();

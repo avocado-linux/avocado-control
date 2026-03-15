@@ -9,7 +9,8 @@ type RuntimeInfo (
 type ManifestExtension (
     name: string,
     version: string,
-    imageId: ?string
+    imageId: ?string,
+    imageType: ?string
 )
 
 type Runtime (

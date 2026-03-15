@@ -236,6 +236,7 @@ fn runtime_entry_to_varlink(entry: crate::service::types::RuntimeEntry) -> vl_rt
                 r#name: e.name,
                 r#version: e.version,
                 r#imageId: e.image_id,
+                r#imageType: e.image_type,
             })
             .collect(),
         r#active: entry.active,

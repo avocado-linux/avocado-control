@@ -57,6 +57,8 @@ pub struct RuntimeExtensionInfo {
     pub name: String,
     pub version: String,
     pub image_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_type: Option<String>,
 }
 
 /// Root authority information

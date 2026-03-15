@@ -17,7 +17,8 @@ type ExtensionStatus (
     isConfext: bool,
     isMerged: bool,
     origin: ?string,
-    imageId: ?string
+    imageId: ?string,
+    imageType: ?string
 )
 
 # List all available extensions in the extensions directory
