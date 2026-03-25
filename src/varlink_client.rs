@@ -265,7 +265,10 @@ pub fn print_runtime_detail(rt: &vl_rt::Runtime, output: &OutputManager) {
         for ext in &rt.extensions {
             let img = ext.imageId.as_deref().unwrap_or("-");
             let type_str = ext.imageType.as_deref().unwrap_or("raw");
-            println!("    {} {} (image: {}, type: {})", ext.name, ext.version, img, type_str);
+            println!(
+                "    {} {} (image: {}, type: {})",
+                ext.name, ext.version, img, type_str
+            );
         }
     }
     println!();
