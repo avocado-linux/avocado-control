@@ -1,3 +1,4 @@
+use crate::hash::sha256_file;
 use crate::manifest::{RuntimeManifest, ACTIVE_LINK_NAME, IMAGES_DIR_NAME, MANIFEST_FILENAME};
 use std::fs;
 use std::path::Path;
@@ -16,6 +17,9 @@ pub enum StagingError {
 
     #[error("Missing extension images:\n{0}")]
     MissingImages(String),
+
+    #[error("Image integrity check failed:\n{0}")]
+    HashMismatch(String),
 }
 
 #[derive(Debug)]
@@ -24,27 +28,46 @@ pub struct MissingImage {
     pub expected_path: String,
 }
 
-/// Check that all extension images referenced by the manifest exist on disk.
-/// Returns Ok(()) if all images are present, or Err with details of missing images.
+#[derive(Debug)]
+pub struct ImageHashMismatch {
+    pub image_name: String,
+    pub path: String,
+    pub expected: String,
+    pub actual: String,
+}
+
+/// Check that all extension and OS bundle images referenced by the manifest
+/// exist on disk and, when SHA256 hashes are present, match their expected values.
 pub fn validate_manifest_images(
     manifest: &RuntimeManifest,
     base_dir: &Path,
 ) -> Result<(), StagingError> {
-    let mut missing: Vec<MissingImage> = manifest
-        .extensions
-        .iter()
-        .filter_map(|ext| {
-            let path = ext.resolve_path(base_dir);
-            if path.exists() {
-                None
-            } else {
-                Some(MissingImage {
-                    extension_name: format!("{} {}", ext.name, ext.version),
-                    expected_path: path.display().to_string(),
-                })
+    let mut missing: Vec<MissingImage> = Vec::new();
+    let mut hash_errors: Vec<ImageHashMismatch> = Vec::new();
+
+    for ext in &manifest.extensions {
+        let path = ext.resolve_path(base_dir);
+        if !path.exists() {
+            missing.push(MissingImage {
+                extension_name: format!("{} {}", ext.name, ext.version),
+                expected_path: path.display().to_string(),
+            });
+            continue;
+        }
+        if let Some(ref expected_sha) = ext.sha256 {
+            let actual = sha256_file(&path).map_err(|e| {
+                StagingError::StagingFailed(format!("Failed to hash {}: {e}", path.display()))
+            })?;
+            if actual != *expected_sha {
+                hash_errors.push(ImageHashMismatch {
+                    image_name: format!("{} {}", ext.name, ext.version),
+                    path: path.display().to_string(),
+                    expected: expected_sha.clone(),
+                    actual,
+                });
             }
-        })
-        .collect();
+        }
+    }
 
     // Also check os_bundle image if present
     if let Some(ref os_bundle) = manifest.os_bundle {
@@ -56,19 +79,48 @@ pub fn validate_manifest_images(
                 extension_name: format!("os_bundle ({})", os_bundle.image_id),
                 expected_path: path.display().to_string(),
             });
+        } else {
+            let actual = sha256_file(&path).map_err(|e| {
+                StagingError::StagingFailed(format!(
+                    "Failed to hash OS bundle {}: {e}",
+                    path.display()
+                ))
+            })?;
+            if actual != os_bundle.sha256 {
+                hash_errors.push(ImageHashMismatch {
+                    image_name: format!("os_bundle ({})", os_bundle.image_id),
+                    path: path.display().to_string(),
+                    expected: os_bundle.sha256.clone(),
+                    actual,
+                });
+            }
         }
     }
 
-    if missing.is_empty() {
-        Ok(())
-    } else {
+    if !missing.is_empty() {
         let details = missing
             .iter()
             .map(|m| format!("  {} -> {}", m.extension_name, m.expected_path))
             .collect::<Vec<_>>()
             .join("\n");
-        Err(StagingError::MissingImages(details))
+        return Err(StagingError::MissingImages(details));
     }
+
+    if !hash_errors.is_empty() {
+        let details = hash_errors
+            .iter()
+            .map(|h| {
+                format!(
+                    "  {} ({}): expected {}, got {}",
+                    h.image_name, h.path, h.expected, h.actual
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(StagingError::HashMismatch(details));
+    }
+
+    Ok(())
 }
 
 /// Create the runtime directory and write the manifest file.
@@ -99,6 +151,7 @@ pub fn stage_manifest(
 }
 
 /// Copy extension images from a staging directory into the shared image pool.
+/// Verifies SHA256 hashes after copying when hashes are present in the manifest.
 /// Used by the TUF update path after downloading targets.
 pub fn install_images_from_staging(
     manifest: &RuntimeManifest,
@@ -122,6 +175,10 @@ pub fn install_images_from_staging(
                         ext.name, ext.version, image_id
                     );
                 }
+                // Verify hash of existing image if sha256 is available
+                if let Some(ref expected_sha) = ext.sha256 {
+                    verify_installed_hash(&dest, expected_sha, &ext.name)?;
+                }
                 continue;
             }
             let staged_file = staging_dir.join(format!("{image_id}.raw"));
@@ -132,10 +189,14 @@ pub fn install_images_from_staging(
                         ext.name
                     ))
                 })?;
+                // Verify hash after copy if sha256 is available
+                if let Some(ref expected_sha) = ext.sha256 {
+                    verify_installed_hash(&dest, expected_sha, &ext.name)?;
+                }
                 if verbose {
                     println!(
-                        "    Installed image: {} {} -> {}.raw",
-                        ext.name, ext.version, image_id
+                        "    Installed image: {} {} -> {image_id}.raw",
+                        ext.name, ext.version,
                     );
                 }
             } else {
@@ -162,6 +223,7 @@ pub fn install_images_from_staging(
                 if verbose {
                     println!("    OS bundle image already present: {image_id}");
                 }
+                verify_installed_hash(&dest, &os_bundle.sha256, "os_bundle")?;
             } else {
                 let staged_file = staging_dir.join(format!("{image_id}.raw"));
                 if staged_file.exists() {
@@ -170,6 +232,7 @@ pub fn install_images_from_staging(
                             "Failed to install OS bundle image: {e}"
                         ))
                     })?;
+                    verify_installed_hash(&dest, &os_bundle.sha256, "os_bundle")?;
                     if verbose {
                         println!("    Installed OS bundle image: {image_id}");
                     }
@@ -191,6 +254,27 @@ pub fn install_images_from_staging(
         )));
     }
 
+    Ok(())
+}
+
+/// Verify the SHA256 hash of an installed image file.
+fn verify_installed_hash(
+    path: &Path,
+    expected: &str,
+    image_name: &str,
+) -> Result<(), StagingError> {
+    let actual = sha256_file(path).map_err(|e| {
+        StagingError::StagingFailed(format!("Failed to hash {}: {e}", path.display()))
+    })?;
+    if actual != expected {
+        return Err(StagingError::HashMismatch(format!(
+            "  {} ({}): expected {}, got {}",
+            image_name,
+            path.display(),
+            expected,
+            actual
+        )));
+    }
     Ok(())
 }
 
@@ -262,6 +346,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
                 image_type: None,
+                sha256: None,
             }],
             os_bundle: None,
         }
@@ -415,5 +500,172 @@ mod tests {
 
         let content = fs::read_to_string(images_dir.join(format!("{image_id}.raw"))).unwrap();
         assert_eq!(content, "old content");
+    }
+
+    /// Helper: compute sha256 hex of some bytes for test fixtures.
+    fn test_sha256(data: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
+        let hash = Sha256::digest(data);
+        hash.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    fn make_manifest_with_hash(
+        id: &str,
+        name: &str,
+        version: &str,
+        sha256: Option<String>,
+    ) -> RuntimeManifest {
+        RuntimeManifest {
+            manifest_version: 1,
+            id: id.to_string(),
+            built_at: "2026-02-19T00:00:00Z".to_string(),
+            runtime: RuntimeInfo {
+                name: name.to_string(),
+                version: version.to_string(),
+            },
+            extensions: vec![ManifestExtension {
+                name: "app".to_string(),
+                version: "0.1.0".to_string(),
+                image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
+                image_type: None,
+                sha256,
+            }],
+            os_bundle: None,
+        }
+    }
+
+    #[test]
+    fn test_validate_manifest_images_hash_ok() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let image_data = b"correct image data";
+        let hash = test_sha256(image_data);
+        fs::write(
+            images_dir.join("a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw"),
+            image_data,
+        )
+        .unwrap();
+
+        let manifest = make_manifest_with_hash("test-id", "dev", "0.1.0", Some(hash));
+        assert!(validate_manifest_images(&manifest, tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_manifest_images_hash_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        fs::write(
+            images_dir.join("a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw"),
+            b"corrupted data",
+        )
+        .unwrap();
+
+        let manifest = make_manifest_with_hash(
+            "test-id",
+            "dev",
+            "0.1.0",
+            Some("0000000000000000000000000000000000000000000000000000000000000000".to_string()),
+        );
+        let result = validate_manifest_images(&manifest, tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("integrity check failed"));
+        assert!(err.contains("app 0.1.0"));
+    }
+
+    #[test]
+    fn test_validate_manifest_images_no_hash_skips_check() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+        fs::write(
+            images_dir.join("a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw"),
+            b"any content at all",
+        )
+        .unwrap();
+
+        let manifest = make_manifest_with_hash("test-id", "dev", "0.1.0", None);
+        assert!(validate_manifest_images(&manifest, tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn test_validate_os_bundle_hash_mismatch() {
+        use crate::manifest::OsBundleRef;
+
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+        fs::write(
+            images_dir.join("deadbeef-1234-5678-abcd-000000000000.raw"),
+            b"corrupted os bundle",
+        )
+        .unwrap();
+
+        let mut manifest = make_manifest("test-id", "dev", "0.1.0");
+        fs::write(
+            images_dir.join("a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw"),
+            b"ext data",
+        )
+        .unwrap();
+        manifest.os_bundle = Some(OsBundleRef {
+            image_id: "deadbeef-1234-5678-abcd-000000000000".to_string(),
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            os_build_id: None,
+            initramfs_build_id: None,
+        });
+        let result = validate_manifest_images(&manifest, tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("integrity check failed"));
+        assert!(err.contains("os_bundle"));
+    }
+
+    #[test]
+    fn test_install_images_hash_mismatch_after_copy() {
+        let tmp = TempDir::new().unwrap();
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        let image_id = "a1b2c3d4-e5f6-5789-abcd-ef0123456789";
+        fs::write(staging.join(format!("{image_id}.raw")), b"staged content").unwrap();
+
+        let base = tmp.path().join("base");
+        fs::create_dir_all(&base).unwrap();
+
+        let manifest = make_manifest_with_hash(
+            "test-id",
+            "dev",
+            "0.1.0",
+            Some("0000000000000000000000000000000000000000000000000000000000000000".to_string()),
+        );
+        let result = install_images_from_staging(&manifest, &staging, &base, false, false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("integrity check failed"));
+    }
+
+    #[test]
+    fn test_install_images_hash_ok() {
+        let tmp = TempDir::new().unwrap();
+        let staging = tmp.path().join("staging");
+        fs::create_dir_all(&staging).unwrap();
+
+        let image_data = b"good image content";
+        let hash = test_sha256(image_data);
+        let image_id = "a1b2c3d4-e5f6-5789-abcd-ef0123456789";
+        fs::write(staging.join(format!("{image_id}.raw")), image_data).unwrap();
+
+        let base = tmp.path().join("base");
+        fs::create_dir_all(&base).unwrap();
+
+        let manifest = make_manifest_with_hash("test-id", "dev", "0.1.0", Some(hash));
+        assert!(install_images_from_staging(&manifest, &staging, &base, false, false).is_ok());
+
+        let installed = base.join("images").join(format!("{image_id}.raw"));
+        assert!(installed.exists());
     }
 }

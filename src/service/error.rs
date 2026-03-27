@@ -97,6 +97,9 @@ impl From<crate::staging::StagingError> for AvocadoError {
             crate::staging::StagingError::MissingImages(details) => {
                 AvocadoError::StagingFailed { reason: details }
             }
+            crate::staging::StagingError::HashMismatch(details) => {
+                AvocadoError::StagingFailed { reason: details }
+            }
         }
     }
 }

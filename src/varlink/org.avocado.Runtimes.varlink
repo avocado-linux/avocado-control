@@ -10,7 +10,8 @@ type ManifestExtension (
     name: string,
     version: string,
     imageId: ?string,
-    imageType: ?string
+    imageType: ?string,
+    sha256: ?string
 )
 
 type Runtime (

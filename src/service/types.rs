@@ -59,6 +59,7 @@ pub struct RuntimeExtensionInfo {
     pub image_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_type: Option<String>,
+    pub sha256: Option<String>,
 }
 
 /// Root authority information

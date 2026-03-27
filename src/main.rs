@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+pub mod hash;
 pub mod manifest;
 pub mod os_update;
 mod output;

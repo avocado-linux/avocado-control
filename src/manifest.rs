@@ -49,6 +49,9 @@ pub struct ManifestExtension {
     /// Image type: absent/null = raw squashfs/erofs, "kab" = KAB-wrapped image
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_type: Option<String>,
+    /// SHA256 hash of the extension image for integrity verification
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 impl ManifestExtension {
@@ -176,6 +179,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
                 image_type: None,
+                sha256: None,
             }],
             os_bundle: None,
         }
@@ -302,6 +306,7 @@ mod tests {
             version: "0.1.0".to_string(),
             image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             image_type: None,
+            sha256: None,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
@@ -413,6 +418,7 @@ mod tests {
             version: "0.1.0".to_string(),
             image_id: None,
             image_type: None,
+            sha256: None,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
@@ -426,6 +432,7 @@ mod tests {
             version: "0.1.0".to_string(),
             image_id: None,
             image_type: None,
+            sha256: None,
         };
         assert!(!raw_ext.is_kab());
 
@@ -434,6 +441,7 @@ mod tests {
             version: "0.1.0".to_string(),
             image_id: None,
             image_type: Some("kab".to_string()),
+            sha256: None,
         };
         assert!(kab_ext.is_kab());
     }
@@ -445,6 +453,7 @@ mod tests {
             version: "0.1.0".to_string(),
             image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             image_type: Some("kab".to_string()),
+            sha256: None,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
@@ -461,6 +470,7 @@ mod tests {
             version: "0.1.0".to_string(),
             image_id: None,
             image_type: Some("kab".to_string()),
+            sha256: None,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);

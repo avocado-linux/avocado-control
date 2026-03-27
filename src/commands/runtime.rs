@@ -534,6 +534,7 @@ mod tests {
                 version: "0.1.0".to_string(),
                 image_id: Some("img-id".to_string()),
                 image_type: None,
+                sha256: None,
             }],
             os_bundle: None,
         }

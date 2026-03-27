@@ -29,6 +29,7 @@ pub fn manifest_to_entry(manifest: &RuntimeManifest, active: bool) -> RuntimeEnt
                 version: e.version.clone(),
                 image_id: e.image_id.clone(),
                 image_type: e.image_type.clone(),
+                sha256: e.sha256.clone(),
             })
             .collect(),
         active,
