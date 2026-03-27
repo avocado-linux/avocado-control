@@ -358,7 +358,7 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
             .max(4); // at least as wide as "NAME"
 
         println!(
-            "  {:<nw$} {:<12} {:<10}",
+            "  {:<nw$} {:<12} {:<10} SHA256",
             "NAME",
             "VERSION",
             "IMAGE ID",
@@ -371,8 +371,13 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
                 Some(id) => id.as_str(),
                 None => "-",
             };
+            let short_sha = match &ext.sha256 {
+                Some(h) if h.len() >= 12 => &h[..12],
+                Some(h) => h.as_str(),
+                None => "-",
+            };
             println!(
-                "  {:<nw$} {:<12} {:<10}",
+                "  {:<nw$} {:<12} {:<10} {short_sha}",
                 ext.name,
                 ext.version,
                 short_image_id,
@@ -400,7 +405,11 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
         println!("  Full image IDs:");
         for ext in &matched.extensions {
             let id_display = ext.image_id.as_deref().unwrap_or("-");
-            println!("    {} {}: {}", ext.name, ext.version, id_display);
+            let sha_display = ext.sha256.as_deref().unwrap_or("-");
+            println!(
+                "    {} {}: {} sha256:{}",
+                ext.name, ext.version, id_display, sha_display
+            );
         }
         println!();
     }
