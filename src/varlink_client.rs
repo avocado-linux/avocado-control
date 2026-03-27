@@ -265,9 +265,14 @@ pub fn print_runtime_detail(rt: &vl_rt::Runtime, output: &OutputManager) {
         for ext in &rt.extensions {
             let img = ext.imageId.as_deref().unwrap_or("-");
             let type_str = ext.imageType.as_deref().unwrap_or("raw");
+            let sha = match &ext.sha256 {
+                Some(h) if h.len() >= 12 => &h[..12],
+                Some(h) => h.as_str(),
+                None => "-",
+            };
             println!(
-                "    {} {} (image: {}, type: {})",
-                ext.name, ext.version, img, type_str
+                "    {} {} (image: {}, type: {}, sha256: {})",
+                ext.name, ext.version, img, type_str, sha
             );
         }
     }
