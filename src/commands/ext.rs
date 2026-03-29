@@ -366,9 +366,13 @@ pub(crate) fn merge_extensions_internal(
     // Never refuse to merge extensions — always make a best effort.
     if let Some(manifest) = crate::manifest::RuntimeManifest::load_active(base_path) {
         // Spot-check extension image integrity before merging
-        if let Err(e) =
-            crate::staging::verify_spot_hashes(&manifest, base_path, output.is_verbose())
-        {
+        let spot_bytes = config.get_spot_check_bytes();
+        if let Err(e) = crate::staging::verify_spot_hashes(
+            &manifest,
+            base_path,
+            spot_bytes,
+            output.is_verbose(),
+        ) {
             output.error(
                 "Extension Merge",
                 &format!("Image integrity spot check failed:\n{e}"),

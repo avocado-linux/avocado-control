@@ -154,6 +154,16 @@ pub fn activate_runtime_streaming(
         )));
     }
 
+    // Pre-flight: verify target runtime's images before tearing down current extensions
+    let runtime_dir = base_path.join("runtimes").join(&matched.id);
+    staging::verify_runtime_integrity(
+        matched,
+        base_path,
+        &runtime_dir,
+        config.get_spot_check_bytes(),
+        false,
+    )?;
+
     staging::activate_runtime(&matched.id, base_path)?;
     Ok(Some(super::ext::refresh_extensions_streaming(config)))
 }
@@ -256,6 +266,16 @@ pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<Vec<String>,
             "OS change required. Rebooting to activate new OS.".to_string()
         ]);
     }
+
+    // Pre-flight: verify target runtime's images before tearing down current extensions
+    let runtime_dir = base_path.join("runtimes").join(&matched.id);
+    staging::verify_runtime_integrity(
+        matched,
+        base_path,
+        &runtime_dir,
+        config.get_spot_check_bytes(),
+        false,
+    )?;
 
     staging::activate_runtime(&matched.id, base_path)?;
     super::ext::refresh_extensions(config)

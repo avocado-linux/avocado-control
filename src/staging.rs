@@ -122,26 +122,63 @@ pub fn generate_spot_hashes(
     })
 }
 
-/// Verify spot-check hashes for the active runtime's extension images.
-/// Returns Ok(()) if all checks pass or no cache exists (backward compatibility).
+/// Verify integrity of a runtime's extension images before activation or merge.
+///
+/// If a `spot_hashes.json` cache exists in `runtime_dir`, uses the fast spot check.
+/// Otherwise falls back to full SHA256 validation against manifest hashes, then
+/// generates and saves a spot cache for future checks.
+pub fn verify_runtime_integrity(
+    manifest: &RuntimeManifest,
+    base_dir: &Path,
+    runtime_dir: &Path,
+    spot_check_bytes: u64,
+    verbose: bool,
+) -> Result<(), StagingError> {
+    if let Some(cache) = SpotHashCache::load(runtime_dir) {
+        return verify_with_spot_cache(manifest, base_dir, &cache, verbose);
+    }
+
+    // No spot cache — fall back to full SHA256 validation
+    if verbose {
+        eprintln!("Note: No spot hash cache found — falling back to full SHA256 verification");
+    }
+    validate_manifest_images(manifest, base_dir)?;
+
+    // Full check passed — generate and save spot cache for next time
+    if let Ok(cache) = generate_spot_hashes(manifest, base_dir, spot_check_bytes) {
+        let _ = cache.save(runtime_dir);
+    }
+
+    Ok(())
+}
+
+/// Convenience wrapper that resolves the active runtime directory.
 pub fn verify_spot_hashes(
     manifest: &RuntimeManifest,
     base_dir: &Path,
+    spot_check_bytes: u64,
     verbose: bool,
 ) -> Result<(), StagingError> {
     let active_dir = base_dir.join(ACTIVE_LINK_NAME);
-    let cache = match SpotHashCache::load(&active_dir) {
-        Some(c) => c,
-        None => {
-            if verbose {
-                eprintln!("Note: No spot hash cache found — skipping integrity spot check");
-            }
-            return Ok(());
-        }
-    };
+    verify_runtime_integrity(manifest, base_dir, &active_dir, spot_check_bytes, verbose)
+}
 
+/// Verify images against a loaded spot hash cache.
+fn verify_with_spot_cache(
+    manifest: &RuntimeManifest,
+    base_dir: &Path,
+    cache: &SpotHashCache,
+    verbose: bool,
+) -> Result<(), StagingError> {
     let spot_size = cache.spot_check_bytes;
     let mut mismatches: Vec<ImageHashMismatch> = Vec::new();
+
+    if verbose {
+        eprintln!(
+            "Verifying {} extension image(s) with spot check ({spot_size} byte head+tail)",
+            manifest.extensions.len()
+        );
+    }
 
     for ext in &manifest.extensions {
         let path = ext.resolve_path(base_dir);
@@ -912,7 +949,7 @@ mod tests {
         unix_fs::symlink("runtimes/test-id", tmp.path().join("active")).unwrap();
 
         // Verification should pass
-        assert!(verify_spot_hashes(&manifest, tmp.path(), false).is_ok());
+        assert!(verify_spot_hashes(&manifest, tmp.path(), 4096, false).is_ok());
     }
 
     #[test]
@@ -941,7 +978,7 @@ mod tests {
         .unwrap();
 
         // Verification should fail
-        let result = verify_spot_hashes(&manifest, tmp.path(), false);
+        let result = verify_spot_hashes(&manifest, tmp.path(), 4096, false);
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("integrity check failed"));
@@ -963,7 +1000,33 @@ mod tests {
         fs::create_dir_all(&runtime_dir).unwrap();
         unix_fs::symlink("runtimes/test-id", tmp.path().join("active")).unwrap();
 
-        // Should pass silently (backward compat)
-        assert!(verify_spot_hashes(&manifest, tmp.path(), false).is_ok());
+        // Should fall back to full SHA256 and pass (no sha256 in manifest = skip)
+        assert!(verify_spot_hashes(&manifest, tmp.path(), 4096, false).is_ok());
+
+        // Should have generated the spot cache as a side effect
+        assert!(SpotHashCache::load(&runtime_dir).is_some());
+    }
+
+    #[test]
+    fn test_verify_no_cache_falls_back_to_full_sha256() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let image_data = b"test image content";
+        let image_id = "a1b2c3d4-e5f6-5789-abcd-ef0123456789";
+        fs::write(images_dir.join(format!("{image_id}.raw")), image_data).unwrap();
+
+        // Manifest with WRONG sha256 — should fail the full validation
+        let manifest =
+            make_manifest_with_hash("test-id", "dev", "0.1.0", Some("badhash".to_string()));
+
+        let runtime_dir = tmp.path().join("runtimes").join("test-id");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        unix_fs::symlink("runtimes/test-id", tmp.path().join("active")).unwrap();
+
+        // No spot cache, falls back to full SHA256, which should fail
+        let result = verify_spot_hashes(&manifest, tmp.path(), 4096, false);
+        assert!(result.is_err());
     }
 }

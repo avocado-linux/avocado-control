@@ -283,6 +283,19 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
         }
     }
 
+    // Pre-flight: verify target runtime's images before tearing down current extensions
+    let runtime_dir = base_path.join("runtimes").join(&matched.id);
+    if let Err(e) = staging::verify_runtime_integrity(
+        matched,
+        base_path,
+        &runtime_dir,
+        config.get_spot_check_bytes(),
+        output.is_verbose(),
+    ) {
+        output.error("Runtime Activate", &format!("{e}"));
+        std::process::exit(1);
+    }
+
     // No OS change needed — activate immediately and refresh
     if let Err(e) = staging::activate_runtime(&matched.id, base_path) {
         output.error("Runtime Activate", &format!("{e}"));
