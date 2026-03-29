@@ -96,6 +96,7 @@ fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
             None,
             config.stream_os_to_partition(),
             output.is_verbose(),
+            config.get_spot_check_bytes(),
         ) {
             Ok(reboot_required) => {
                 if reboot_required {
@@ -148,6 +149,14 @@ fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
         {
             output.error("Runtime Add", &format!("{e}"));
             std::process::exit(1);
+        }
+
+        // Best-effort spot hash cache generation
+        if let Ok(cache) =
+            staging::generate_spot_hashes(&manifest, base_path, config.get_spot_check_bytes())
+        {
+            let runtime_dir = base_path.join("runtimes").join(&manifest.id);
+            let _ = cache.save(&runtime_dir);
         }
 
         if let Err(e) = staging::activate_runtime(&manifest.id, base_path) {

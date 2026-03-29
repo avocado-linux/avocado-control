@@ -42,6 +42,7 @@ pub fn perform_update(
     artifacts_url: Option<&str>,
     stream_os_to_partition: bool,
     verbose: bool,
+    spot_check_bytes: u64,
 ) -> Result<bool, UpdateError> {
     let url = url.trim_end_matches('/');
 
@@ -359,6 +360,12 @@ pub fn perform_update(
 
     staging::stage_manifest(&new_manifest, &manifest_content, base_dir, verbose)
         .map_err(|e| UpdateError::StagingFailed(e.to_string()))?;
+
+    // Best-effort spot hash cache generation
+    if let Ok(cache) = staging::generate_spot_hashes(&new_manifest, base_dir, spot_check_bytes) {
+        let runtime_dir = base_dir.join("runtimes").join(&new_manifest.id);
+        let _ = cache.save(&runtime_dir);
+    }
 
     // From here on, any failure must clean up the staged runtime directory
     // so we don't leave untrusted/broken runtimes on disk.
@@ -1251,6 +1258,7 @@ mod tests {
             None,
             false,
             false,
+            4096,
         );
         assert!(matches!(result, Err(UpdateError::NoTrustAnchor)));
     }

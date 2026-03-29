@@ -87,6 +87,7 @@ pub fn add_from_url_streaming(
         artifacts_url,
         config.stream_os_to_partition(),
         false,
+        config.get_spot_check_bytes(),
     )?;
 
     if reboot_required {
@@ -118,6 +119,15 @@ pub fn add_from_manifest_streaming(
 
     staging::validate_manifest_images(&manifest, base_path)?;
     staging::stage_manifest(&manifest, &manifest_content, base_path, false)?;
+
+    // Best-effort spot hash cache generation
+    if let Ok(cache) =
+        staging::generate_spot_hashes(&manifest, base_path, config.get_spot_check_bytes())
+    {
+        let runtime_dir = base_path.join("runtimes").join(&manifest.id);
+        let _ = cache.save(&runtime_dir);
+    }
+
     staging::activate_runtime(&manifest.id, base_path)?;
     Ok(super::ext::refresh_extensions_streaming(config))
 }
@@ -167,6 +177,7 @@ pub fn add_from_url(
         artifacts_url,
         config.stream_os_to_partition(),
         false,
+        config.get_spot_check_bytes(),
     )?;
 
     if reboot_required {
@@ -200,6 +211,15 @@ pub fn add_from_manifest(
 
     staging::validate_manifest_images(&manifest, base_path)?;
     staging::stage_manifest(&manifest, &manifest_content, base_path, false)?;
+
+    // Best-effort spot hash cache generation
+    if let Ok(cache) =
+        staging::generate_spot_hashes(&manifest, base_path, config.get_spot_check_bytes())
+    {
+        let runtime_dir = base_path.join("runtimes").join(&manifest.id);
+        let _ = cache.save(&runtime_dir);
+    }
+
     staging::activate_runtime(&manifest.id, base_path)?;
     super::ext::refresh_extensions(config)
 }

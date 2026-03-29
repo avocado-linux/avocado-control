@@ -1,8 +1,12 @@
-use crate::hash::sha256_file;
+use crate::hash::{sha256_file, spot_hash_file};
 use crate::manifest::{RuntimeManifest, ACTIVE_LINK_NAME, IMAGES_DIR_NAME, MANIFEST_FILENAME};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 use thiserror::Error;
+
+pub const SPOT_HASHES_FILENAME: &str = "spot_hashes.json";
 
 #[derive(Error, Debug)]
 pub enum StagingError {
@@ -34,6 +38,178 @@ pub struct ImageHashMismatch {
     pub path: String,
     pub expected: String,
     pub actual: String,
+}
+
+/// Cached spot-check hashes for fast integrity verification at merge time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpotHashCache {
+    pub version: u32,
+    pub spot_check_bytes: u64,
+    pub hashes: HashMap<String, String>,
+}
+
+impl SpotHashCache {
+    /// Load the spot hash cache from a runtime directory. Returns None if missing or corrupt.
+    pub fn load(runtime_dir: &Path) -> Option<Self> {
+        let path = runtime_dir.join(SPOT_HASHES_FILENAME);
+        let content = fs::read_to_string(&path).ok()?;
+        serde_json::from_str(&content).ok()
+    }
+
+    /// Save the spot hash cache to a runtime directory.
+    pub fn save(&self, runtime_dir: &Path) -> Result<(), StagingError> {
+        let path = runtime_dir.join(SPOT_HASHES_FILENAME);
+        let json = serde_json::to_string_pretty(self).map_err(|e| {
+            StagingError::StagingFailed(format!("Failed to serialize spot hash cache: {e}"))
+        })?;
+        fs::write(&path, json).map_err(|e| {
+            StagingError::StagingFailed(format!(
+                "Failed to write spot hash cache to {}: {e}",
+                path.display()
+            ))
+        })?;
+        Ok(())
+    }
+}
+
+/// Generate spot-check hashes for all extension and OS bundle images in the manifest.
+pub fn generate_spot_hashes(
+    manifest: &RuntimeManifest,
+    base_dir: &Path,
+    spot_check_bytes: u64,
+) -> Result<SpotHashCache, StagingError> {
+    let mut hashes = HashMap::new();
+
+    for ext in &manifest.extensions {
+        let path = ext.resolve_path(base_dir);
+        if path.exists() && !path.is_dir() {
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let hash = spot_hash_file(&path, spot_check_bytes).map_err(|e| {
+                StagingError::StagingFailed(format!("Failed to spot-hash {}: {e}", path.display()))
+            })?;
+            hashes.insert(filename, hash);
+        }
+    }
+
+    if let Some(ref os_bundle) = manifest.os_bundle {
+        let path = base_dir
+            .join(IMAGES_DIR_NAME)
+            .join(format!("{}.raw", os_bundle.image_id));
+        if path.exists() {
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let hash = spot_hash_file(&path, spot_check_bytes).map_err(|e| {
+                StagingError::StagingFailed(format!(
+                    "Failed to spot-hash OS bundle {}: {e}",
+                    path.display()
+                ))
+            })?;
+            hashes.insert(filename, hash);
+        }
+    }
+
+    Ok(SpotHashCache {
+        version: 1,
+        spot_check_bytes,
+        hashes,
+    })
+}
+
+/// Verify spot-check hashes for the active runtime's extension images.
+/// Returns Ok(()) if all checks pass or no cache exists (backward compatibility).
+pub fn verify_spot_hashes(
+    manifest: &RuntimeManifest,
+    base_dir: &Path,
+    verbose: bool,
+) -> Result<(), StagingError> {
+    let active_dir = base_dir.join(ACTIVE_LINK_NAME);
+    let cache = match SpotHashCache::load(&active_dir) {
+        Some(c) => c,
+        None => {
+            if verbose {
+                eprintln!("Note: No spot hash cache found — skipping integrity spot check");
+            }
+            return Ok(());
+        }
+    };
+
+    let spot_size = cache.spot_check_bytes;
+    let mut mismatches: Vec<ImageHashMismatch> = Vec::new();
+
+    for ext in &manifest.extensions {
+        let path = ext.resolve_path(base_dir);
+        if !path.exists() || path.is_dir() {
+            continue;
+        }
+        let filename = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default();
+        if let Some(expected) = cache.hashes.get(filename) {
+            let actual = spot_hash_file(&path, spot_size).map_err(|e| {
+                StagingError::StagingFailed(format!("Failed to spot-hash {}: {e}", path.display()))
+            })?;
+            if actual != *expected {
+                mismatches.push(ImageHashMismatch {
+                    image_name: format!("{} {}", ext.name, ext.version),
+                    path: path.display().to_string(),
+                    expected: expected.clone(),
+                    actual,
+                });
+            }
+        }
+    }
+
+    if let Some(ref os_bundle) = manifest.os_bundle {
+        let path = base_dir
+            .join(IMAGES_DIR_NAME)
+            .join(format!("{}.raw", os_bundle.image_id));
+        if path.exists() {
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default();
+            if let Some(expected) = cache.hashes.get(filename) {
+                let actual = spot_hash_file(&path, spot_size).map_err(|e| {
+                    StagingError::StagingFailed(format!(
+                        "Failed to spot-hash OS bundle {}: {e}",
+                        path.display()
+                    ))
+                })?;
+                if actual != *expected {
+                    mismatches.push(ImageHashMismatch {
+                        image_name: format!("os_bundle ({})", os_bundle.image_id),
+                        path: path.display().to_string(),
+                        expected: expected.clone(),
+                        actual,
+                    });
+                }
+            }
+        }
+    }
+
+    if !mismatches.is_empty() {
+        let details = mismatches
+            .iter()
+            .map(|h| {
+                format!(
+                    "  {} ({}): expected {}, got {}",
+                    h.image_name, h.path, h.expected, h.actual
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(StagingError::HashMismatch(details));
+    }
+
+    Ok(())
 }
 
 /// Check that all extension and OS bundle images referenced by the manifest
@@ -667,5 +843,127 @@ mod tests {
 
         let installed = base.join("images").join(format!("{image_id}.raw"));
         assert!(installed.exists());
+    }
+
+    #[test]
+    fn test_spot_hash_cache_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let mut hashes = HashMap::new();
+        hashes.insert("test.raw".to_string(), "abcdef".to_string());
+        let cache = SpotHashCache {
+            version: 1,
+            spot_check_bytes: 4096,
+            hashes,
+        };
+        cache.save(tmp.path()).unwrap();
+
+        let loaded = SpotHashCache::load(tmp.path()).unwrap();
+        assert_eq!(loaded.version, 1);
+        assert_eq!(loaded.spot_check_bytes, 4096);
+        assert_eq!(loaded.hashes.get("test.raw").unwrap(), "abcdef");
+    }
+
+    #[test]
+    fn test_spot_hash_cache_load_missing() {
+        let tmp = TempDir::new().unwrap();
+        assert!(SpotHashCache::load(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_spot_hash_cache_load_corrupt() {
+        let tmp = TempDir::new().unwrap();
+        fs::write(tmp.path().join(SPOT_HASHES_FILENAME), "not valid json").unwrap();
+        assert!(SpotHashCache::load(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn test_generate_spot_hashes() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let image_id = "a1b2c3d4-e5f6-5789-abcd-ef0123456789";
+        fs::write(images_dir.join(format!("{image_id}.raw")), b"image data").unwrap();
+
+        let manifest = make_manifest("test-id", "dev", "0.1.0");
+        let cache = generate_spot_hashes(&manifest, tmp.path(), 4096).unwrap();
+
+        assert_eq!(cache.version, 1);
+        assert_eq!(cache.spot_check_bytes, 4096);
+        assert!(cache.hashes.contains_key(&format!("{image_id}.raw")));
+    }
+
+    #[test]
+    fn test_verify_spot_hashes_ok() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let image_id = "a1b2c3d4-e5f6-5789-abcd-ef0123456789";
+        fs::write(images_dir.join(format!("{image_id}.raw")), b"image data").unwrap();
+
+        let manifest = make_manifest("test-id", "dev", "0.1.0");
+
+        // Generate and save cache, then create the active symlink
+        let cache = generate_spot_hashes(&manifest, tmp.path(), 4096).unwrap();
+        let runtime_dir = tmp.path().join("runtimes").join("test-id");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        cache.save(&runtime_dir).unwrap();
+        unix_fs::symlink("runtimes/test-id", tmp.path().join("active")).unwrap();
+
+        // Verification should pass
+        assert!(verify_spot_hashes(&manifest, tmp.path(), false).is_ok());
+    }
+
+    #[test]
+    fn test_verify_spot_hashes_mismatch() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let image_id = "a1b2c3d4-e5f6-5789-abcd-ef0123456789";
+        fs::write(images_dir.join(format!("{image_id}.raw")), b"image data").unwrap();
+
+        let manifest = make_manifest("test-id", "dev", "0.1.0");
+
+        // Generate and save cache
+        let cache = generate_spot_hashes(&manifest, tmp.path(), 4096).unwrap();
+        let runtime_dir = tmp.path().join("runtimes").join("test-id");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        cache.save(&runtime_dir).unwrap();
+        unix_fs::symlink("runtimes/test-id", tmp.path().join("active")).unwrap();
+
+        // Corrupt the image
+        fs::write(
+            images_dir.join(format!("{image_id}.raw")),
+            b"corrupted data!",
+        )
+        .unwrap();
+
+        // Verification should fail
+        let result = verify_spot_hashes(&manifest, tmp.path(), false);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("integrity check failed"));
+    }
+
+    #[test]
+    fn test_verify_spot_hashes_no_cache() {
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+
+        let image_id = "a1b2c3d4-e5f6-5789-abcd-ef0123456789";
+        fs::write(images_dir.join(format!("{image_id}.raw")), b"image data").unwrap();
+
+        let manifest = make_manifest("test-id", "dev", "0.1.0");
+
+        // Create active symlink but no spot hash cache
+        let runtime_dir = tmp.path().join("runtimes").join("test-id");
+        fs::create_dir_all(&runtime_dir).unwrap();
+        unix_fs::symlink("runtimes/test-id", tmp.path().join("active")).unwrap();
+
+        // Should pass silently (backward compat)
+        assert!(verify_spot_hashes(&manifest, tmp.path(), false).is_ok());
     }
 }

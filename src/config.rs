@@ -51,6 +51,14 @@ pub struct ExtConfig {
     /// Legacy mutable option (deprecated, use sysext_mutable and confext_mutable)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mutable: Option<String>,
+    /// Number of bytes to read from head and tail of each extension image for spot-check hashing.
+    /// Total I/O per file = 2 * spot_check_bytes. Default: 4096.
+    #[serde(default = "default_spot_check_bytes")]
+    pub spot_check_bytes: u64,
+}
+
+fn default_spot_check_bytes() -> u64 {
+    4096
 }
 
 impl Default for Config {
@@ -62,6 +70,7 @@ impl Default for Config {
                     sysext_mutable: None,
                     confext_mutable: None,
                     mutable: None,
+                    spot_check_bytes: default_spot_check_bytes(),
                 },
                 runtimes_dir: None,
                 socket: None,
@@ -129,6 +138,11 @@ impl Config {
                 .clone()
                 .unwrap_or_else(|| crate::manifest::DEFAULT_AVOCADO_DIR.to_string())
         })
+    }
+
+    /// Get the spot check size in bytes for integrity hashing during merge.
+    pub fn get_spot_check_bytes(&self) -> u64 {
+        self.avocado.ext.spot_check_bytes
     }
 
     /// Get the sysext mutable mode, defaulting to "ephemeral" if not set

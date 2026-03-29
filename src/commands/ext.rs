@@ -365,6 +365,19 @@ pub(crate) fn merge_extensions_internal(
     // try to fall back to a previous runtime that is compatible.
     // Never refuse to merge extensions — always make a best effort.
     if let Some(manifest) = crate::manifest::RuntimeManifest::load_active(base_path) {
+        // Spot-check extension image integrity before merging
+        if let Err(e) =
+            crate::staging::verify_spot_hashes(&manifest, base_path, output.is_verbose())
+        {
+            output.error(
+                "Extension Merge",
+                &format!("Image integrity spot check failed:\n{e}"),
+            );
+            return Err(SystemdError::ConfigurationError {
+                message: format!("Image integrity spot check failed: {e}"),
+            });
+        }
+
         if let Some(ref os_bundle) = manifest.os_bundle {
             if let Some(ref expected_id) = os_bundle.os_build_id {
                 match read_running_os_build_id() {
