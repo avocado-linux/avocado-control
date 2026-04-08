@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::gc;
 use crate::manifest::{RuntimeManifest, IMAGES_DIR_NAME};
 use crate::service::error::AvocadoError;
 use crate::service::types::{RuntimeEntry, RuntimeExtensionInfo};
@@ -95,6 +96,8 @@ pub fn add_from_url_streaming(
             "OS update applied. Rebooting to activate new OS...",
         ));
     }
+    // Best-effort GC after successful add
+    let _ = garbage_collect(config);
     Ok(super::ext::refresh_extensions_streaming(config))
 }
 
@@ -129,6 +132,8 @@ pub fn add_from_manifest_streaming(
     }
 
     staging::activate_runtime(&manifest.id, base_path)?;
+    // Best-effort GC after successful add
+    let _ = garbage_collect(config);
     Ok(super::ext::refresh_extensions_streaming(config))
 }
 
@@ -197,7 +202,10 @@ pub fn add_from_url(
             "OS update applied. Rebooting to activate new OS.".to_string()
         ]);
     }
-    super::ext::refresh_extensions(config)
+    let result = super::ext::refresh_extensions(config);
+    // Best-effort GC after successful add
+    let _ = garbage_collect(config);
+    result
 }
 
 /// Add a runtime from a local manifest file.
@@ -231,7 +239,10 @@ pub fn add_from_manifest(
     }
 
     staging::activate_runtime(&manifest.id, base_path)?;
-    super::ext::refresh_extensions(config)
+    let result = super::ext::refresh_extensions(config);
+    // Best-effort GC after successful add
+    let _ = garbage_collect(config);
+    result
 }
 
 /// Remove a staged runtime by ID (or prefix).
@@ -365,6 +376,16 @@ fn runtime_requires_os_change(
     })?;
 
     Ok(true)
+}
+
+// ── Garbage collection ─────────────────────────────────────────────────────
+
+/// Run garbage collection to remove old runtimes and unreferenced images.
+pub fn garbage_collect(config: &Config) -> Result<gc::GcResult, AvocadoError> {
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+    let retention = config.runtime_retention();
+    gc::collect_garbage(base_path, retention).map_err(|e| e.into())
 }
 
 // ── Metadata service functions ──────────────────────────────────────────────

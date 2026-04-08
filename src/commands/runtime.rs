@@ -53,6 +53,7 @@ pub fn create_command() -> Command {
                     ),
                 ),
         )
+        .subcommand(Command::new("gc").about("Remove old runtimes and unreferenced images"))
         .subcommand(
             Command::new("metadata")
                 .about("Manage runtime metadata key-value pairs")
@@ -115,6 +116,9 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
         }
         Some(("inspect", inspect_matches)) => {
             handle_inspect(inspect_matches, config, output);
+        }
+        Some(("gc", _)) => {
+            handle_gc(config, output);
         }
         Some(("metadata", meta_matches)) => {
             handle_metadata(meta_matches, config, output);
@@ -524,6 +528,45 @@ fn resolve_runtime_id<'a>(
                     ids.join("\n")
                 ),
             );
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_gc(config: &Config, output: &OutputManager) {
+    match crate::service::runtime::garbage_collect(config) {
+        Ok(result) => {
+            if output.is_json() {
+                let json = serde_json::json!({
+                    "removed_runtimes": result.removed_runtimes,
+                    "removed_images": result.removed_images,
+                });
+                println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                return;
+            }
+            if result.removed_runtimes.is_empty() && result.removed_images.is_empty() {
+                output.info("Runtime GC", "Nothing to clean up.");
+            } else {
+                for id in &result.removed_runtimes {
+                    let short_id = &id[..8.min(id.len())];
+                    println!("  Removed runtime: {short_id}");
+                }
+                for img in &result.removed_images {
+                    println!("  Removed image: {img}");
+                }
+                println!();
+                output.success(
+                    "Runtime GC",
+                    &format!(
+                        "Removed {} runtime(s), {} image(s)",
+                        result.removed_runtimes.len(),
+                        result.removed_images.len(),
+                    ),
+                );
+            }
+        }
+        Err(e) => {
+            output.error("Runtime GC", &format!("{e}"));
             std::process::exit(1);
         }
     }

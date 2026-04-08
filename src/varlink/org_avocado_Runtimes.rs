@@ -268,6 +268,11 @@ pub trait VarlinkCallError: varlink::CallTrait {
 }
 impl VarlinkCallError for varlink::Call<'_> {}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct r#GcResult {
+    pub r#removedRuntimes: Vec<String>,
+    pub r#removedImages: Vec<String>,
+}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct r#ManifestExtension {
     pub r#name: String,
     pub r#version: String,
@@ -418,6 +423,20 @@ pub trait Call_AddFromUrl: VarlinkCallError {
 }
 impl Call_AddFromUrl for varlink::Call<'_> {}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct GarbageCollect_Reply {
+    pub r#result: GcResult,
+}
+impl varlink::VarlinkReply for GarbageCollect_Reply {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct GarbageCollect_Args {}
+#[allow(dead_code)]
+pub trait Call_GarbageCollect: VarlinkCallError {
+    fn reply(&mut self, r#result: GcResult) -> varlink::Result<()> {
+        self.reply_struct(GarbageCollect_Reply { r#result }.into())
+    }
+}
+impl Call_GarbageCollect for varlink::Call<'_> {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Inspect_Reply {
     pub r#runtime: Runtime,
 }
@@ -541,6 +560,7 @@ pub trait VarlinkInterface {
         r#authToken: Option<String>,
         r#artifactsUrl: Option<String>,
     ) -> varlink::Result<()>;
+    fn garbage_collect(&self, call: &mut dyn Call_GarbageCollect) -> varlink::Result<()>;
     fn inspect(&self, call: &mut dyn Call_Inspect, r#id: Option<String>) -> varlink::Result<()>;
     fn list(&self, call: &mut dyn Call_List) -> varlink::Result<()>;
     fn metadata_delete(
@@ -588,6 +608,9 @@ pub trait VarlinkClientInterface {
         r#authToken: Option<String>,
         r#artifactsUrl: Option<String>,
     ) -> varlink::MethodCall<AddFromUrl_Args, AddFromUrl_Reply, Error>;
+    fn garbage_collect(
+        &mut self,
+    ) -> varlink::MethodCall<GarbageCollect_Args, GarbageCollect_Reply, Error>;
     fn inspect(
         &mut self,
         r#id: Option<String>,
@@ -660,6 +683,15 @@ impl VarlinkClientInterface for VarlinkClient {
                 r#authToken,
                 r#artifactsUrl,
             },
+        )
+    }
+    fn garbage_collect(
+        &mut self,
+    ) -> varlink::MethodCall<GarbageCollect_Args, GarbageCollect_Reply, Error> {
+        varlink::MethodCall::<GarbageCollect_Args, GarbageCollect_Reply, Error>::new(
+            self.connection.clone(),
+            "org.avocado.Runtimes.GarbageCollect",
+            GarbageCollect_Args {},
         )
     }
     fn inspect(
@@ -745,7 +777,7 @@ pub fn new(inner: Box<dyn VarlinkInterface + Send + Sync>) -> VarlinkInterfacePr
 }
 impl varlink::Interface for VarlinkInterfaceProxy {
     fn get_description(&self) -> &'static str {
-        "# Runtime lifecycle management for Avocado Linux\ninterface org.avocado.Runtimes\n\ntype RuntimeInfo (\n    name: string,\n    version: string\n)\n\ntype ManifestExtension (\n    name: string,\n    version: string,\n    imageId: ?string,\n    imageType: ?string,\n    sha256: ?string\n)\n\ntype Runtime (\n    id: string,\n    manifestVersion: int,\n    builtAt: string,\n    runtime: RuntimeInfo,\n    extensions: []ManifestExtension,\n    active: bool,\n    osBuildId: ?string,\n    initramfsBuildId: ?string\n)\n\n# List all available runtimes\nmethod List() -> (runtimes: []Runtime)\n\n# Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromUrl(url: string, authToken: ?string, artifactsUrl: ?string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Add a runtime from a local manifest file\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromManifest(manifestPath: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Remove a staged runtime by ID (or prefix)\nmethod Remove(id: string) -> ()\n\n# Activate a staged runtime by ID (or prefix)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Inspect a runtime's details (omit id to inspect the active runtime)\nmethod Inspect(id: ?string) -> (runtime: Runtime)\n\ntype MetadataEntry (\n    key: string,\n    value: string\n)\n\n# Set a metadata key-value pair on a runtime\nmethod MetadataSet(id: string, key: string, value: string) -> ()\n\n# Get a metadata value by key\nmethod MetadataGet(id: string, key: string) -> (value: string)\n\n# List all metadata for a runtime\nmethod MetadataList(id: string) -> (entries: []MetadataEntry)\n\n# Delete a metadata key\nmethod MetadataDelete(id: string, key: string) -> ()\n\nerror RuntimeNotFound (id: string)\nerror AmbiguousRuntimeId (id: string, candidates: []string)\nerror RemoveActiveRuntime ()\nerror StagingFailed (reason: string)\nerror UpdateFailed (reason: string)\nerror MetadataKeyNotFound (id: string, key: string)\n"
+        "# Runtime lifecycle management for Avocado Linux\ninterface org.avocado.Runtimes\n\ntype RuntimeInfo (\n    name: string,\n    version: string\n)\n\ntype ManifestExtension (\n    name: string,\n    version: string,\n    imageId: ?string,\n    imageType: ?string,\n    sha256: ?string\n)\n\ntype Runtime (\n    id: string,\n    manifestVersion: int,\n    builtAt: string,\n    runtime: RuntimeInfo,\n    extensions: []ManifestExtension,\n    active: bool,\n    osBuildId: ?string,\n    initramfsBuildId: ?string\n)\n\n# List all available runtimes\nmethod List() -> (runtimes: []Runtime)\n\n# Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromUrl(url: string, authToken: ?string, artifactsUrl: ?string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Add a runtime from a local manifest file\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromManifest(manifestPath: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Remove a staged runtime by ID (or prefix)\nmethod Remove(id: string) -> ()\n\n# Activate a staged runtime by ID (or prefix)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Inspect a runtime's details (omit id to inspect the active runtime)\nmethod Inspect(id: ?string) -> (runtime: Runtime)\n\ntype MetadataEntry (\n    key: string,\n    value: string\n)\n\n# Set a metadata key-value pair on a runtime\nmethod MetadataSet(id: string, key: string, value: string) -> ()\n\n# Get a metadata value by key\nmethod MetadataGet(id: string, key: string) -> (value: string)\n\n# List all metadata for a runtime\nmethod MetadataList(id: string) -> (entries: []MetadataEntry)\n\n# Delete a metadata key\nmethod MetadataDelete(id: string, key: string) -> ()\n\ntype GcResult (\n    removedRuntimes: []string,\n    removedImages: []string\n)\n\n# Run garbage collection to remove old runtimes and unreferenced images\nmethod GarbageCollect() -> (result: GcResult)\n\nerror RuntimeNotFound (id: string)\nerror AmbiguousRuntimeId (id: string, candidates: []string)\nerror RemoveActiveRuntime ()\nerror StagingFailed (reason: string)\nerror UpdateFailed (reason: string)\nerror MetadataKeyNotFound (id: string, key: string)\n"
     }
     fn get_name(&self) -> &'static str {
         "org.avocado.Runtimes"
@@ -814,6 +846,9 @@ impl varlink::Interface for VarlinkInterfaceProxy {
                     call.reply_invalid_parameter("parameters".into())
                 }
             }
+            "org.avocado.Runtimes.GarbageCollect" => self
+                .inner
+                .garbage_collect(call as &mut dyn Call_GarbageCollect),
             "org.avocado.Runtimes.Inspect" => {
                 if let Some(args) = req.parameters.clone() {
                     let args: Inspect_Args = match serde_json::from_value(args) {

@@ -27,6 +27,9 @@ pub struct AvocadoConfig {
     /// Update settings (streaming, etc.)
     #[serde(default)]
     pub update: UpdateSettings,
+    /// Garbage collection settings
+    #[serde(default)]
+    pub gc: GcSettings,
 }
 
 /// Update configuration
@@ -37,6 +40,28 @@ pub struct UpdateSettings {
     /// Default: false
     #[serde(default)]
     pub stream_os_to_partition: bool,
+}
+
+/// Garbage collection configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GcSettings {
+    /// Maximum number of runtimes to keep (including the active one).
+    /// The active runtime and any runtime referenced by a pending OS update are always kept.
+    /// Minimum: 1 (always keep the active runtime). Default: 3.
+    #[serde(default = "default_runtime_retention")]
+    pub runtime_retention: u32,
+}
+
+impl Default for GcSettings {
+    fn default() -> Self {
+        Self {
+            runtime_retention: default_runtime_retention(),
+        }
+    }
+}
+
+fn default_runtime_retention() -> u32 {
+    3
 }
 
 /// Extension configuration
@@ -75,6 +100,7 @@ impl Default for Config {
                 runtimes_dir: None,
                 socket: None,
                 update: UpdateSettings::default(),
+                gc: GcSettings::default(),
             },
         }
     }
@@ -143,6 +169,11 @@ impl Config {
     /// Get the spot check size in bytes for integrity hashing during merge.
     pub fn get_spot_check_bytes(&self) -> u64 {
         self.avocado.ext.spot_check_bytes
+    }
+
+    /// Get the runtime retention count, clamped to a minimum of 1.
+    pub fn runtime_retention(&self) -> u32 {
+        self.avocado.gc.runtime_retention.max(1)
     }
 
     /// Get the sysext mutable mode, defaulting to "ephemeral" if not set
@@ -567,6 +598,54 @@ mutable = "yes"
         assert!(error_message.contains("Invalid mutable value 'invalid_value'"));
         assert!(error_message
             .contains("Must be one of: no, auto, yes, import, ephemeral, ephemeral-import"));
+    }
+
+    #[test]
+    fn test_runtime_retention_default() {
+        let config = Config::default();
+        assert_eq!(config.runtime_retention(), 3);
+    }
+
+    #[test]
+    fn test_runtime_retention_clamps_to_min_1() {
+        let mut config = Config::default();
+        config.avocado.gc.runtime_retention = 0;
+        assert_eq!(config.runtime_retention(), 1);
+    }
+
+    #[test]
+    fn test_runtime_retention_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("gc_test.toml");
+
+        let config_content = r#"
+[avocado.ext]
+dir = "/var/lib/avocado/images"
+
+[avocado.gc]
+runtime_retention = 5
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert_eq!(config.runtime_retention(), 5);
+    }
+
+    #[test]
+    fn test_gc_defaults_when_omitted() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("no_gc_test.toml");
+
+        let config_content = r#"
+[avocado.ext]
+dir = "/var/lib/avocado/images"
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert_eq!(config.runtime_retention(), 3);
     }
 
     #[test]

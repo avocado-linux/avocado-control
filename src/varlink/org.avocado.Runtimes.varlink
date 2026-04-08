@@ -63,6 +63,14 @@ method MetadataList(id: string) -> (entries: []MetadataEntry)
 # Delete a metadata key
 method MetadataDelete(id: string, key: string) -> ()
 
+type GcResult (
+    removedRuntimes: []string,
+    removedImages: []string
+)
+
+# Run garbage collection to remove old runtimes and unreferenced images
+method GarbageCollect() -> (result: GcResult)
+
 error RuntimeNotFound (id: string)
 error AmbiguousRuntimeId (id: string, candidates: []string)
 error RemoveActiveRuntime ()

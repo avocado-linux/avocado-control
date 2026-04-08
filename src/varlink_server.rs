@@ -453,6 +453,16 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
             Err(e) => map_rt_error!(call, e),
         }
     }
+
+    fn garbage_collect(&self, call: &mut dyn vl_rt::Call_GarbageCollect) -> varlink::Result<()> {
+        match service::runtime::garbage_collect(&self.config) {
+            Ok(result) => call.reply(vl_rt::GcResult {
+                r#removedRuntimes: result.removed_runtimes,
+                r#removedImages: result.removed_images,
+            }),
+            Err(e) => map_rt_error!(call, e),
+        }
+    }
 }
 
 // ── HITL handler ────────────────────────────────────────────────────

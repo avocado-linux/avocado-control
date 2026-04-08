@@ -6,3 +6,9 @@
 # Directory where Avocado extensions are stored
 # Can be overridden by AVOCADO_EXTENSIONS_PATH environment variable
 dir = "/var/lib/avocado/images"
+
+# [avocado.gc]
+# Maximum number of runtimes to keep (including the active one).
+# The active runtime and any runtime referenced by a pending OS update are always kept.
+# Minimum: 1 (always keep the active runtime). Default: 3.
+# runtime_retention = 3

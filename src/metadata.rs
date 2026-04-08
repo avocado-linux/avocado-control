@@ -11,13 +11,19 @@ pub struct RuntimeMetadata {
     pub entries: HashMap<String, String>,
 }
 
-impl RuntimeMetadata {
-    /// Create an empty metadata store.
-    pub fn new() -> Self {
+impl Default for RuntimeMetadata {
+    fn default() -> Self {
         Self {
             version: 1,
             entries: HashMap::new(),
         }
+    }
+}
+
+impl RuntimeMetadata {
+    /// Create an empty metadata store.
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Load metadata from a runtime directory. Returns empty metadata if the file
@@ -33,8 +39,7 @@ impl RuntimeMetadata {
     /// Save metadata to a runtime directory.
     pub fn save(&self, runtime_dir: &Path) -> Result<(), std::io::Error> {
         let path = runtime_dir.join(METADATA_FILENAME);
-        let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         fs::write(&path, json)
     }
 }

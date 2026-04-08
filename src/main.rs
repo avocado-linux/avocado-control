@@ -1,5 +1,6 @@
 mod commands;
 mod config;
+pub mod gc;
 pub mod hash;
 pub mod manifest;
 pub mod metadata;
@@ -404,6 +405,43 @@ fn main() {
                     let mut client = vl_rt::VarlinkClient::new(conn);
                     match client.inspect(id).call() {
                         Ok(reply) => varlink_client::print_runtime_detail(&reply.runtime, &output),
+                        Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                    }
+                }
+                Some(("gc", _)) => {
+                    let mut client = vl_rt::VarlinkClient::new(conn);
+                    match client.garbage_collect().call() {
+                        Ok(reply) => {
+                            let result = &reply.result;
+                            if output.is_json() {
+                                let json = serde_json::json!({
+                                    "removed_runtimes": result.removedRuntimes,
+                                    "removed_images": result.removedImages,
+                                });
+                                println!("{}", serde_json::to_string_pretty(&json).unwrap());
+                            } else if result.removedRuntimes.is_empty()
+                                && result.removedImages.is_empty()
+                            {
+                                output.info("Runtime GC", "Nothing to clean up.");
+                            } else {
+                                for id in &result.removedRuntimes {
+                                    let short_id = &id[..8.min(id.len())];
+                                    println!("  Removed runtime: {short_id}");
+                                }
+                                for img in &result.removedImages {
+                                    println!("  Removed image: {img}");
+                                }
+                                println!();
+                                output.success(
+                                    "Runtime GC",
+                                    &format!(
+                                        "Removed {} runtime(s), {} image(s)",
+                                        result.removedRuntimes.len(),
+                                        result.removedImages.len(),
+                                    ),
+                                );
+                            }
+                        }
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
                 }
