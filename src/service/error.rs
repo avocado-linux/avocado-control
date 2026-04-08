@@ -53,6 +53,9 @@ pub enum AvocadoError {
     #[error("No root authority configured")]
     NoRootAuthority,
 
+    #[error("Metadata key '{key}' not found for runtime '{id}'")]
+    MetadataKeyNotFound { id: String, key: String },
+
     #[error("Parse failed: {reason}")]
     ParseFailed { reason: String },
 

@@ -53,6 +53,50 @@ pub fn create_command() -> Command {
                     ),
                 ),
         )
+        .subcommand(
+            Command::new("metadata")
+                .about("Manage runtime metadata key-value pairs")
+                .subcommand(
+                    Command::new("set")
+                        .about("Set a metadata key-value pair")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .help("Runtime build ID (full or prefix)"),
+                        )
+                        .arg(Arg::new("key").required(true).help("Metadata key"))
+                        .arg(Arg::new("value").required(true).help("Metadata value")),
+                )
+                .subcommand(
+                    Command::new("get")
+                        .about("Get a metadata value by key")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .help("Runtime build ID (full or prefix)"),
+                        )
+                        .arg(Arg::new("key").required(true).help("Metadata key")),
+                )
+                .subcommand(
+                    Command::new("list")
+                        .about("List all metadata for a runtime")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .help("Runtime build ID (full or prefix)"),
+                        ),
+                )
+                .subcommand(
+                    Command::new("delete")
+                        .about("Delete a metadata key")
+                        .arg(
+                            Arg::new("id")
+                                .required(true)
+                                .help("Runtime build ID (full or prefix)"),
+                        )
+                        .arg(Arg::new("key").required(true).help("Metadata key")),
+                ),
+        )
 }
 
 pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputManager) {
@@ -71,6 +115,9 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
         }
         Some(("inspect", inspect_matches)) => {
             handle_inspect(inspect_matches, config, output);
+        }
+        Some(("metadata", meta_matches)) => {
+            handle_metadata(meta_matches, config, output);
         }
         _ => {
             println!("Use 'runtime list' to see available runtimes.");
@@ -477,6 +524,117 @@ fn resolve_runtime_id<'a>(
                     ids.join("\n")
                 ),
             );
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_metadata(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    match matches.subcommand() {
+        Some(("set", set_matches)) => handle_metadata_set(set_matches, config, output),
+        Some(("get", get_matches)) => handle_metadata_get(get_matches, config, output),
+        Some(("list", list_matches)) => handle_metadata_list(list_matches, config, output),
+        Some(("delete", del_matches)) => handle_metadata_delete(del_matches, config, output),
+        _ => {
+            println!("Use 'avocadoctl runtime metadata --help' for available commands.");
+        }
+    }
+}
+
+fn handle_metadata_set(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let id = matches.get_one::<String>("id").expect("id is required");
+    let key = matches.get_one::<String>("key").expect("key is required");
+    let value = matches
+        .get_one::<String>("value")
+        .expect("value is required");
+
+    match crate::service::runtime::metadata_set(id, key, value, config) {
+        Ok(()) => {
+            if output.is_json() {
+                println!("{{\"status\":\"ok\"}}");
+            } else {
+                output.success("Metadata Set", &format!("Set '{key}' on runtime {id}"));
+            }
+        }
+        Err(e) => {
+            output.error("Metadata Set", &format!("{e}"));
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_metadata_get(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let id = matches.get_one::<String>("id").expect("id is required");
+    let key = matches.get_one::<String>("key").expect("key is required");
+
+    match crate::service::runtime::metadata_get(id, key, config) {
+        Ok(value) => {
+            if output.is_json() {
+                println!("{}", serde_json::json!({"key": key, "value": value}));
+            } else {
+                println!("{value}");
+            }
+        }
+        Err(e) => {
+            output.error("Metadata Get", &format!("{e}"));
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_metadata_list(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let id = matches.get_one::<String>("id").expect("id is required");
+
+    match crate::service::runtime::metadata_list(id, config) {
+        Ok(entries) => {
+            if output.is_json() {
+                let json_entries: Vec<serde_json::Value> = entries
+                    .iter()
+                    .map(|(k, v)| serde_json::json!({"key": k, "value": v}))
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&json_entries).unwrap());
+            } else if entries.is_empty() {
+                output.info("Metadata List", "No metadata set for this runtime.");
+            } else {
+                let key_width = entries
+                    .iter()
+                    .map(|(k, _)| k.len())
+                    .max()
+                    .unwrap_or(3)
+                    .max(3);
+
+                println!();
+                println!("  {:<kw$} VALUE", "KEY", kw = key_width);
+                for (k, v) in &entries {
+                    println!("  {:<kw$} {v}", k, kw = key_width);
+                }
+                println!();
+            }
+        }
+        Err(e) => {
+            output.error("Metadata List", &format!("{e}"));
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_metadata_delete(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let id = matches.get_one::<String>("id").expect("id is required");
+    let key = matches.get_one::<String>("key").expect("key is required");
+
+    match crate::service::runtime::metadata_delete(id, key, config) {
+        Ok(()) => {
+            if output.is_json() {
+                println!("{{\"status\":\"ok\"}}");
+            } else {
+                output.success(
+                    "Metadata Delete",
+                    &format!("Deleted '{key}' from runtime {id}"),
+                );
+            }
+        }
+        Err(e) => {
+            output.error("Metadata Delete", &format!("{e}"));
             std::process::exit(1);
         }
     }

@@ -46,8 +46,26 @@ method Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)
 # Inspect a runtime's details (omit id to inspect the active runtime)
 method Inspect(id: ?string) -> (runtime: Runtime)
 
+type MetadataEntry (
+    key: string,
+    value: string
+)
+
+# Set a metadata key-value pair on a runtime
+method MetadataSet(id: string, key: string, value: string) -> ()
+
+# Get a metadata value by key
+method MetadataGet(id: string, key: string) -> (value: string)
+
+# List all metadata for a runtime
+method MetadataList(id: string) -> (entries: []MetadataEntry)
+
+# Delete a metadata key
+method MetadataDelete(id: string, key: string) -> ()
+
 error RuntimeNotFound (id: string)
 error AmbiguousRuntimeId (id: string, candidates: []string)
 error RemoveActiveRuntime ()
 error StagingFailed (reason: string)
 error UpdateFailed (reason: string)
+error MetadataKeyNotFound (id: string, key: string)

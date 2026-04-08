@@ -12,6 +12,7 @@ pub enum ErrorKind {
     Varlink_Error,
     VarlinkReply_Error,
     AmbiguousRuntimeId(Option<AmbiguousRuntimeId_Args>),
+    MetadataKeyNotFound(Option<MetadataKeyNotFound_Args>),
     RemoveActiveRuntime(Option<RemoveActiveRuntime_Args>),
     RuntimeNotFound(Option<RuntimeNotFound_Args>),
     StagingFailed(Option<StagingFailed_Args>),
@@ -24,6 +25,9 @@ impl ::std::fmt::Display for ErrorKind {
             ErrorKind::VarlinkReply_Error => write!(f, "Varlink error reply"),
             ErrorKind::AmbiguousRuntimeId(v) => {
                 write!(f, "org.avocado.Runtimes.AmbiguousRuntimeId: {:#?}", v)
+            }
+            ErrorKind::MetadataKeyNotFound(v) => {
+                write!(f, "org.avocado.Runtimes.MetadataKeyNotFound: {:#?}", v)
             }
             ErrorKind::RemoveActiveRuntime(v) => {
                 write!(f, "org.avocado.Runtimes.RemoveActiveRuntime: {:#?}", v)
@@ -135,6 +139,20 @@ impl From<&varlink::Reply> for ErrorKind {
                 }
             }
             varlink::Reply { error: Some(t), .. }
+                if t == "org.avocado.Runtimes.MetadataKeyNotFound" =>
+            {
+                match e {
+                    varlink::Reply {
+                        parameters: Some(p),
+                        ..
+                    } => match serde_json::from_value(p.clone()) {
+                        Ok(v) => ErrorKind::MetadataKeyNotFound(v),
+                        Err(_) => ErrorKind::MetadataKeyNotFound(None),
+                    },
+                    _ => ErrorKind::MetadataKeyNotFound(None),
+                }
+            }
+            varlink::Reply { error: Some(t), .. }
                 if t == "org.avocado.Runtimes.RemoveActiveRuntime" =>
             {
                 match e {
@@ -205,6 +223,15 @@ pub trait VarlinkCallError: varlink::CallTrait {
             ),
         ))
     }
+    fn reply_metadata_key_not_found(&mut self, r#id: String, r#key: String) -> varlink::Result<()> {
+        self.reply_struct(varlink::Reply::error(
+            "org.avocado.Runtimes.MetadataKeyNotFound",
+            Some(
+                serde_json::to_value(MetadataKeyNotFound_Args { r#id, r#key })
+                    .map_err(varlink::map_context!())?,
+            ),
+        ))
+    }
     fn reply_remove_active_runtime(&mut self) -> varlink::Result<()> {
         self.reply_struct(varlink::Reply::error(
             "org.avocado.Runtimes.RemoveActiveRuntime",
@@ -249,6 +276,11 @@ pub struct r#ManifestExtension {
     pub r#sha256: Option<String>,
 }
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct r#MetadataEntry {
+    pub r#key: String,
+    pub r#value: String,
+}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct r#Runtime {
     pub r#id: String,
     pub r#manifestVersion: i64,
@@ -268,6 +300,11 @@ pub struct r#RuntimeInfo {
 pub struct AmbiguousRuntimeId_Args {
     pub r#id: String,
     pub r#candidates: Vec<String>,
+}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataKeyNotFound_Args {
+    pub r#id: String,
+    pub r#key: String,
 }
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct RemoveActiveRuntime_Args {}
@@ -412,6 +449,70 @@ pub trait Call_List: VarlinkCallError {
 }
 impl Call_List for varlink::Call<'_> {}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataDelete_Reply {}
+impl varlink::VarlinkReply for MetadataDelete_Reply {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataDelete_Args {
+    pub r#id: String,
+    pub r#key: String,
+}
+#[allow(dead_code)]
+pub trait Call_MetadataDelete: VarlinkCallError {
+    fn reply(&mut self) -> varlink::Result<()> {
+        self.reply_struct(varlink::Reply::parameters(None))
+    }
+}
+impl Call_MetadataDelete for varlink::Call<'_> {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataGet_Reply {
+    pub r#value: String,
+}
+impl varlink::VarlinkReply for MetadataGet_Reply {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataGet_Args {
+    pub r#id: String,
+    pub r#key: String,
+}
+#[allow(dead_code)]
+pub trait Call_MetadataGet: VarlinkCallError {
+    fn reply(&mut self, r#value: String) -> varlink::Result<()> {
+        self.reply_struct(MetadataGet_Reply { r#value }.into())
+    }
+}
+impl Call_MetadataGet for varlink::Call<'_> {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataList_Reply {
+    pub r#entries: Vec<MetadataEntry>,
+}
+impl varlink::VarlinkReply for MetadataList_Reply {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataList_Args {
+    pub r#id: String,
+}
+#[allow(dead_code)]
+pub trait Call_MetadataList: VarlinkCallError {
+    fn reply(&mut self, r#entries: Vec<MetadataEntry>) -> varlink::Result<()> {
+        self.reply_struct(MetadataList_Reply { r#entries }.into())
+    }
+}
+impl Call_MetadataList for varlink::Call<'_> {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataSet_Reply {}
+impl varlink::VarlinkReply for MetadataSet_Reply {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct MetadataSet_Args {
+    pub r#id: String,
+    pub r#key: String,
+    pub r#value: String,
+}
+#[allow(dead_code)]
+pub trait Call_MetadataSet: VarlinkCallError {
+    fn reply(&mut self) -> varlink::Result<()> {
+        self.reply_struct(varlink::Reply::parameters(None))
+    }
+}
+impl Call_MetadataSet for varlink::Call<'_> {}
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Remove_Reply {}
 impl varlink::VarlinkReply for Remove_Reply {}
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -442,6 +543,26 @@ pub trait VarlinkInterface {
     ) -> varlink::Result<()>;
     fn inspect(&self, call: &mut dyn Call_Inspect, r#id: Option<String>) -> varlink::Result<()>;
     fn list(&self, call: &mut dyn Call_List) -> varlink::Result<()>;
+    fn metadata_delete(
+        &self,
+        call: &mut dyn Call_MetadataDelete,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::Result<()>;
+    fn metadata_get(
+        &self,
+        call: &mut dyn Call_MetadataGet,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::Result<()>;
+    fn metadata_list(&self, call: &mut dyn Call_MetadataList, r#id: String) -> varlink::Result<()>;
+    fn metadata_set(
+        &self,
+        call: &mut dyn Call_MetadataSet,
+        r#id: String,
+        r#key: String,
+        r#value: String,
+    ) -> varlink::Result<()>;
     fn remove(&self, call: &mut dyn Call_Remove, r#id: String) -> varlink::Result<()>;
     fn call_upgraded(
         &self,
@@ -472,6 +593,26 @@ pub trait VarlinkClientInterface {
         r#id: Option<String>,
     ) -> varlink::MethodCall<Inspect_Args, Inspect_Reply, Error>;
     fn list(&mut self) -> varlink::MethodCall<List_Args, List_Reply, Error>;
+    fn metadata_delete(
+        &mut self,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::MethodCall<MetadataDelete_Args, MetadataDelete_Reply, Error>;
+    fn metadata_get(
+        &mut self,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::MethodCall<MetadataGet_Args, MetadataGet_Reply, Error>;
+    fn metadata_list(
+        &mut self,
+        r#id: String,
+    ) -> varlink::MethodCall<MetadataList_Args, MetadataList_Reply, Error>;
+    fn metadata_set(
+        &mut self,
+        r#id: String,
+        r#key: String,
+        r#value: String,
+    ) -> varlink::MethodCall<MetadataSet_Args, MetadataSet_Reply, Error>;
     fn remove(&mut self, r#id: String) -> varlink::MethodCall<Remove_Args, Remove_Reply, Error>;
 }
 #[allow(dead_code)]
@@ -538,6 +679,54 @@ impl VarlinkClientInterface for VarlinkClient {
             List_Args {},
         )
     }
+    fn metadata_delete(
+        &mut self,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::MethodCall<MetadataDelete_Args, MetadataDelete_Reply, Error> {
+        varlink::MethodCall::<MetadataDelete_Args, MetadataDelete_Reply, Error>::new(
+            self.connection.clone(),
+            "org.avocado.Runtimes.MetadataDelete",
+            MetadataDelete_Args { r#id, r#key },
+        )
+    }
+    fn metadata_get(
+        &mut self,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::MethodCall<MetadataGet_Args, MetadataGet_Reply, Error> {
+        varlink::MethodCall::<MetadataGet_Args, MetadataGet_Reply, Error>::new(
+            self.connection.clone(),
+            "org.avocado.Runtimes.MetadataGet",
+            MetadataGet_Args { r#id, r#key },
+        )
+    }
+    fn metadata_list(
+        &mut self,
+        r#id: String,
+    ) -> varlink::MethodCall<MetadataList_Args, MetadataList_Reply, Error> {
+        varlink::MethodCall::<MetadataList_Args, MetadataList_Reply, Error>::new(
+            self.connection.clone(),
+            "org.avocado.Runtimes.MetadataList",
+            MetadataList_Args { r#id },
+        )
+    }
+    fn metadata_set(
+        &mut self,
+        r#id: String,
+        r#key: String,
+        r#value: String,
+    ) -> varlink::MethodCall<MetadataSet_Args, MetadataSet_Reply, Error> {
+        varlink::MethodCall::<MetadataSet_Args, MetadataSet_Reply, Error>::new(
+            self.connection.clone(),
+            "org.avocado.Runtimes.MetadataSet",
+            MetadataSet_Args {
+                r#id,
+                r#key,
+                r#value,
+            },
+        )
+    }
     fn remove(&mut self, r#id: String) -> varlink::MethodCall<Remove_Args, Remove_Reply, Error> {
         varlink::MethodCall::<Remove_Args, Remove_Reply, Error>::new(
             self.connection.clone(),
@@ -556,7 +745,7 @@ pub fn new(inner: Box<dyn VarlinkInterface + Send + Sync>) -> VarlinkInterfacePr
 }
 impl varlink::Interface for VarlinkInterfaceProxy {
     fn get_description(&self) -> &'static str {
-        "# Runtime lifecycle management for Avocado Linux\ninterface org.avocado.Runtimes\n\ntype RuntimeInfo (\n    name: string,\n    version: string\n)\n\ntype ManifestExtension (\n    name: string,\n    version: string,\n    imageId: ?string,\n    imageType: ?string,\n    sha256: ?string\n)\n\ntype Runtime (\n    id: string,\n    manifestVersion: int,\n    builtAt: string,\n    runtime: RuntimeInfo,\n    extensions: []ManifestExtension,\n    active: bool,\n    osBuildId: ?string,\n    initramfsBuildId: ?string\n)\n\n# List all available runtimes\nmethod List() -> (runtimes: []Runtime)\n\n# Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromUrl(url: string, authToken: ?string, artifactsUrl: ?string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Add a runtime from a local manifest file\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromManifest(manifestPath: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Remove a staged runtime by ID (or prefix)\nmethod Remove(id: string) -> ()\n\n# Activate a staged runtime by ID (or prefix)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Inspect a runtime's details (omit id to inspect the active runtime)\nmethod Inspect(id: ?string) -> (runtime: Runtime)\n\nerror RuntimeNotFound (id: string)\nerror AmbiguousRuntimeId (id: string, candidates: []string)\nerror RemoveActiveRuntime ()\nerror StagingFailed (reason: string)\nerror UpdateFailed (reason: string)\n"
+        "# Runtime lifecycle management for Avocado Linux\ninterface org.avocado.Runtimes\n\ntype RuntimeInfo (\n    name: string,\n    version: string\n)\n\ntype ManifestExtension (\n    name: string,\n    version: string,\n    imageId: ?string,\n    imageType: ?string,\n    sha256: ?string\n)\n\ntype Runtime (\n    id: string,\n    manifestVersion: int,\n    builtAt: string,\n    runtime: RuntimeInfo,\n    extensions: []ManifestExtension,\n    active: bool,\n    osBuildId: ?string,\n    initramfsBuildId: ?string\n)\n\n# List all available runtimes\nmethod List() -> (runtimes: []Runtime)\n\n# Add a runtime from a TUF repository URL (authToken: optional bearer token for protected endpoints)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromUrl(url: string, authToken: ?string, artifactsUrl: ?string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Add a runtime from a local manifest file\n# Supports streaming: client may set more=true to receive per-message progress\nmethod AddFromManifest(manifestPath: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Remove a staged runtime by ID (or prefix)\nmethod Remove(id: string) -> ()\n\n# Activate a staged runtime by ID (or prefix)\n# Supports streaming: client may set more=true to receive per-message progress\nmethod Activate(id: string) -> (message: string, done: bool, runtime: ?Runtime)\n\n# Inspect a runtime's details (omit id to inspect the active runtime)\nmethod Inspect(id: ?string) -> (runtime: Runtime)\n\ntype MetadataEntry (\n    key: string,\n    value: string\n)\n\n# Set a metadata key-value pair on a runtime\nmethod MetadataSet(id: string, key: string, value: string) -> ()\n\n# Get a metadata value by key\nmethod MetadataGet(id: string, key: string) -> (value: string)\n\n# List all metadata for a runtime\nmethod MetadataList(id: string) -> (entries: []MetadataEntry)\n\n# Delete a metadata key\nmethod MetadataDelete(id: string, key: string) -> ()\n\nerror RuntimeNotFound (id: string)\nerror AmbiguousRuntimeId (id: string, candidates: []string)\nerror RemoveActiveRuntime ()\nerror StagingFailed (reason: string)\nerror UpdateFailed (reason: string)\nerror MetadataKeyNotFound (id: string, key: string)\n"
     }
     fn get_name(&self) -> &'static str {
         "org.avocado.Runtimes"
@@ -641,6 +830,80 @@ impl varlink::Interface for VarlinkInterfaceProxy {
                 }
             }
             "org.avocado.Runtimes.List" => self.inner.list(call as &mut dyn Call_List),
+            "org.avocado.Runtimes.MetadataDelete" => {
+                if let Some(args) = req.parameters.clone() {
+                    let args: MetadataDelete_Args = match serde_json::from_value(args) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let es = format!("{}", e);
+                            let _ = call.reply_invalid_parameter(es.clone());
+                            return Err(varlink::context!(varlink::ErrorKind::SerdeJsonDe(es)));
+                        }
+                    };
+                    self.inner.metadata_delete(
+                        call as &mut dyn Call_MetadataDelete,
+                        args.r#id,
+                        args.r#key,
+                    )
+                } else {
+                    call.reply_invalid_parameter("parameters".into())
+                }
+            }
+            "org.avocado.Runtimes.MetadataGet" => {
+                if let Some(args) = req.parameters.clone() {
+                    let args: MetadataGet_Args = match serde_json::from_value(args) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let es = format!("{}", e);
+                            let _ = call.reply_invalid_parameter(es.clone());
+                            return Err(varlink::context!(varlink::ErrorKind::SerdeJsonDe(es)));
+                        }
+                    };
+                    self.inner.metadata_get(
+                        call as &mut dyn Call_MetadataGet,
+                        args.r#id,
+                        args.r#key,
+                    )
+                } else {
+                    call.reply_invalid_parameter("parameters".into())
+                }
+            }
+            "org.avocado.Runtimes.MetadataList" => {
+                if let Some(args) = req.parameters.clone() {
+                    let args: MetadataList_Args = match serde_json::from_value(args) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let es = format!("{}", e);
+                            let _ = call.reply_invalid_parameter(es.clone());
+                            return Err(varlink::context!(varlink::ErrorKind::SerdeJsonDe(es)));
+                        }
+                    };
+                    self.inner
+                        .metadata_list(call as &mut dyn Call_MetadataList, args.r#id)
+                } else {
+                    call.reply_invalid_parameter("parameters".into())
+                }
+            }
+            "org.avocado.Runtimes.MetadataSet" => {
+                if let Some(args) = req.parameters.clone() {
+                    let args: MetadataSet_Args = match serde_json::from_value(args) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let es = format!("{}", e);
+                            let _ = call.reply_invalid_parameter(es.clone());
+                            return Err(varlink::context!(varlink::ErrorKind::SerdeJsonDe(es)));
+                        }
+                    };
+                    self.inner.metadata_set(
+                        call as &mut dyn Call_MetadataSet,
+                        args.r#id,
+                        args.r#key,
+                        args.r#value,
+                    )
+                } else {
+                    call.reply_invalid_parameter("parameters".into())
+                }
+            }
             "org.avocado.Runtimes.Remove" => {
                 if let Some(args) = req.parameters.clone() {
                     let args: Remove_Args = match serde_json::from_value(args) {

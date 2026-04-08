@@ -7,6 +7,7 @@ pub const ACTIVE_LINK_NAME: &str = "active";
 pub const RUNTIMES_DIR_NAME: &str = "runtimes";
 pub const MANIFEST_FILENAME: &str = "manifest.json";
 pub const IMAGES_DIR_NAME: &str = "images";
+pub const METADATA_FILENAME: &str = "metadata.json";
 
 /// Fixed namespace UUID for generating content-addressable image IDs.
 /// Must match the constant used in avocado-cli.

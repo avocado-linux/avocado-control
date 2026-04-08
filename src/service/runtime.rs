@@ -367,6 +367,90 @@ fn runtime_requires_os_change(
     Ok(true)
 }
 
+// ── Metadata service functions ──────────────────────────────────────────────
+
+/// Set a metadata key-value pair on a runtime.
+pub fn metadata_set(
+    id_prefix: &str,
+    key: &str,
+    value: &str,
+    config: &Config,
+) -> Result<(), AvocadoError> {
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+    let runtimes = RuntimeManifest::list_all(base_path);
+    let matched = resolve_runtime(id_prefix, &runtimes)?;
+
+    let runtime_dir = base_path.join("runtimes").join(&matched.id);
+    let mut metadata = crate::metadata::RuntimeMetadata::load(&runtime_dir);
+    metadata.entries.insert(key.to_string(), value.to_string());
+    metadata
+        .save(&runtime_dir)
+        .map_err(|e| AvocadoError::StagingFailed {
+            reason: format!("Failed to save metadata: {e}"),
+        })?;
+    Ok(())
+}
+
+/// Get a metadata value by key.
+pub fn metadata_get(id_prefix: &str, key: &str, config: &Config) -> Result<String, AvocadoError> {
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+    let runtimes = RuntimeManifest::list_all(base_path);
+    let matched = resolve_runtime(id_prefix, &runtimes)?;
+
+    let runtime_dir = base_path.join("runtimes").join(&matched.id);
+    let metadata = crate::metadata::RuntimeMetadata::load(&runtime_dir);
+    metadata
+        .entries
+        .get(key)
+        .cloned()
+        .ok_or_else(|| AvocadoError::MetadataKeyNotFound {
+            id: matched.id.clone(),
+            key: key.to_string(),
+        })
+}
+
+/// List all metadata for a runtime.
+pub fn metadata_list(
+    id_prefix: &str,
+    config: &Config,
+) -> Result<Vec<(String, String)>, AvocadoError> {
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+    let runtimes = RuntimeManifest::list_all(base_path);
+    let matched = resolve_runtime(id_prefix, &runtimes)?;
+
+    let runtime_dir = base_path.join("runtimes").join(&matched.id);
+    let metadata = crate::metadata::RuntimeMetadata::load(&runtime_dir);
+    let mut entries: Vec<(String, String)> = metadata.entries.into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(entries)
+}
+
+/// Delete a metadata key from a runtime.
+pub fn metadata_delete(id_prefix: &str, key: &str, config: &Config) -> Result<(), AvocadoError> {
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+    let runtimes = RuntimeManifest::list_all(base_path);
+    let matched = resolve_runtime(id_prefix, &runtimes)?;
+
+    let runtime_dir = base_path.join("runtimes").join(&matched.id);
+    let mut metadata = crate::metadata::RuntimeMetadata::load(&runtime_dir);
+    if metadata.entries.remove(key).is_none() {
+        return Err(AvocadoError::MetadataKeyNotFound {
+            id: matched.id.clone(),
+            key: key.to_string(),
+        });
+    }
+    metadata
+        .save(&runtime_dir)
+        .map_err(|e| AvocadoError::StagingFailed {
+            reason: format!("Failed to save metadata: {e}"),
+        })?;
+    Ok(())
+}
+
 /// Resolve a runtime ID prefix to a unique RuntimeManifest.
 fn resolve_runtime<'a>(
     id_prefix: &str,

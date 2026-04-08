@@ -279,6 +279,46 @@ pub fn print_runtime_detail(rt: &vl_rt::Runtime, output: &OutputManager) {
     println!();
 }
 
+// ── Metadata output helpers ──────────────────────────────────────────────────
+
+pub fn print_metadata_value(key: &str, value: &str, output: &OutputManager) {
+    if output.is_json() {
+        println!("{}", serde_json::json!({"key": key, "value": value}));
+    } else {
+        println!("{value}");
+    }
+}
+
+pub fn print_metadata_list(entries: &[vl_rt::MetadataEntry], output: &OutputManager) {
+    if output.is_json() {
+        match serde_json::to_string_pretty(entries) {
+            Ok(json) => println!("{json}"),
+            Err(e) => {
+                output.error("Output", &format!("JSON serialization failed: {e}"));
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    if entries.is_empty() {
+        println!("No metadata set for this runtime.");
+        return;
+    }
+
+    let key_width = entries
+        .iter()
+        .map(|e| e.key.len())
+        .max()
+        .unwrap_or(3)
+        .max(3);
+
+    println!("{:<kw$} VALUE", "KEY", kw = key_width);
+    for entry in entries {
+        println!("{:<kw$} {}", entry.key, entry.value, kw = key_width);
+    }
+}
+
 // ── Root authority output helper ──────────────────────────────────────────────
 
 pub fn print_root_authority(info: &Option<vl_ra::RootAuthorityInfo>, output: &OutputManager) {

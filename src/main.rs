@@ -2,6 +2,7 @@ mod commands;
 mod config;
 pub mod hash;
 pub mod manifest;
+pub mod metadata;
 pub mod os_update;
 mod output;
 pub mod service;
@@ -404,6 +405,96 @@ fn main() {
                     match client.inspect(id).call() {
                         Ok(reply) => varlink_client::print_runtime_detail(&reply.runtime, &output),
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                    }
+                }
+                Some(("metadata", meta_matches)) => {
+                    let mut client = vl_rt::VarlinkClient::new(conn);
+                    match meta_matches.subcommand() {
+                        Some(("set", set_matches)) => {
+                            let id = set_matches
+                                .get_one::<String>("id")
+                                .expect("id is required")
+                                .clone();
+                            let key = set_matches
+                                .get_one::<String>("key")
+                                .expect("key is required")
+                                .clone();
+                            let value = set_matches
+                                .get_one::<String>("value")
+                                .expect("value is required")
+                                .clone();
+                            match client.metadata_set(id.clone(), key.clone(), value).call() {
+                                Ok(_) => {
+                                    if output.is_json() {
+                                        println!("{{\"status\":\"ok\"}}");
+                                    } else {
+                                        output.success(
+                                            "Metadata Set",
+                                            &format!("Set '{key}' on runtime {id}"),
+                                        );
+                                    }
+                                }
+                                Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                            }
+                        }
+                        Some(("get", get_matches)) => {
+                            let id = get_matches
+                                .get_one::<String>("id")
+                                .expect("id is required")
+                                .clone();
+                            let key = get_matches
+                                .get_one::<String>("key")
+                                .expect("key is required")
+                                .clone();
+                            match client.metadata_get(id, key.clone()).call() {
+                                Ok(reply) => varlink_client::print_metadata_value(
+                                    &key,
+                                    &reply.value,
+                                    &output,
+                                ),
+                                Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                            }
+                        }
+                        Some(("list", list_matches)) => {
+                            let id = list_matches
+                                .get_one::<String>("id")
+                                .expect("id is required")
+                                .clone();
+                            match client.metadata_list(id).call() {
+                                Ok(reply) => {
+                                    varlink_client::print_metadata_list(&reply.entries, &output)
+                                }
+                                Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                            }
+                        }
+                        Some(("delete", del_matches)) => {
+                            let id = del_matches
+                                .get_one::<String>("id")
+                                .expect("id is required")
+                                .clone();
+                            let key = del_matches
+                                .get_one::<String>("key")
+                                .expect("key is required")
+                                .clone();
+                            match client.metadata_delete(id.clone(), key.clone()).call() {
+                                Ok(_) => {
+                                    if output.is_json() {
+                                        println!("{{\"status\":\"ok\"}}");
+                                    } else {
+                                        output.success(
+                                            "Metadata Delete",
+                                            &format!("Deleted '{key}' from runtime {id}"),
+                                        );
+                                    }
+                                }
+                                Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                            }
+                        }
+                        _ => {
+                            println!(
+                                "Use 'avocadoctl runtime metadata --help' for available commands."
+                            );
+                        }
                     }
                 }
                 _ => {

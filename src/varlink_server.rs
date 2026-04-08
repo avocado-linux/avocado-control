@@ -215,6 +215,9 @@ macro_rules! map_rt_error {
             AvocadoError::RemoveActiveRuntime => $call.reply_remove_active_runtime(),
             AvocadoError::StagingFailed { reason } => $call.reply_staging_failed(reason),
             AvocadoError::UpdateFailed { reason } => $call.reply_update_failed(reason),
+            AvocadoError::MetadataKeyNotFound { id, key } => {
+                $call.reply_metadata_key_not_found(id, key)
+            }
             e => $call.reply_staging_failed(e.to_string()),
         }
     }};
@@ -390,6 +393,63 @@ impl vl_rt::VarlinkInterface for RuntimesHandler {
     ) -> varlink::Result<()> {
         match service::runtime::inspect_runtime(id.as_deref(), &self.config) {
             Ok(entry) => call.reply(runtime_entry_to_varlink(entry)),
+            Err(e) => map_rt_error!(call, e),
+        }
+    }
+
+    fn metadata_set(
+        &self,
+        call: &mut dyn vl_rt::Call_MetadataSet,
+        r#id: String,
+        r#key: String,
+        r#value: String,
+    ) -> varlink::Result<()> {
+        match service::runtime::metadata_set(&id, &key, &value, &self.config) {
+            Ok(()) => call.reply(),
+            Err(e) => map_rt_error!(call, e),
+        }
+    }
+
+    fn metadata_get(
+        &self,
+        call: &mut dyn vl_rt::Call_MetadataGet,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::Result<()> {
+        match service::runtime::metadata_get(&id, &key, &self.config) {
+            Ok(value) => call.reply(value),
+            Err(e) => map_rt_error!(call, e),
+        }
+    }
+
+    fn metadata_list(
+        &self,
+        call: &mut dyn vl_rt::Call_MetadataList,
+        r#id: String,
+    ) -> varlink::Result<()> {
+        match service::runtime::metadata_list(&id, &self.config) {
+            Ok(entries) => {
+                let vl_entries: Vec<vl_rt::MetadataEntry> = entries
+                    .into_iter()
+                    .map(|(k, v)| vl_rt::MetadataEntry {
+                        r#key: k,
+                        r#value: v,
+                    })
+                    .collect();
+                call.reply(vl_entries)
+            }
+            Err(e) => map_rt_error!(call, e),
+        }
+    }
+
+    fn metadata_delete(
+        &self,
+        call: &mut dyn vl_rt::Call_MetadataDelete,
+        r#id: String,
+        r#key: String,
+    ) -> varlink::Result<()> {
+        match service::runtime::metadata_delete(&id, &key, &self.config) {
+            Ok(()) => call.reply(),
             Err(e) => map_rt_error!(call, e),
         }
     }
