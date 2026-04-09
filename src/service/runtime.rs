@@ -96,8 +96,9 @@ pub fn add_from_url_streaming(
             "OS update applied. Rebooting to activate new OS...",
         ));
     }
-    // Best-effort GC after successful add
-    let _ = garbage_collect(config);
+    if config.auto_gc() {
+        let _ = garbage_collect(config);
+    }
     Ok(super::ext::refresh_extensions_streaming(config))
 }
 
@@ -132,8 +133,9 @@ pub fn add_from_manifest_streaming(
     }
 
     staging::activate_runtime(&manifest.id, base_path)?;
-    // Best-effort GC after successful add
-    let _ = garbage_collect(config);
+    if config.auto_gc() {
+        let _ = garbage_collect(config);
+    }
     Ok(super::ext::refresh_extensions_streaming(config))
 }
 
@@ -203,8 +205,9 @@ pub fn add_from_url(
         ]);
     }
     let result = super::ext::refresh_extensions(config);
-    // Best-effort GC after successful add
-    let _ = garbage_collect(config);
+    if config.auto_gc() {
+        let _ = garbage_collect(config);
+    }
     result
 }
 
@@ -240,8 +243,9 @@ pub fn add_from_manifest(
 
     staging::activate_runtime(&manifest.id, base_path)?;
     let result = super::ext::refresh_extensions(config);
-    // Best-effort GC after successful add
-    let _ = garbage_collect(config);
+    if config.auto_gc() {
+        let _ = garbage_collect(config);
+    }
     result
 }
 

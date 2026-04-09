@@ -50,14 +50,24 @@ pub struct GcSettings {
     /// Minimum: 1 (always keep the active runtime). Default: 3.
     #[serde(default = "default_runtime_retention")]
     pub runtime_retention: u32,
+    /// Whether to automatically run garbage collection after adding a runtime.
+    /// When false, GC only runs when explicitly invoked via `avocadoctl runtime gc`.
+    /// Default: true.
+    #[serde(default = "default_auto_gc")]
+    pub auto_gc: bool,
 }
 
 impl Default for GcSettings {
     fn default() -> Self {
         Self {
             runtime_retention: default_runtime_retention(),
+            auto_gc: default_auto_gc(),
         }
     }
+}
+
+fn default_auto_gc() -> bool {
+    true
 }
 
 fn default_runtime_retention() -> u32 {
@@ -174,6 +184,11 @@ impl Config {
     /// Get the runtime retention count, clamped to a minimum of 1.
     pub fn runtime_retention(&self) -> u32 {
         self.avocado.gc.runtime_retention.max(1)
+    }
+
+    /// Whether automatic GC after runtime add is enabled.
+    pub fn auto_gc(&self) -> bool {
+        self.avocado.gc.auto_gc
     }
 
     /// Get the sysext mutable mode, defaulting to "ephemeral" if not set
@@ -646,6 +661,32 @@ dir = "/var/lib/avocado/images"
 
         let config = Config::load(&config_path).unwrap();
         assert_eq!(config.runtime_retention(), 3);
+        assert!(config.auto_gc());
+    }
+
+    #[test]
+    fn test_auto_gc_default_true() {
+        let config = Config::default();
+        assert!(config.auto_gc());
+    }
+
+    #[test]
+    fn test_auto_gc_disabled_from_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("auto_gc_test.toml");
+
+        let config_content = r#"
+[avocado.ext]
+dir = "/var/lib/avocado/images"
+
+[avocado.gc]
+auto_gc = false
+"#;
+
+        fs::write(&config_path, config_content).unwrap();
+
+        let config = Config::load(&config_path).unwrap();
+        assert!(!config.auto_gc());
     }
 
     #[test]
