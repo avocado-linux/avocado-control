@@ -1300,26 +1300,21 @@ fn maybe_patch_bls_entries(
 }
 
 /// For rpi-tryboot: patch cmdline.txt on the inactive boot partition to reference
-/// the correct rootfs partition device for the target slot.
+/// the correct rootfs PARTLABEL for the target slot.
 ///
-/// After writing boot.img to the inactive slot, the cmdline.txt inside it has the
-/// default root= device (slot A). If we're updating to slot B, we need to replace
-/// root=/dev/mmcblk0p3 with root=/dev/mmcblk0p5, etc.
+/// After writing boot.img to the inactive slot, the cmdline.txt inside it has
+/// root=PARTLABEL=rootfs-a (the build default). If we're updating to slot B,
+/// replace it with root=PARTLABEL=rootfs-b.
 fn maybe_patch_cmdline_for_rpi_tryboot(
     update: &UpdateConfig,
     inactive_slot: &str,
-    layout: Option<&BundleLayout>,
+    _layout: Option<&BundleLayout>,
 ) -> Result<(), OsUpdateError> {
     if update.strategy != "rpi-tryboot" {
         return Ok(());
     }
 
-    let layout = match layout {
-        Some(l) => l,
-        None => return Ok(()), // No layout means no offset-based patching
-    };
-
-    // Find the boot artifact's target partition for the inactive slot
+    // Find the boot partition PARTLABEL for the inactive slot
     let boot_partition_name = update
         .artifacts
         .iter()
@@ -1332,7 +1327,7 @@ fn maybe_patch_cmdline_for_rpi_tryboot(
         None => return Ok(()),
     };
 
-    // Resolve the rootfs partition name for the inactive slot
+    // Find the rootfs partition PARTLABEL for the inactive slot
     let rootfs_partition_name = update
         .artifacts
         .iter()
@@ -1345,51 +1340,13 @@ fn maybe_patch_cmdline_for_rpi_tryboot(
         None => return Ok(()),
     };
 
-    // Find the rootfs partition index in the layout to compute the device partition number
-    let rootfs_part_index = layout
-        .partitions
-        .iter()
-        .position(|p| p.name.as_deref() == Some(rootfs_partition_name));
+    let new_root = format!("PARTLABEL={rootfs_partition_name}");
+    println!("    Patching cmdline.txt on {boot_partition_name}: root={new_root}");
 
-    let rootfs_part_index = match rootfs_part_index {
-        Some(idx) => idx,
-        None => return Ok(()),
-    };
-
-    // Compute the Linux partition number: first 3 partitions are primary (1-3),
-    // partition 4 is the extended container, logical partitions start at 5.
-    let rootfs_linux_partnum = if rootfs_part_index < 3 {
-        rootfs_part_index + 1 // p1, p2, p3
-    } else {
-        rootfs_part_index + 2 // skip extended: index 3 -> p5, index 4 -> p6, etc.
-    };
-
-    let rootfs_device = partition_device_path(&layout.device, rootfs_linux_partnum as u32);
-
-    println!("    Patching cmdline.txt on {boot_partition_name}: root={rootfs_device}");
-
-    // Mount the boot partition and patch cmdline.txt
-    let boot_part_dev = {
-        // Find which Linux partition number corresponds to boot_partition_name
-        let boot_idx = layout
-            .partitions
-            .iter()
-            .position(|p| p.name.as_deref() == Some(boot_partition_name))
-            .ok_or_else(|| {
-                OsUpdateError::ArtifactWriteFailed(format!(
-                    "Boot partition '{boot_partition_name}' not found in layout"
-                ))
-            })?;
-        let boot_partnum = if boot_idx < 3 {
-            boot_idx + 1
-        } else {
-            boot_idx + 2
-        };
-        partition_device_path(&layout.device, boot_partnum as u32)
-    };
-
+    // Mount the boot partition via PARTLABEL and patch cmdline.txt
+    let boot_dev = format!("/dev/disk/by-partlabel/{boot_partition_name}");
     let mount_point = format!("/tmp/avocado-cmdline-patch-{inactive_slot}");
-    mount_partition(&boot_part_dev, &mount_point)?;
+    mount_partition(&boot_dev, &mount_point)?;
 
     let cmdline_path = format!("{mount_point}/cmdline.txt");
     let patch_result = (|| -> Result<(), OsUpdateError> {
@@ -1397,8 +1354,7 @@ fn maybe_patch_cmdline_for_rpi_tryboot(
             OsUpdateError::ArtifactWriteFailed(format!("Failed to read cmdline.txt: {e}"))
         })?;
 
-        // Replace root= parameter with the correct rootfs device
-        let patched = regex_replace_root_param(&cmdline, &rootfs_device);
+        let patched = regex_replace_root_param(&cmdline, &new_root);
 
         fs::write(&cmdline_path, patched).map_err(|e| {
             OsUpdateError::ArtifactWriteFailed(format!("Failed to write cmdline.txt: {e}"))
