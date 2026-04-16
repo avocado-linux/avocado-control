@@ -133,6 +133,14 @@ pub enum SlotAction {
     Efibootmgr {
         slot_entries: HashMap<String, String>,
     },
+    /// RPi native tryboot mechanism: writes tryboot.txt to the active boot partition
+    /// to redirect the EEPROM to the inactive slot on next tryboot reboot.
+    #[serde(rename = "rpi-tryboot")]
+    RpiTryboot {
+        devpath: String,
+        /// Map from slot name -> MBR partition number (1-indexed, e.g. {"a": 1, "b": 2})
+        boot_partitions: HashMap<String, u32>,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -263,6 +271,9 @@ pub fn apply_os_update(
 
     // Patch BLS entries if needed (sdboot-ab: fix rootfs PARTLABEL in boot partition)
     maybe_patch_bls_entries(update, &inactive_slot)?;
+
+    // Patch cmdline.txt if needed (rpi-tryboot: fix root= device for target slot)
+    maybe_patch_cmdline_for_rpi_tryboot(update, &inactive_slot, bundle.layout.as_ref())?;
 
     // Activate the new slot
     println!("    Activating slot: {inactive_slot}");
@@ -993,7 +1004,160 @@ pub fn execute_slot_action(
 
             Ok(())
         }
+        SlotAction::RpiTryboot {
+            devpath,
+            boot_partitions,
+        } => {
+            let target_part_num = boot_partitions.get(slot).ok_or_else(|| {
+                OsUpdateError::ActivationFailed(format!(
+                    "No boot partition defined for slot '{slot}'"
+                ))
+            })?;
+
+            // Determine the currently active boot partition from autoboot.txt
+            let current_part_num = {
+                let other_slot = if slot == "a" { "b" } else { "a" };
+                boot_partitions.get(other_slot).ok_or_else(|| {
+                    OsUpdateError::ActivationFailed(format!(
+                        "No boot partition defined for current slot '{other_slot}'"
+                    ))
+                })?
+            };
+
+            let active_part_dev = partition_device_path(devpath, *current_part_num);
+            let inactive_part_dev = partition_device_path(devpath, *target_part_num);
+
+            // 1. Mount the active boot partition and write tryboot.txt
+            let active_mount = "/tmp/avocado-tryboot-active";
+            mount_partition(&active_part_dev, active_mount)?;
+
+            let tryboot_content = format!("[tryboot]\nboot_partition={target_part_num}\n");
+            let tryboot_result = fs::write(format!("{active_mount}/tryboot.txt"), &tryboot_content);
+            if let Err(e) = &tryboot_result {
+                let _ = unmount(active_mount);
+                return Err(OsUpdateError::ActivationFailed(format!(
+                    "Failed to write tryboot.txt: {e}"
+                )));
+            }
+
+            let _ = unmount(active_mount);
+
+            // 2. Mount the inactive boot partition and write autoboot.txt
+            //    so it points to itself (ready for post-confirmation)
+            let inactive_mount = "/tmp/avocado-tryboot-inactive";
+            mount_partition(&inactive_part_dev, inactive_mount)?;
+
+            let autoboot_content = format!("[all]\nboot_partition={target_part_num}\n");
+            let autoboot_result =
+                fs::write(format!("{inactive_mount}/autoboot.txt"), &autoboot_content);
+            if let Err(e) = &autoboot_result {
+                let _ = unmount(inactive_mount);
+                return Err(OsUpdateError::ActivationFailed(format!(
+                    "Failed to write autoboot.txt on inactive partition: {e}"
+                )));
+            }
+
+            let _ = unmount(inactive_mount);
+
+            Ok(())
+        }
     }
+}
+
+/// Derive a partition device path from a base device path and partition number.
+/// e.g. "/dev/mmcblk0" + 3 -> "/dev/mmcblk0p3"
+///      "/dev/nvme0n1" + 3 -> "/dev/nvme0n1p3"
+///      "/dev/sda" + 3 -> "/dev/sda3"
+fn partition_device_path(devpath: &str, part_num: u32) -> String {
+    if devpath.ends_with(|c: char| c.is_ascii_digit()) {
+        // mmcblk0, nvme0n1 — need 'p' separator
+        format!("{devpath}p{part_num}")
+    } else {
+        // sda, sdb — no separator
+        format!("{devpath}{part_num}")
+    }
+}
+
+/// Mount a partition at the given mount point (creating the directory if needed).
+fn mount_partition(device: &str, mount_point: &str) -> Result<(), OsUpdateError> {
+    fs::create_dir_all(mount_point).map_err(|e| {
+        OsUpdateError::ActivationFailed(format!("Failed to create mount point {mount_point}: {e}"))
+    })?;
+
+    let output = ProcessCommand::new("mount")
+        .args([device, mount_point])
+        .output()
+        .map_err(|e| {
+            OsUpdateError::ActivationFailed(format!("Failed to run mount {device}: {e}"))
+        })?;
+
+    if !output.status.success() {
+        return Err(OsUpdateError::ActivationFailed(format!(
+            "mount {device} {mount_point} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        )));
+    }
+
+    Ok(())
+}
+
+/// Unmount a mount point. Errors are logged but not propagated (best-effort).
+fn unmount(mount_point: &str) -> Result<(), OsUpdateError> {
+    let output = ProcessCommand::new("umount")
+        .arg(mount_point)
+        .output()
+        .map_err(|e| {
+            OsUpdateError::ActivationFailed(format!("Failed to run umount {mount_point}: {e}"))
+        })?;
+
+    if !output.status.success() {
+        eprintln!(
+            "Warning: umount {} failed: {}",
+            mount_point,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    Ok(())
+}
+
+/// Confirm a tryboot update by updating autoboot.txt on both boot partitions
+/// to point to the newly confirmed slot, and removing tryboot.txt from the
+/// previous boot partition.
+pub fn confirm_rpi_tryboot(
+    devpath: &str,
+    boot_partitions: &HashMap<String, u32>,
+    confirmed_slot: &str,
+) -> Result<(), OsUpdateError> {
+    let confirmed_part = boot_partitions.get(confirmed_slot).ok_or_else(|| {
+        OsUpdateError::ActivationFailed(format!(
+            "No boot partition for confirmed slot '{confirmed_slot}'"
+        ))
+    })?;
+
+    let autoboot_content = format!("[all]\nboot_partition={confirmed_part}\n");
+
+    // Update autoboot.txt on both partitions
+    for (slot_name, part_num) in boot_partitions {
+        let part_dev = partition_device_path(devpath, *part_num);
+        let mount_point = format!("/tmp/avocado-tryboot-confirm-{slot_name}");
+
+        if let Err(e) = mount_partition(&part_dev, &mount_point) {
+            eprintln!("Warning: failed to mount {part_dev} for confirmation: {e}");
+            continue;
+        }
+
+        let _ = fs::write(format!("{mount_point}/autoboot.txt"), &autoboot_content);
+
+        // Remove tryboot.txt from the old active partition (cleanup)
+        if slot_name != confirmed_slot {
+            let _ = fs::remove_file(format!("{mount_point}/tryboot.txt"));
+        }
+
+        let _ = unmount(&mount_point);
+    }
+
+    Ok(())
 }
 
 /// Parse efibootmgr -v output to find the boot entry number for a given label.
@@ -1133,6 +1297,146 @@ fn maybe_patch_bls_entries(
     }
 
     Ok(())
+}
+
+/// For rpi-tryboot: patch cmdline.txt on the inactive boot partition to reference
+/// the correct rootfs partition device for the target slot.
+///
+/// After writing boot.img to the inactive slot, the cmdline.txt inside it has the
+/// default root= device (slot A). If we're updating to slot B, we need to replace
+/// root=/dev/mmcblk0p3 with root=/dev/mmcblk0p5, etc.
+fn maybe_patch_cmdline_for_rpi_tryboot(
+    update: &UpdateConfig,
+    inactive_slot: &str,
+    layout: Option<&BundleLayout>,
+) -> Result<(), OsUpdateError> {
+    if update.strategy != "rpi-tryboot" {
+        return Ok(());
+    }
+
+    let layout = match layout {
+        Some(l) => l,
+        None => return Ok(()), // No layout means no offset-based patching
+    };
+
+    // Find the boot artifact's target partition for the inactive slot
+    let boot_partition_name = update
+        .artifacts
+        .iter()
+        .find(|a| a.name == "boot")
+        .and_then(|a| a.slot_targets.get(inactive_slot))
+        .map(|t| t.partition.as_str());
+
+    let boot_partition_name = match boot_partition_name {
+        Some(name) => name,
+        None => return Ok(()),
+    };
+
+    // Resolve the rootfs partition name for the inactive slot
+    let rootfs_partition_name = update
+        .artifacts
+        .iter()
+        .find(|a| a.name == "rootfs")
+        .and_then(|a| a.slot_targets.get(inactive_slot))
+        .map(|t| t.partition.as_str());
+
+    let rootfs_partition_name = match rootfs_partition_name {
+        Some(name) => name,
+        None => return Ok(()),
+    };
+
+    // Find the rootfs partition index in the layout to compute the device partition number
+    let rootfs_part_index = layout
+        .partitions
+        .iter()
+        .position(|p| p.name.as_deref() == Some(rootfs_partition_name));
+
+    let rootfs_part_index = match rootfs_part_index {
+        Some(idx) => idx,
+        None => return Ok(()),
+    };
+
+    // Compute the Linux partition number: first 3 partitions are primary (1-3),
+    // partition 4 is the extended container, logical partitions start at 5.
+    let rootfs_linux_partnum = if rootfs_part_index < 3 {
+        rootfs_part_index + 1 // p1, p2, p3
+    } else {
+        rootfs_part_index + 2 // skip extended: index 3 -> p5, index 4 -> p6, etc.
+    };
+
+    let rootfs_device = partition_device_path(&layout.device, rootfs_linux_partnum as u32);
+
+    println!("    Patching cmdline.txt on {boot_partition_name}: root={rootfs_device}");
+
+    // Mount the boot partition and patch cmdline.txt
+    let boot_part_dev = {
+        // Find which Linux partition number corresponds to boot_partition_name
+        let boot_idx = layout
+            .partitions
+            .iter()
+            .position(|p| p.name.as_deref() == Some(boot_partition_name))
+            .ok_or_else(|| {
+                OsUpdateError::ArtifactWriteFailed(format!(
+                    "Boot partition '{boot_partition_name}' not found in layout"
+                ))
+            })?;
+        let boot_partnum = if boot_idx < 3 {
+            boot_idx + 1
+        } else {
+            boot_idx + 2
+        };
+        partition_device_path(&layout.device, boot_partnum as u32)
+    };
+
+    let mount_point = format!("/tmp/avocado-cmdline-patch-{inactive_slot}");
+    mount_partition(&boot_part_dev, &mount_point)?;
+
+    let cmdline_path = format!("{mount_point}/cmdline.txt");
+    let patch_result = (|| -> Result<(), OsUpdateError> {
+        let cmdline = fs::read_to_string(&cmdline_path).map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to read cmdline.txt: {e}"))
+        })?;
+
+        // Replace root= parameter with the correct rootfs device
+        let patched = regex_replace_root_param(&cmdline, &rootfs_device);
+
+        fs::write(&cmdline_path, patched).map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to write cmdline.txt: {e}"))
+        })?;
+
+        Ok(())
+    })();
+
+    let _ = unmount(&mount_point);
+    patch_result
+}
+
+/// Replace the root= parameter in a kernel command line string.
+fn regex_replace_root_param(cmdline: &str, new_root: &str) -> String {
+    let mut result = String::new();
+    let mut rest = cmdline.as_bytes();
+    let needle = b"root=";
+
+    loop {
+        if let Some(pos) = rest.windows(needle.len()).position(|w| w == needle) {
+            result.push_str(&String::from_utf8_lossy(&rest[..pos]));
+            result.push_str("root=");
+            result.push_str(new_root);
+            // Skip past the old root= value (until next whitespace or end)
+            let value_start = pos + needle.len();
+            let value_end = rest[value_start..]
+                .iter()
+                .position(|&b| b == b' ' || b == b'\t' || b == b'\n')
+                .map(|p| value_start + p)
+                .unwrap_or(rest.len());
+            rest = &rest[value_end..];
+        } else {
+            result.push_str(&String::from_utf8_lossy(rest));
+            break;
+        }
+    }
+
+    result
 }
 
 pub(crate) fn parse_os_release_field<'a>(contents: &'a str, field: &str) -> Option<&'a str> {
@@ -1451,6 +1755,9 @@ pub fn apply_os_update_streaming<R: Read>(
 
     // 7. Patch BLS entries if needed (sdboot-ab: fix rootfs PARTLABEL in boot partition)
     maybe_patch_bls_entries(update, &inactive_slot)?;
+
+    // 7b. Patch cmdline.txt if needed (rpi-tryboot: fix root= device for target slot)
+    maybe_patch_cmdline_for_rpi_tryboot(update, &inactive_slot, bundle.layout.as_ref())?;
 
     // 8. Activate the new slot
     println!("    Activating slot: {inactive_slot}");
@@ -1981,5 +2288,75 @@ PRETTY_NAME="Avocado Linux 2024.1"
         }"#;
         let artifact: Artifact = serde_json::from_str(json_no_size).unwrap();
         assert_eq!(artifact.size, None);
+    }
+
+    #[test]
+    fn test_rpi_tryboot_slot_action_deserialization() {
+        let json = r#"{
+            "type": "rpi-tryboot",
+            "devpath": "/dev/mmcblk0",
+            "boot_partitions": { "a": 1, "b": 2 }
+        }"#;
+        let action: SlotAction = serde_json::from_str(json).unwrap();
+        match &action {
+            SlotAction::RpiTryboot {
+                devpath,
+                boot_partitions,
+            } => {
+                assert_eq!(devpath, "/dev/mmcblk0");
+                assert_eq!(boot_partitions.get("a"), Some(&1));
+                assert_eq!(boot_partitions.get("b"), Some(&2));
+            }
+            _ => panic!("Expected RpiTryboot variant"),
+        }
+    }
+
+    #[test]
+    fn test_partition_device_path() {
+        // MMC
+        assert_eq!(partition_device_path("/dev/mmcblk0", 1), "/dev/mmcblk0p1");
+        assert_eq!(partition_device_path("/dev/mmcblk0", 5), "/dev/mmcblk0p5");
+        // NVMe
+        assert_eq!(partition_device_path("/dev/nvme0n1", 3), "/dev/nvme0n1p3");
+        // SATA/USB
+        assert_eq!(partition_device_path("/dev/sda", 1), "/dev/sda1");
+        assert_eq!(partition_device_path("/dev/sdb", 5), "/dev/sdb5");
+    }
+
+    #[test]
+    fn test_regex_replace_root_param() {
+        // Basic replacement
+        assert_eq!(
+            regex_replace_root_param(
+                "console=ttyS0 root=/dev/mmcblk0p3 rootfstype=erofs",
+                "/dev/mmcblk0p5"
+            ),
+            "console=ttyS0 root=/dev/mmcblk0p5 rootfstype=erofs"
+        );
+
+        // Root at end of string
+        assert_eq!(
+            regex_replace_root_param("console=ttyS0 root=/dev/sda3", "/dev/sda5"),
+            "console=ttyS0 root=/dev/sda5"
+        );
+
+        // Root at start of string
+        assert_eq!(
+            regex_replace_root_param("root=/dev/nvme0n1p3 audit=0", "/dev/nvme0n1p5"),
+            "root=/dev/nvme0n1p5 audit=0"
+        );
+
+        // No root= parameter (no change)
+        assert_eq!(
+            regex_replace_root_param("console=ttyS0 audit=0", "/dev/mmcblk0p5"),
+            "console=ttyS0 audit=0"
+        );
+    }
+
+    #[test]
+    fn test_determine_inactive_slot_rpi_tryboot() {
+        // rpi-tryboot uses the default a/b branch
+        assert_eq!(determine_inactive_slot("a", "rpi-tryboot").unwrap(), "b");
+        assert_eq!(determine_inactive_slot("b", "rpi-tryboot").unwrap(), "a");
     }
 }
