@@ -72,7 +72,8 @@ pub struct UpdateConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BundleLayout {
-    pub device: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<String>,
     #[serde(default)]
     pub block_size: Option<u32>,
     #[serde(default)]
@@ -137,8 +138,14 @@ pub enum SlotAction {
     /// to redirect the EEPROM to the inactive slot on next tryboot reboot.
     #[serde(rename = "rpi-tryboot")]
     RpiTryboot {
-        devpath: String,
-        /// Map from slot name -> MBR partition number (1-indexed, e.g. {"a": 1, "b": 2})
+        /// Optional explicit boot device. When omitted, derived at runtime via
+        /// `boot_device()` from /proc/cmdline. Storage-agnostic bundles (the
+        /// default) leave this unset so the same archive applies to SD/eMMC/
+        /// NVMe/USB-SATA installs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        devpath: Option<String>,
+        /// Map from slot name -> GPT partition number (1-indexed, e.g. {"a": 1, "b": 2}).
+        /// Storage-agnostic because our provisioning always uses the same GPT layout.
         boot_partitions: HashMap<String, u32>,
     },
 }
@@ -249,14 +256,16 @@ pub fn apply_os_update(
         // Verify SHA256 of source file
         verify_sha256(&source_path, &artifact.sha256, &artifact.name)?;
 
-        // Write to partition: use layout-based offset if available (MBR), else PARTLABEL (GPT)
-        if let Some(ref layout) = bundle.layout {
+        // Write to partition: use layout-based offset if device is set (MBR),
+        // else PARTLABEL (GPT, storage-agnostic).
+        let layout_device = bundle.layout.as_ref().and_then(|l| l.device.as_ref());
+        if let (Some(layout), Some(device)) = (bundle.layout.as_ref(), layout_device) {
             let byte_offset = resolve_partition_offset(&target.partition, layout)?;
             println!(
                 "    Writing {} -> {}@{} (partition: {})",
-                artifact.name, layout.device, byte_offset, target.partition
+                artifact.name, device, byte_offset, target.partition
             );
-            write_to_device_at_offset(&source_path, &layout.device, byte_offset, &artifact.name)?;
+            write_to_device_at_offset(&source_path, device, byte_offset, &artifact.name)?;
         } else {
             let partition_path = resolve_partition(&target.partition)?;
             println!(
@@ -589,6 +598,105 @@ fn resolve_partition(partition_name: &str) -> Result<PathBuf, OsUpdateError> {
             "Failed to resolve partition {partition_name}: {e}"
         ))
     })
+}
+
+/// Derive the parent block device path from a partition device path.
+/// Inverse of `partition_device_path`.
+///   /dev/nvme0n1p3 -> /dev/nvme0n1
+///   /dev/mmcblk0p3 -> /dev/mmcblk0
+///   /dev/sda3      -> /dev/sda
+/// Errors if the input is already a base device (e.g. `/dev/sda`, `/dev/mmcblk0`).
+fn parent_block_device(part_path: &str) -> Result<String, OsUpdateError> {
+    let name = Path::new(part_path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| {
+            OsUpdateError::ArtifactWriteFailed(format!("Invalid device path: {part_path}"))
+        })?;
+    let prefix = &part_path[..part_path.len() - name.len()];
+
+    // mmcblk* / nvme*: partition is always indicated by a 'p<digits>' suffix.
+    if name.starts_with("mmcblk") || name.starts_with("nvme") {
+        if let Some(p_pos) = name.rfind('p') {
+            let after_p = &name[p_pos + 1..];
+            if p_pos > 0 && !after_p.is_empty() && after_p.bytes().all(|b| b.is_ascii_digit()) {
+                return Ok(format!("{prefix}{}", &name[..p_pos]));
+            }
+        }
+        return Err(OsUpdateError::ArtifactWriteFailed(format!(
+            "Not a partition path (no 'p<digits>' suffix): {part_path}"
+        )));
+    }
+
+    // sd*, hd*, vd*: trailing digits on a letter-only base.
+    let digit_start = name
+        .bytes()
+        .rposition(|b| !b.is_ascii_digit())
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    if digit_start == 0 || digit_start == name.len() {
+        return Err(OsUpdateError::ArtifactWriteFailed(format!(
+            "Not a partition path: {part_path}"
+        )));
+    }
+    Ok(format!("{prefix}{}", &name[..digit_start]))
+}
+
+/// Extract the rootfs identifier from a kernel cmdline string (`root=...`).
+/// Returns the raw value after `root=`, stopping at whitespace.
+fn cmdline_root_value(cmdline: &str) -> Option<&str> {
+    cmdline
+        .split_ascii_whitespace()
+        .find_map(|tok| tok.strip_prefix("root="))
+}
+
+/// Resolve a `root=` value to a partition device path.
+/// Supports `PARTLABEL=X`, `PARTUUID=X`, and raw `/dev/X`.
+fn resolve_root_value(root_value: &str) -> Result<PathBuf, OsUpdateError> {
+    if let Some(label) = root_value.strip_prefix("PARTLABEL=") {
+        return resolve_partition(label);
+    }
+    if let Some(uuid) = root_value.strip_prefix("PARTUUID=") {
+        let path = PathBuf::from(format!("/dev/disk/by-partuuid/{uuid}"));
+        if !path.exists() {
+            return Err(OsUpdateError::ArtifactWriteFailed(format!(
+                "Partition not found: /dev/disk/by-partuuid/{uuid}"
+            )));
+        }
+        return fs::canonicalize(&path).map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!("Failed to resolve PARTUUID {uuid}: {e}"))
+        });
+    }
+    if root_value.starts_with("/dev/") {
+        return fs::canonicalize(root_value).map_err(|e| {
+            OsUpdateError::ArtifactWriteFailed(format!(
+                "Failed to resolve root device {root_value}: {e}"
+            ))
+        });
+    }
+    Err(OsUpdateError::ArtifactWriteFailed(format!(
+        "Unsupported root= value: {root_value} (need PARTLABEL=, PARTUUID=, or /dev/ path)"
+    )))
+}
+
+/// Determine the parent block device of the currently running root filesystem
+/// by parsing `/proc/cmdline`. Used by storage-agnostic update strategies that
+/// don't bake the boot device into bundle.json.
+pub fn boot_device() -> Result<String, OsUpdateError> {
+    let cmdline = fs::read_to_string("/proc/cmdline").map_err(|e| {
+        OsUpdateError::ArtifactWriteFailed(format!("Failed to read /proc/cmdline: {e}"))
+    })?;
+    let root_value = cmdline_root_value(&cmdline).ok_or_else(|| {
+        OsUpdateError::ArtifactWriteFailed("No root= parameter in /proc/cmdline".to_string())
+    })?;
+    let part_path = resolve_root_value(root_value)?;
+    let part_str = part_path.to_str().ok_or_else(|| {
+        OsUpdateError::ArtifactWriteFailed(format!(
+            "Non-UTF8 partition path: {}",
+            part_path.display()
+        ))
+    })?;
+    parent_block_device(part_str)
 }
 
 fn verify_sha256(path: &Path, expected: &str, artifact_name: &str) -> Result<(), OsUpdateError> {
@@ -1024,8 +1132,16 @@ pub fn execute_slot_action(
                 })?
             };
 
-            let active_part_dev = partition_device_path(devpath, *current_part_num);
-            let inactive_part_dev = partition_device_path(devpath, *target_part_num);
+            let resolved_devpath = match devpath {
+                Some(p) => p.clone(),
+                None => boot_device().map_err(|e| {
+                    OsUpdateError::ActivationFailed(format!(
+                        "rpi-tryboot: failed to derive boot device from /proc/cmdline: {e}"
+                    ))
+                })?,
+            };
+            let active_part_dev = partition_device_path(&resolved_devpath, *current_part_num);
+            let inactive_part_dev = partition_device_path(&resolved_devpath, *target_part_num);
 
             // 1. Mount the active boot partition and write tryboot.txt
             let active_mount = "/tmp/avocado-tryboot-active";
@@ -1124,8 +1240,11 @@ fn unmount(mount_point: &str) -> Result<(), OsUpdateError> {
 /// Confirm a tryboot update by updating autoboot.txt on both boot partitions
 /// to point to the newly confirmed slot, and removing tryboot.txt from the
 /// previous boot partition.
+///
+/// `devpath` may be `None` for storage-agnostic bundles; the boot device is
+/// then derived at runtime via `boot_device()`.
 pub fn confirm_rpi_tryboot(
-    devpath: &str,
+    devpath: Option<&str>,
     boot_partitions: &HashMap<String, u32>,
     confirmed_slot: &str,
 ) -> Result<(), OsUpdateError> {
@@ -1135,11 +1254,20 @@ pub fn confirm_rpi_tryboot(
         ))
     })?;
 
+    let resolved_devpath = match devpath {
+        Some(p) => p.to_string(),
+        None => boot_device().map_err(|e| {
+            OsUpdateError::ActivationFailed(format!(
+                "rpi-tryboot confirm: failed to derive boot device from /proc/cmdline: {e}"
+            ))
+        })?,
+    };
+
     let autoboot_content = format!("[all]\nboot_partition={confirmed_part}\n");
 
     // Update autoboot.txt on both partitions
     for (slot_name, part_num) in boot_partitions {
-        let part_dev = partition_device_path(devpath, *part_num);
+        let part_dev = partition_device_path(&resolved_devpath, *part_num);
         let mount_point = format!("/tmp/avocado-tryboot-confirm-{slot_name}");
 
         if let Err(e) = mount_partition(&part_dev, &mount_point) {
@@ -1676,12 +1804,14 @@ pub fn apply_os_update_streaming<R: Read>(
             artifact.name, target.partition
         );
 
-        // Route to the appropriate write function based on layout (MBR vs GPT)
-        if let Some(ref layout) = bundle.layout {
+        // Route to the appropriate write function based on layout (MBR vs GPT).
+        // GPT/PARTLABEL bundles omit layout.device for storage-agnosticism.
+        let layout_device = bundle.layout.as_ref().and_then(|l| l.device.as_ref());
+        if let (Some(layout), Some(device)) = (bundle.layout.as_ref(), layout_device) {
             let byte_offset = resolve_partition_offset(&target.partition, layout)?;
             stream_to_device_at_offset(
                 &mut entry,
-                &layout.device,
+                device,
                 byte_offset,
                 &artifact.sha256,
                 &artifact.name,
@@ -2259,7 +2389,7 @@ PRETTY_NAME="Avocado Linux 2024.1"
                 devpath,
                 boot_partitions,
             } => {
-                assert_eq!(devpath, "/dev/mmcblk0");
+                assert_eq!(devpath.as_deref(), Some("/dev/mmcblk0"));
                 assert_eq!(boot_partitions.get("a"), Some(&1));
                 assert_eq!(boot_partitions.get("b"), Some(&2));
             }
@@ -2277,6 +2407,57 @@ PRETTY_NAME="Avocado Linux 2024.1"
         // SATA/USB
         assert_eq!(partition_device_path("/dev/sda", 1), "/dev/sda1");
         assert_eq!(partition_device_path("/dev/sdb", 5), "/dev/sdb5");
+    }
+
+    #[test]
+    fn test_parent_block_device() {
+        // MMC: trailing 'p<digits>' suffix
+        assert_eq!(
+            parent_block_device("/dev/mmcblk0p1").unwrap(),
+            "/dev/mmcblk0"
+        );
+        assert_eq!(
+            parent_block_device("/dev/mmcblk0p15").unwrap(),
+            "/dev/mmcblk0"
+        );
+        // NVMe: same shape as MMC
+        assert_eq!(
+            parent_block_device("/dev/nvme0n1p3").unwrap(),
+            "/dev/nvme0n1"
+        );
+        assert_eq!(
+            parent_block_device("/dev/nvme1n2p10").unwrap(),
+            "/dev/nvme1n2"
+        );
+        // SATA/USB: bare digit suffix, no 'p'
+        assert_eq!(parent_block_device("/dev/sda3").unwrap(), "/dev/sda");
+        assert_eq!(parent_block_device("/dev/sdb15").unwrap(), "/dev/sdb");
+        // No trailing digits -> error
+        assert!(parent_block_device("/dev/sda").is_err());
+        assert!(parent_block_device("/dev/mmcblk0").is_err());
+    }
+
+    #[test]
+    fn test_cmdline_root_value() {
+        assert_eq!(
+            cmdline_root_value("console=ttyS0 root=PARTLABEL=rootfs-a rootfstype=erofs"),
+            Some("PARTLABEL=rootfs-a")
+        );
+        assert_eq!(
+            cmdline_root_value("root=/dev/nvme0n1p3 audit=0"),
+            Some("/dev/nvme0n1p3")
+        );
+        assert_eq!(
+            cmdline_root_value("root=PARTUUID=4d21b016-b534-45c2-a9fb-5c16e091fd2d"),
+            Some("PARTUUID=4d21b016-b534-45c2-a9fb-5c16e091fd2d")
+        );
+        // No root= present
+        assert_eq!(cmdline_root_value("console=ttyS0 audit=0"), None);
+        // root embedded in another token (must not match)
+        assert_eq!(
+            cmdline_root_value("console=ttyS0 chroot=/foo audit=0"),
+            None
+        );
     }
 
     #[test]
