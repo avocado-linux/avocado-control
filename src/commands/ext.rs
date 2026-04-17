@@ -326,6 +326,11 @@ pub(crate) fn merge_extensions_internal(
 
         if verified {
             output.step("OS Update", "Verification passed, clearing pending marker");
+            // Strategy-specific confirmation (e.g. rpi-tryboot rewrites
+            // autoboot.txt to make the new slot durable across normal reboots).
+            if let Err(e) = crate::os_update::confirm_pending_update(&pending) {
+                output.error("OS Update", &format!("Confirmation failed: {e}"));
+            }
             // Promote pending runtime to active if one is set
             if let Some(ref runtime_id) = pending.runtime_id {
                 match crate::staging::activate_runtime(runtime_id, base_path) {

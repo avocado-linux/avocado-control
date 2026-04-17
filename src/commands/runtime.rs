@@ -156,7 +156,7 @@ fn handle_add(matches: &ArgMatches, config: &Config, output: &OutputManager) {
                         "Runtime Add",
                         "OS update applied. Rebooting to activate new OS...",
                     );
-                    let _ = std::process::Command::new("reboot").status();
+                    crate::os_update::trigger_reboot_for_pending_update();
                 } else {
                     crate::commands::ext::refresh_extensions(config, output);
                     println!();
@@ -328,7 +328,7 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
                     "Runtime Activate",
                     "OS update applied. Rebooting to activate new OS...",
                 );
-                let _ = std::process::Command::new("reboot").status();
+                crate::os_update::trigger_reboot_for_pending_update();
                 return;
             }
         }

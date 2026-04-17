@@ -177,6 +177,15 @@ pub struct PendingUpdate {
     /// the OS build ID is verified on the next boot.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_id: Option<String>,
+    /// Update strategy from the bundle (e.g. "rpi-tryboot", "uboot-ab").
+    /// Used to drive strategy-specific reboot and confirm behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strategy: Option<String>,
+    /// Activate slot actions copied from the bundle, used by strategy-specific
+    /// confirmation logic on the next boot (e.g. confirm_rpi_tryboot needs the
+    /// boot_partitions map).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activate: Option<Vec<SlotAction>>,
 }
 
 // --- Public API ---
@@ -298,6 +307,8 @@ pub fn apply_os_update(
         previous_slot: current_slot.clone(),
         layout: bundle.layout.clone(),
         runtime_id: None,
+        strategy: Some(update.strategy.clone()),
+        activate: Some(update.activate.clone()),
     };
     write_pending_update(&pending, base_dir)?;
 
@@ -430,6 +441,61 @@ pub fn rollback_os_update(pending: &PendingUpdate, verbose: bool) -> Result<(), 
         return Err(e);
     }
     Ok(())
+}
+
+/// Run strategy-specific confirmation after a pending update has been verified
+/// to have booted successfully. For rpi-tryboot: rewrites autoboot.txt on both
+/// boot partitions to point at the confirmed slot, making the slot switch
+/// durable across normal reboots (tryboot.txt is one-shot and already cleared
+/// by the EEPROM).
+///
+/// For other strategies this is a no-op — activation already wrote the
+/// permanent state.
+pub fn confirm_pending_update(pending: &PendingUpdate) -> Result<(), OsUpdateError> {
+    let strategy = match pending.strategy.as_deref() {
+        Some(s) => s,
+        None => return Ok(()),
+    };
+    if strategy != "rpi-tryboot" {
+        return Ok(());
+    }
+    let actions = match pending.activate.as_ref() {
+        Some(a) => a,
+        None => return Ok(()),
+    };
+    let confirmed_slot = if pending.previous_slot == "a" {
+        "b"
+    } else {
+        "a"
+    };
+    for action in actions {
+        if let SlotAction::RpiTryboot {
+            devpath,
+            boot_partitions,
+        } = action
+        {
+            confirm_rpi_tryboot(devpath.as_deref(), boot_partitions, confirmed_slot)?;
+        }
+    }
+    Ok(())
+}
+
+/// Trigger a reboot appropriate for the pending update's strategy.
+/// For `rpi-tryboot`, the EEPROM only consults tryboot.txt when the kernel is
+/// rebooted with the magic argument `'0 tryboot'`; a plain `reboot` falls
+/// through to autoboot.txt and undoes the staged slot switch.
+pub fn trigger_reboot_for_pending_update() {
+    let pending = read_pending_update();
+    let is_tryboot = pending
+        .as_ref()
+        .and_then(|p| p.strategy.as_deref())
+        .map(|s| s == "rpi-tryboot")
+        .unwrap_or(false);
+    let mut cmd = ProcessCommand::new("reboot");
+    if is_tryboot {
+        cmd.args(["0", "tryboot"]);
+    }
+    let _ = cmd.status();
 }
 
 // --- Internal helpers ---
@@ -1859,6 +1925,8 @@ pub fn apply_os_update_streaming<R: Read>(
         previous_slot: current_slot.clone(),
         layout: bundle.layout.clone(),
         runtime_id: None,
+        strategy: Some(update.strategy.clone()),
+        activate: Some(update.activate.clone()),
     };
     write_pending_update(&pending, base_dir)?;
 
@@ -1960,6 +2028,8 @@ PRETTY_NAME="Avocado Linux 2024.1"
             previous_slot: "a".to_string(),
             layout: None,
             runtime_id: Some("test-runtime-uuid".to_string()),
+            strategy: None,
+            activate: None,
         };
 
         write_pending_update(&pending, tmp.path()).unwrap();

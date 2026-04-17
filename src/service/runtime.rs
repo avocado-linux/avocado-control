@@ -65,7 +65,7 @@ fn reboot_streaming(message: &str) -> StreamHandle {
     let (tx, rx) = mpsc::sync_channel(4);
     let handle = thread::spawn(move || {
         let _ = tx.send(msg);
-        let _ = std::process::Command::new("reboot").status();
+        crate::os_update::trigger_reboot_for_pending_update();
         Ok(())
     });
     (rx, handle)
@@ -199,7 +199,7 @@ pub fn add_from_url(
 
     if reboot_required {
         println!("  OS update applied. Rebooting to activate new OS...");
-        let _ = std::process::Command::new("reboot").status();
+        crate::os_update::trigger_reboot_for_pending_update();
         return Ok(vec![
             "OS update applied. Rebooting to activate new OS.".to_string()
         ]);
@@ -276,7 +276,7 @@ pub fn activate_runtime(id_prefix: &str, config: &Config) -> Result<Vec<String>,
 
     if runtime_requires_os_change(matched, base_path)? {
         println!("  OS change required. Rebooting to activate new OS...");
-        let _ = std::process::Command::new("reboot").status();
+        crate::os_update::trigger_reboot_for_pending_update();
         return Ok(vec![
             "OS change required. Rebooting to activate new OS.".to_string()
         ]);
