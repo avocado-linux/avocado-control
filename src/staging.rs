@@ -592,6 +592,37 @@ mod tests {
     }
 
     #[test]
+    fn test_validate_manifest_images_missing_os_bundle() {
+        use crate::manifest::OsBundleRef;
+
+        // Extension image present, OS bundle .raw absent — runtime must not
+        // be activatable since apply_os_update would fail mid-flight.
+        let tmp = TempDir::new().unwrap();
+        let images_dir = tmp.path().join("images");
+        fs::create_dir_all(&images_dir).unwrap();
+        fs::write(
+            images_dir.join("a1b2c3d4-e5f6-5789-abcd-ef0123456789.raw"),
+            b"ext data",
+        )
+        .unwrap();
+
+        let mut manifest = make_manifest("test-id", "dev", "0.1.0");
+        // Don't set sha256 on extension so the missing-os_bundle path is the only error
+        manifest.os_bundle = Some(OsBundleRef {
+            image_id: "deadbeef-1234-5678-abcd-000000000000".to_string(),
+            sha256: "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            os_build_id: Some("os-build-xyz".to_string()),
+            initramfs_build_id: None,
+        });
+
+        let result = validate_manifest_images(&manifest, tmp.path());
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("Missing extension images") || err.contains("os_bundle"));
+        assert!(err.contains("deadbeef-1234-5678-abcd-000000000000.raw"));
+    }
+
+    #[test]
     fn test_stage_manifest_creates_directory() {
         let tmp = TempDir::new().unwrap();
         let manifest = make_manifest("uuid-123", "dev", "0.1.0");

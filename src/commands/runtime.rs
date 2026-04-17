@@ -278,6 +278,27 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
         return;
     }
 
+    // Pre-flight: validate every artifact this runtime needs (OS bundle .raw
+    // and all extension images) is present on disk with the correct sha256
+    // BEFORE we apply OS updates or tear down the current extension set. This
+    // catches GC'd or never-staged OS bundles before doing damage.
+    if let Err(e) = staging::validate_manifest_images(matched, base_path) {
+        output.error("Runtime Activate", &format!("{e}"));
+        if matched.os_bundle.is_some() {
+            eprintln!(
+                "       Re-add this runtime via `avocadoctl runtime add` to refetch missing artifacts."
+            );
+        }
+        std::process::exit(1);
+    }
+
+    if matched.os_bundle.is_none() {
+        eprintln!(
+            "[NOTE] Runtime {} ({short_id}) has no os_bundle reference; OS state will not be verified or changed by this activation.",
+            matched.runtime.name
+        );
+    }
+
     // Check if the target runtime requires a different OS
     if let Some(ref os_bundle) = matched.os_bundle {
         if let Some(ref expected_id) = os_bundle.os_build_id {
@@ -290,18 +311,12 @@ fn handle_activate(matches: &ArgMatches, config: &Config, output: &OutputManager
                 .unwrap_or(false);
 
             if !already_matches {
-                // OS change required — apply update, mark pending, reboot
+                // OS change required — apply update, mark pending, reboot.
+                // The pre-flight validation above already confirmed the .raw
+                // exists with the correct sha256.
                 let aos_path = base_path
                     .join(IMAGES_DIR_NAME)
                     .join(format!("{}.raw", os_bundle.image_id));
-
-                if !aos_path.exists() {
-                    output.error(
-                        "Runtime Activate",
-                        &format!("OS bundle image not found: {}", aos_path.display()),
-                    );
-                    std::process::exit(1);
-                }
 
                 output.step(
                     "Runtime Activate",
