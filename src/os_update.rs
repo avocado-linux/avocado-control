@@ -484,6 +484,10 @@ pub fn confirm_pending_update(pending: &PendingUpdate) -> Result<(), OsUpdateErr
 /// For `rpi-tryboot`, the EEPROM only consults tryboot.txt when the kernel is
 /// rebooted with the magic argument `'0 tryboot'`; a plain `reboot` falls
 /// through to autoboot.txt and undoes the staged slot switch.
+///
+/// busybox `reboot` doesn't accept positional args, so for tryboot we use
+/// `systemctl --reboot-argument='0 tryboot' reboot`, which passes the string
+/// through to the kernel's reboot(LINUX_REBOOT_CMD_RESTART2, arg) syscall.
 pub fn trigger_reboot_for_pending_update() {
     let pending = read_pending_update();
     let is_tryboot = pending
@@ -491,11 +495,14 @@ pub fn trigger_reboot_for_pending_update() {
         .and_then(|p| p.strategy.as_deref())
         .map(|s| s == "rpi-tryboot")
         .unwrap_or(false);
-    let mut cmd = ProcessCommand::new("reboot");
+
     if is_tryboot {
-        cmd.args(["0", "tryboot"]);
+        let _ = ProcessCommand::new("systemctl")
+            .args(["--reboot-argument=0 tryboot", "reboot"])
+            .status();
+    } else {
+        let _ = ProcessCommand::new("reboot").status();
     }
-    let _ = cmd.status();
 }
 
 // --- Internal helpers ---
