@@ -1214,43 +1214,46 @@ pub fn execute_slot_action(
                 })?,
             };
             let active_part_dev = partition_device_path(&resolved_devpath, *current_part_num);
-            let inactive_part_dev = partition_device_path(&resolved_devpath, *target_part_num);
 
-            // 1. Mount the active boot partition and write tryboot.txt
+            // The Pi EEPROM reads autoboot.txt once from the first FAT partition.
+            // To select different boot partitions for normal vs tryboot mode it
+            // expects a single autoboot.txt with both [all] and [tryboot] sections
+            // (a separate tryboot.txt is treated as a config.txt override, not as
+            // a partition redirect — that was the bug that caused tryboot reboots
+            // to fall through to the [all] partition).
             let active_mount = "/tmp/avocado-tryboot-active";
             mount_partition(&active_part_dev, active_mount)?;
 
-            let tryboot_content = format!("[tryboot]\nboot_partition={target_part_num}\n");
-            let tryboot_result = fs::write(format!("{active_mount}/tryboot.txt"), &tryboot_content);
-            if let Err(e) = &tryboot_result {
-                let _ = unmount(active_mount);
-                return Err(OsUpdateError::ActivationFailed(format!(
-                    "Failed to write tryboot.txt: {e}"
-                )));
-            }
+            let autoboot_content = render_rpi_autoboot(*current_part_num, *target_part_num);
+            let autoboot_result =
+                fs::write(format!("{active_mount}/autoboot.txt"), &autoboot_content);
+
+            // Remove any stale tryboot.txt left over from earlier avocadoctl
+            // versions; firmware would otherwise read it as a config.txt
+            // replacement during tryboot mode.
+            let _ = fs::remove_file(format!("{active_mount}/tryboot.txt"));
 
             let _ = unmount(active_mount);
 
-            // 2. Mount the inactive boot partition and write autoboot.txt
-            //    so it points to itself (ready for post-confirmation)
-            let inactive_mount = "/tmp/avocado-tryboot-inactive";
-            mount_partition(&inactive_part_dev, inactive_mount)?;
-
-            let autoboot_content = format!("[all]\nboot_partition={target_part_num}\n");
-            let autoboot_result =
-                fs::write(format!("{inactive_mount}/autoboot.txt"), &autoboot_content);
-            if let Err(e) = &autoboot_result {
-                let _ = unmount(inactive_mount);
+            if let Err(e) = autoboot_result {
                 return Err(OsUpdateError::ActivationFailed(format!(
-                    "Failed to write autoboot.txt on inactive partition: {e}"
+                    "Failed to write autoboot.txt: {e}"
                 )));
             }
-
-            let _ = unmount(inactive_mount);
 
             Ok(())
         }
     }
+}
+
+/// Render the autoboot.txt content for the Pi EEPROM A/B tryboot scheme.
+/// `[all]` selects the partition that boots on normal reboots; `[tryboot]`
+/// selects the partition that boots when the kernel passes the `'0 tryboot'`
+/// argument. The `tryboot_a_b=1` flag enables the EEPROM's A/B tracking.
+fn render_rpi_autoboot(all_part: u32, tryboot_part: u32) -> String {
+    format!(
+        "[all]\ntryboot_a_b=1\nboot_partition={all_part}\n\n[tryboot]\nboot_partition={tryboot_part}\n"
+    )
 }
 
 /// Derive a partition device path from a base device path and partition number.
@@ -1326,6 +1329,12 @@ pub fn confirm_rpi_tryboot(
             "No boot partition for confirmed slot '{confirmed_slot}'"
         ))
     })?;
+    let rollback_slot = if confirmed_slot == "a" { "b" } else { "a" };
+    let rollback_part = boot_partitions.get(rollback_slot).ok_or_else(|| {
+        OsUpdateError::ActivationFailed(format!(
+            "No boot partition for rollback slot '{rollback_slot}'"
+        ))
+    })?;
 
     let resolved_devpath = match devpath {
         Some(p) => p.to_string(),
@@ -1336,27 +1345,29 @@ pub fn confirm_rpi_tryboot(
         })?,
     };
 
-    let autoboot_content = format!("[all]\nboot_partition={confirmed_part}\n");
+    // The EEPROM only reads autoboot.txt from the first FAT partition on the
+    // disk, so write it just there. Use the standard A/B layout: [all] points
+    // at the confirmed slot for normal boots; [tryboot] points at the previous
+    // slot so a future rollback-via-tryboot remains possible.
+    let autoboot_content = render_rpi_autoboot(*confirmed_part, *rollback_part);
 
-    // Update autoboot.txt on both partitions
-    for (slot_name, part_num) in boot_partitions {
-        let part_dev = partition_device_path(&resolved_devpath, *part_num);
-        let mount_point = format!("/tmp/avocado-tryboot-confirm-{slot_name}");
-
-        if let Err(e) = mount_partition(&part_dev, &mount_point) {
-            eprintln!("Warning: failed to mount {part_dev} for confirmation: {e}");
-            continue;
-        }
-
-        let _ = fs::write(format!("{mount_point}/autoboot.txt"), &autoboot_content);
-
-        // Remove tryboot.txt from the old active partition (cleanup)
-        if slot_name != confirmed_slot {
-            let _ = fs::remove_file(format!("{mount_point}/tryboot.txt"));
-        }
-
-        let _ = unmount(&mount_point);
-    }
+    // The EEPROM-visible autoboot.txt lives on the lowest-numbered boot
+    // partition (sort by partition number to avoid HashMap iteration order).
+    let mut sorted: Vec<(&String, &u32)> = boot_partitions.iter().collect();
+    sorted.sort_by_key(|(_, n)| **n);
+    let (first_slot, first_part) = sorted.first().ok_or_else(|| {
+        OsUpdateError::ActivationFailed("rpi-tryboot confirm: no boot partitions".to_string())
+    })?;
+    let part_dev = partition_device_path(&resolved_devpath, **first_part);
+    let mount_point = format!("/tmp/avocado-tryboot-confirm-{first_slot}");
+    mount_partition(&part_dev, &mount_point)?;
+    let write_result = fs::write(format!("{mount_point}/autoboot.txt"), &autoboot_content);
+    // Clean up any stale tryboot.txt from earlier avocadoctl versions.
+    let _ = fs::remove_file(format!("{mount_point}/tryboot.txt"));
+    let _ = unmount(&mount_point);
+    write_result.map_err(|e| {
+        OsUpdateError::ActivationFailed(format!("Failed to write confirm autoboot.txt: {e}"))
+    })?;
 
     Ok(())
 }
@@ -2484,6 +2495,17 @@ PRETTY_NAME="Avocado Linux 2024.1"
         // SATA/USB
         assert_eq!(partition_device_path("/dev/sda", 1), "/dev/sda1");
         assert_eq!(partition_device_path("/dev/sdb", 5), "/dev/sdb5");
+    }
+
+    #[test]
+    fn test_render_rpi_autoboot() {
+        let s = render_rpi_autoboot(1, 2);
+        assert!(s.contains("[all]\n"));
+        assert!(s.contains("tryboot_a_b=1"));
+        assert!(s.contains("\nboot_partition=1\n"));
+        assert!(s.contains("[tryboot]\n"));
+        assert!(s.contains("\nboot_partition=2\n"));
+        assert!(s.find("[all]").unwrap() < s.find("[tryboot]").unwrap());
     }
 
     #[test]
