@@ -419,11 +419,11 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
     println!("  Manifest: v{}", matched.manifest_version);
     println!();
 
-    if matched.extensions.is_empty() {
+    if matched.components.is_empty() {
         println!("  No extensions.");
     } else {
         let name_width = matched
-            .extensions
+            .components
             .iter()
             .map(|e| e.name.len())
             .max()
@@ -438,7 +438,7 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
             nw = name_width
         );
 
-        for ext in &matched.extensions {
+        for ext in &matched.components {
             let short_image_id = match &ext.image_id {
                 Some(id) if id.len() >= 8 => &id[..8],
                 Some(id) => id.as_str(),
@@ -476,7 +476,7 @@ fn handle_inspect(matches: &ArgMatches, config: &Config, output: &OutputManager)
 
     if output.is_verbose() {
         println!("  Full image IDs:");
-        for ext in &matched.extensions {
+        for ext in &matched.components {
             let id_display = ext.image_id.as_deref().unwrap_or("-");
             let sha_display = ext.sha256.as_deref().unwrap_or("-");
             println!(
@@ -700,7 +700,7 @@ fn list_runtimes(config: &Config, output: &OutputManager) {
                     "built_at": m.built_at,
                     "active": is_active,
                     "manifest_version": m.manifest_version,
-                    "extensions": m.extensions.len(),
+                    "extensions": m.components.len(),
                 })
             })
             .collect();
@@ -750,7 +750,7 @@ fn list_runtimes(config: &Config, output: &OutputManager) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{ManifestExtension, RuntimeInfo};
+    use crate::manifest::{ManifestComponent, RuntimeInfo};
 
     fn make_runtime(id: &str, name: &str, version: &str, built_at: &str) -> RuntimeManifest {
         RuntimeManifest {
@@ -761,7 +761,7 @@ mod tests {
                 name: name.to_string(),
                 version: version.to_string(),
             },
-            extensions: vec![ManifestExtension {
+            components: vec![ManifestComponent {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
                 image_id: Some("img-id".to_string()),

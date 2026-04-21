@@ -342,9 +342,9 @@ pub fn perform_update(
     );
     println!(
         "  Manifest lists {} extension(s):",
-        new_manifest.extensions.len()
+        new_manifest.components.len()
     );
-    for ext in &new_manifest.extensions {
+    for ext in &new_manifest.components {
         let img = ext.image_id.as_deref().unwrap_or("none");
         println!("    {} {} (image: {})", ext.name, ext.version, img);
     }

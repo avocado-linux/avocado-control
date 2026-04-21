@@ -29,7 +29,14 @@ pub struct RuntimeManifest {
     pub id: String,
     pub built_at: String,
     pub runtime: RuntimeInfo,
-    pub extensions: Vec<ManifestExtension>,
+    /// List of runtime components (rootfs extensions, kernel, initramfs, …).
+    ///
+    /// Renamed from `extensions` in AMF v3. The `alias` keeps older
+    /// on-disk manifests (v1/v2 used `extensions`) deserializable, so a
+    /// device partway through a staged upgrade still reads its existing
+    /// manifest correctly. Serialize always uses the v3 name.
+    #[serde(alias = "extensions")]
+    pub components: Vec<ManifestComponent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub os_bundle: Option<OsBundleRef>,
 }
@@ -41,7 +48,7 @@ pub struct RuntimeInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ManifestExtension {
+pub struct ManifestComponent {
     pub name: String,
     pub version: String,
     /// UUIDv5 content-addressable image identifier
@@ -50,18 +57,18 @@ pub struct ManifestExtension {
     /// Image type: absent/null = raw squashfs/erofs, "kab" = KAB-wrapped image
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_type: Option<String>,
-    /// SHA256 hash of the extension image for integrity verification
+    /// SHA256 hash of the component image for integrity verification
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
 
-impl ManifestExtension {
-    /// Returns true if this extension image is a KAB file.
+impl ManifestComponent {
+    /// Returns true if this component image is a KAB file.
     pub fn is_kab(&self) -> bool {
         self.image_type.as_deref() == Some("kab")
     }
 
-    /// Resolve the on-disk path for this extension image.
+    /// Resolve the on-disk path for this component image.
     pub fn resolve_path(&self, base_dir: &Path) -> PathBuf {
         let ext = if self.is_kab() { "kab" } else { "raw" };
         if let Some(ref id) = self.image_id {
@@ -175,7 +182,7 @@ mod tests {
                 name: name.to_string(),
                 version: version.to_string(),
             },
-            extensions: vec![ManifestExtension {
+            components: vec![ManifestComponent {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
@@ -197,7 +204,7 @@ mod tests {
         assert_eq!(loaded.id, "abc-123");
         assert_eq!(loaded.runtime.name, "dev");
         assert_eq!(loaded.runtime.version, "0.1.0");
-        assert_eq!(loaded.extensions.len(), 1);
+        assert_eq!(loaded.components.len(), 1);
     }
 
     #[test]
@@ -283,7 +290,7 @@ mod tests {
         }"#;
         let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.manifest_version, 1);
-        let ext = &parsed.extensions[0];
+        let ext = &parsed.components[0];
         assert_eq!(
             ext.image_id,
             Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string())
@@ -302,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_image_id() {
-        let ext = ManifestExtension {
+        let ext = ManifestComponent {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
@@ -414,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_fallback_without_image_id() {
-        let ext = ManifestExtension {
+        let ext = ManifestComponent {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: None,
@@ -428,7 +435,7 @@ mod tests {
 
     #[test]
     fn test_is_kab() {
-        let raw_ext = ManifestExtension {
+        let raw_ext = ManifestComponent {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: None,
@@ -437,7 +444,7 @@ mod tests {
         };
         assert!(!raw_ext.is_kab());
 
-        let kab_ext = ManifestExtension {
+        let kab_ext = ManifestComponent {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: None,
@@ -449,7 +456,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_kab_with_image_id() {
-        let ext = ManifestExtension {
+        let ext = ManifestComponent {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
@@ -466,7 +473,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_kab_without_image_id() {
-        let ext = ManifestExtension {
+        let ext = ManifestComponent {
             name: "app".to_string(),
             version: "0.1.0".to_string(),
             image_id: None,
@@ -490,7 +497,7 @@ mod tests {
             ]
         }"#;
         let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
-        let ext = &parsed.extensions[0];
+        let ext = &parsed.components[0];
         assert!(ext.is_kab());
         assert_eq!(ext.image_type, Some("kab".to_string()));
     }
@@ -507,7 +514,7 @@ mod tests {
             ]
         }"#;
         let parsed: RuntimeManifest = serde_json::from_str(json).unwrap();
-        let ext = &parsed.extensions[0];
+        let ext = &parsed.components[0];
         assert!(!ext.is_kab());
         assert_eq!(ext.image_type, None);
     }

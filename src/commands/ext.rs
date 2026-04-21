@@ -1124,7 +1124,7 @@ pub(crate) fn collect_extension_status(
     let active_manifest = crate::manifest::RuntimeManifest::load_active(base_path);
     let manifest_extensions = active_manifest
         .as_ref()
-        .map(|m| m.extensions.as_slice())
+        .map(|m| m.components.as_slice())
         .unwrap_or(&[]);
 
     let available_extensions = scan_extensions_from_all_sources_with_verbosity(false)?;
@@ -1247,7 +1247,7 @@ pub(crate) fn show_enhanced_status(
     let active_manifest = crate::manifest::RuntimeManifest::load_active(base_path);
     let manifest_extensions = active_manifest
         .as_ref()
-        .map(|m| m.extensions.as_slice())
+        .map(|m| m.components.as_slice())
         .unwrap_or(&[]);
 
     // Get our view of available extensions
@@ -1330,7 +1330,7 @@ fn display_active_runtime(config: &Config, output: &OutputManager) {
                 manifest.runtime.name, manifest.runtime.version
             );
             println!("  Built: {}", manifest.built_at);
-            println!("  Extensions: {}", manifest.extensions.len());
+            println!("  Extensions: {}", manifest.components.len());
             if let Some(ref os_bundle) = manifest.os_bundle {
                 if let Some(ref id) = os_bundle.os_build_id {
                     println!("  OS Build ID (manifest): {id}");
@@ -1360,7 +1360,7 @@ fn display_active_runtime(config: &Config, output: &OutputManager) {
             }
             if output.is_verbose() {
                 println!("  Build ID: {}", manifest.id);
-                for ext in &manifest.extensions {
+                for ext in &manifest.components {
                     let id_display = ext.image_id.as_deref().unwrap_or("?");
                     println!("    - {} {} ({})", ext.name, ext.version, id_display);
                 }
@@ -1494,7 +1494,7 @@ fn build_extension_json_list(
     available: &[Extension],
     mounted_sysext: &[MountedExtension],
     mounted_confext: &[MountedExtension],
-    manifest_extensions: &[crate::manifest::ManifestExtension],
+    manifest_extensions: &[crate::manifest::ManifestComponent],
 ) -> Vec<serde_json::Value> {
     let mut all_extensions = std::collections::HashSet::new();
 
@@ -1577,7 +1577,7 @@ fn display_extension_status(
     available: &[Extension],
     mounted_sysext: &[MountedExtension],
     mounted_confext: &[MountedExtension],
-    manifest_extensions: &[crate::manifest::ManifestExtension],
+    manifest_extensions: &[crate::manifest::ManifestComponent],
 ) -> Result<(), SystemdError> {
     // Collect all unique extension names (with versions if present)
     let mut all_extensions = std::collections::HashSet::new();
@@ -1681,7 +1681,7 @@ fn display_extension_info(
     available: &[Extension],
     mounted_sysext: &[MountedExtension],
     mounted_confext: &[MountedExtension],
-    manifest_extensions: &[crate::manifest::ManifestExtension],
+    manifest_extensions: &[crate::manifest::ManifestComponent],
     name_width: usize,
 ) {
     // Find extension in available list (match by full versioned name or base name)
@@ -1761,7 +1761,7 @@ fn display_extension_info(
 /// the versioned name (e.g. "app-0.2.0") against manifest extension entries.
 fn lookup_extension_short_id(
     ext_name: &str,
-    manifest_extensions: &[crate::manifest::ManifestExtension],
+    manifest_extensions: &[crate::manifest::ManifestComponent],
 ) -> String {
     let matched = manifest_extensions.iter().find(|me| {
         let versioned = format!("{}-{}", me.name, me.version);
@@ -2166,8 +2166,8 @@ fn scan_extensions_from_all_sources_with_verbosity(
             );
         }
 
-        let ext_count = manifest.extensions.len();
-        for (index, mext) in manifest.extensions.iter().enumerate() {
+        let ext_count = manifest.components.len();
+        for (index, mext) in manifest.components.iter().enumerate() {
             // Inverted index: manifest[0] = highest priority = highest prefix number
             let merge_idx = ext_count - 1 - index;
 

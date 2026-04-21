@@ -235,7 +235,7 @@ fn runtime_entry_to_varlink(entry: crate::service::types::RuntimeEntry) -> vl_rt
         r#extensions: entry
             .extensions
             .into_iter()
-            .map(|e| vl_rt::ManifestExtension {
+            .map(|e| vl_rt::ManifestComponent {
                 r#name: e.name,
                 r#version: e.version,
                 r#imageId: e.image_id,

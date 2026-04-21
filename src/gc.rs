@@ -88,7 +88,7 @@ fn cleanup_orphaned_images(base_dir: &Path, runtimes: &[(RuntimeManifest, bool)]
     let mut referenced: HashSet<String> = HashSet::new();
 
     for (m, _) in runtimes {
-        for ext in &m.extensions {
+        for ext in &m.components {
             // resolve_path gives us the full path; we only need the filename
             let path = ext.resolve_path(base_dir);
             if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
@@ -118,7 +118,7 @@ fn cleanup_orphaned_images(base_dir: &Path, runtimes: &[(RuntimeManifest, bool)]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{ManifestExtension, OsBundleRef, RuntimeInfo, RuntimeManifest};
+    use crate::manifest::{ManifestComponent, OsBundleRef, RuntimeInfo, RuntimeManifest};
     use std::os::unix::fs as unix_fs;
     use tempfile::TempDir;
 
@@ -131,7 +131,7 @@ mod tests {
                 name: "dev".to_string(),
                 version: "0.1.0".to_string(),
             },
-            extensions: vec![ManifestExtension {
+            components: vec![ManifestComponent {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
                 image_id: Some(image_id.to_string()),
@@ -415,7 +415,7 @@ mod tests {
     fn test_gc_handles_kab_images() {
         let tmp = TempDir::new().unwrap();
         let mut m1 = make_manifest("rt-1", "2026-01-01T00:00:00Z", "img-1");
-        m1.extensions[0].image_type = Some("kab".to_string());
+        m1.components[0].image_type = Some("kab".to_string());
         let m2 = make_manifest("rt-2", "2026-01-02T00:00:00Z", "img-2");
 
         write_manifest(tmp.path(), &m1);

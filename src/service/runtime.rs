@@ -23,7 +23,7 @@ pub fn manifest_to_entry(manifest: &RuntimeManifest, active: bool) -> RuntimeEnt
         name: manifest.runtime.name.clone(),
         version: manifest.runtime.version.clone(),
         extensions: manifest
-            .extensions
+            .components
             .iter()
             .map(|e| RuntimeExtensionInfo {
                 name: e.name.clone(),

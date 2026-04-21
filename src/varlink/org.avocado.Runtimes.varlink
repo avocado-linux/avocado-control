@@ -6,7 +6,7 @@ type RuntimeInfo (
     version: string
 )
 
-type ManifestExtension (
+type ManifestComponent (
     name: string,
     version: string,
     imageId: ?string,
@@ -19,7 +19,7 @@ type Runtime (
     manifestVersion: int,
     builtAt: string,
     runtime: RuntimeInfo,
-    extensions: []ManifestExtension,
+    extensions: []ManifestComponent,
     active: bool,
     osBuildId: ?string,
     initramfsBuildId: ?string

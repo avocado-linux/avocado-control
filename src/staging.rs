@@ -80,7 +80,7 @@ pub fn generate_spot_hashes(
 ) -> Result<SpotHashCache, StagingError> {
     let mut hashes = HashMap::new();
 
-    for ext in &manifest.extensions {
+    for ext in &manifest.components {
         let path = ext.resolve_path(base_dir);
         if path.exists() && !path.is_dir() {
             let filename = path
@@ -176,11 +176,11 @@ fn verify_with_spot_cache(
     if verbose {
         eprintln!(
             "Verifying {} extension image(s) with spot check ({spot_size} byte head+tail)",
-            manifest.extensions.len()
+            manifest.components.len()
         );
     }
 
-    for ext in &manifest.extensions {
+    for ext in &manifest.components {
         let path = ext.resolve_path(base_dir);
         if !path.exists() || path.is_dir() {
             continue;
@@ -258,7 +258,7 @@ pub fn validate_manifest_images(
     let mut missing: Vec<MissingImage> = Vec::new();
     let mut hash_errors: Vec<ImageHashMismatch> = Vec::new();
 
-    for ext in &manifest.extensions {
+    for ext in &manifest.components {
         let path = ext.resolve_path(base_dir);
         if !path.exists() {
             missing.push(MissingImage {
@@ -378,7 +378,7 @@ pub fn install_images_from_staging(
 
     let mut missing = Vec::new();
 
-    for ext in &manifest.extensions {
+    for ext in &manifest.components {
         if let Some(ref image_id) = ext.image_id {
             let dest = images_dir.join(format!("{image_id}.raw"));
             if dest.exists() {
@@ -541,7 +541,7 @@ fn resolve_active_id(base_dir: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manifest::{ManifestExtension, RuntimeInfo};
+    use crate::manifest::{ManifestComponent, RuntimeInfo};
     use std::os::unix::fs as unix_fs;
     use tempfile::TempDir;
 
@@ -554,7 +554,7 @@ mod tests {
                 name: name.to_string(),
                 version: version.to_string(),
             },
-            extensions: vec![ManifestExtension {
+            components: vec![ManifestComponent {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
@@ -736,7 +736,7 @@ mod tests {
                 name: name.to_string(),
                 version: version.to_string(),
             },
-            extensions: vec![ManifestExtension {
+            components: vec![ManifestComponent {
                 name: "app".to_string(),
                 version: "0.1.0".to_string(),
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
