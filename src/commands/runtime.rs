@@ -55,6 +55,23 @@ pub fn create_command() -> Command {
         )
         .subcommand(Command::new("gc").about("Remove old runtimes and unreferenced images"))
         .subcommand(
+            Command::new("validate")
+                .about(
+                    "Validate the active runtime manifest: signature, cert chain against a \
+                     trust directory, leaf CN policy (from /run/kos/mode and \
+                     /run/kos/mfgAuthority), and on-disk component presence",
+                )
+                .arg(
+                    Arg::new("ca_path")
+                        .long("ca-path")
+                        .required(true)
+                        .help(
+                            "Directory of trusted root CA PEM certs (hash-indexed; \
+                             run `openssl rehash` on the dir first)",
+                        ),
+                ),
+        )
+        .subcommand(
             Command::new("metadata")
                 .about("Manage runtime metadata key-value pairs")
                 .subcommand(
@@ -119,6 +136,9 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
         }
         Some(("gc", _)) => {
             handle_gc(config, output);
+        }
+        Some(("validate", validate_matches)) => {
+            handle_validate(validate_matches, config, output);
         }
         Some(("metadata", meta_matches)) => {
             handle_metadata(meta_matches, config, output);
@@ -567,6 +587,36 @@ fn handle_gc(config: &Config, output: &OutputManager) {
         }
         Err(e) => {
             output.error("Runtime GC", &format!("{e}"));
+            std::process::exit(1);
+        }
+    }
+}
+
+fn handle_validate(matches: &ArgMatches, config: &Config, output: &OutputManager) {
+    let ca_path = matches
+        .get_one::<String>("ca_path")
+        .expect("ca_path is required");
+    let base_dir = config.get_avocado_base_dir();
+    let base_path = Path::new(&base_dir);
+    let ca = Path::new(ca_path);
+
+    match crate::validate::validate_active_manifest(base_path, ca) {
+        Ok(()) => {
+            if output.is_json() {
+                println!("{}", serde_json::json!({"valid": true}));
+            } else {
+                output.success("Runtime Validate", "Active manifest is valid.");
+            }
+        }
+        Err(e) => {
+            if output.is_json() {
+                println!(
+                    "{}",
+                    serde_json::json!({"valid": false, "error": e.to_string()})
+                );
+            } else {
+                output.error("Runtime Validate", &format!("{e}"));
+            }
             std::process::exit(1);
         }
     }

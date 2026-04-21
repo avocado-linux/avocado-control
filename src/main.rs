@@ -9,6 +9,7 @@ mod output;
 pub mod service;
 pub mod staging;
 pub mod update;
+pub mod validate;
 mod varlink;
 mod varlink_client;
 mod varlink_server;
@@ -317,6 +318,40 @@ fn main() {
 
         // ── runtime subcommands ──────────────────────────────────────────────
         Some(("runtime", runtime_matches)) => {
+            // `validate` is a local-filesystem read-only check (no daemon
+            // state), so dispatch it before opening the varlink socket.
+            if let Some(("validate", vm)) = runtime_matches.subcommand() {
+                let ca_path = vm
+                    .get_one::<String>("ca_path")
+                    .expect("ca_path is required");
+                let base_dir = manifest::RuntimeManifest::base_dir();
+                let base_path = std::path::Path::new(&base_dir);
+                let ca = std::path::Path::new(ca_path);
+                match validate::validate_active_manifest(base_path, ca) {
+                    Ok(()) => {
+                        if output.is_json() {
+                            println!("{}", serde_json::json!({"valid": true}));
+                        } else {
+                            output.success(
+                                "Runtime Validate",
+                                "Active manifest is valid.",
+                            );
+                        }
+                        std::process::exit(0);
+                    }
+                    Err(e) => {
+                        if output.is_json() {
+                            println!(
+                                "{}",
+                                serde_json::json!({"valid": false, "error": e.to_string()})
+                            );
+                        } else {
+                            output.error("Runtime Validate", &format!("{e}"));
+                        }
+                        std::process::exit(1);
+                    }
+                }
+            }
             let conn = varlink_client::connect_or_exit(&socket_address, &output);
             match runtime_matches.subcommand() {
                 Some(("list", _)) => {
