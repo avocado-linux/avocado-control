@@ -25,6 +25,17 @@ pub struct DisableResult {
     pub failed: usize,
 }
 
+/// Result of `set_extensions_enabled` — the override-based enable/disable
+/// path that writes to the active runtime's `overrides.json`. `updated`
+/// counts names successfully written (whether or not they matched a
+/// manifest entry); `missing` counts names not present in the active
+/// manifest (still recorded — write-now-validate-later).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetEnabledResult {
+    pub updated: usize,
+    pub missing: usize,
+}
+
 /// Runtime summary for status display
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeSummary {

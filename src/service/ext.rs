@@ -2,7 +2,7 @@ use crate::commands::ext;
 use crate::config::Config;
 use crate::output::OutputManager;
 use crate::service::error::AvocadoError;
-use crate::service::types::{DisableResult, EnableResult, ExtensionInfo};
+use crate::service::types::{DisableResult, EnableResult, ExtensionInfo, SetEnabledResult};
 use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::Path;
@@ -343,4 +343,76 @@ pub fn status_extensions(
     config: &Config,
 ) -> Result<Vec<crate::varlink::org_avocado_Extensions::ExtensionStatus>, AvocadoError> {
     ext::collect_extension_status(config).map_err(AvocadoError::from)
+}
+
+/// Override the build-time `enabled` default for one or more extensions.
+/// Writes to `<active_runtime_dir>/overrides.json`. Names may be the bare
+/// extension name (`microclaw`) or the versioned form shown by `ext list`
+/// (`microclaw-0.1.57`) — the versioned form is normalized against the
+/// active manifest before being recorded. An override that would match
+/// the manifest's build-time default is cleared rather than written, so
+/// `overrides.json` doesn't accumulate redundant entries.
+pub fn set_extensions_enabled(
+    names: &[&str],
+    enabled: bool,
+) -> Result<SetEnabledResult, AvocadoError> {
+    let base_dir = crate::manifest::RuntimeManifest::base_dir();
+    let base_path = std::path::Path::new(&base_dir);
+    let manifest = crate::manifest::RuntimeManifest::load_active(base_path).ok_or_else(|| {
+        AvocadoError::ConfigurationError {
+            message: "No active runtime manifest. Provision a runtime first.".into(),
+        }
+    })?;
+
+    let active_dir = base_path.join(crate::manifest::ACTIVE_LINK_NAME);
+    let mut overrides = crate::overrides::RuntimeOverrides::load(&active_dir);
+
+    let known: std::collections::HashSet<&str> = manifest
+        .extensions
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+
+    let mut updated = 0usize;
+    let mut missing = 0usize;
+
+    for name in names {
+        // Accept either the bare extension name or the versioned form
+        // shown by `ext list` — normalize the latter against the manifest.
+        let resolved = if known.contains(name) {
+            name.to_string()
+        } else {
+            manifest
+                .extensions
+                .iter()
+                .find(|e| format!("{}-{}", e.name, e.version) == *name)
+                .map(|e| e.name.clone())
+                .unwrap_or_else(|| name.to_string())
+        };
+
+        if !known.contains(resolved.as_str()) {
+            missing += 1;
+        }
+
+        let manifest_default = manifest
+            .extensions
+            .iter()
+            .find(|e| e.name == resolved)
+            .map(|e| e.enabled)
+            .unwrap_or(true);
+        if manifest_default == enabled {
+            overrides.set_enabled(&resolved, None);
+        } else {
+            overrides.set_enabled(&resolved, Some(enabled));
+        }
+        updated += 1;
+    }
+
+    overrides
+        .save(&active_dir)
+        .map_err(|e| AvocadoError::ConfigurationError {
+            message: format!("Failed to write overrides: {e}"),
+        })?;
+
+    Ok(SetEnabledResult { updated, missing })
 }

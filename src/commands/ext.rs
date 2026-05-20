@@ -164,72 +164,34 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
     }
 }
 
-/// Flip the enabled override for each name in `names`. Persists to
-/// `<active_runtime_dir>/overrides.json`. Names that aren't in the
-/// active manifest are still recorded (cheap to store, validates lazily
-/// at next scan), but a warning is emitted.
-fn set_extensions_enabled(names: &[String], enabled: bool, output: &OutputManager) {
-    let base_dir = crate::manifest::RuntimeManifest::base_dir();
-    let base_path = Path::new(&base_dir);
-    let manifest = crate::manifest::RuntimeManifest::load_active(base_path);
-
-    let Some(manifest) = manifest else {
-        output.error(
-            "Extension Override",
-            "No active runtime manifest. Provision a runtime first.",
-        );
-        return;
-    };
-
-    let active_dir = base_path.join(crate::manifest::ACTIVE_LINK_NAME);
-    let mut overrides = crate::overrides::RuntimeOverrides::load(&active_dir);
-
-    let known: std::collections::HashSet<&str> = manifest
-        .extensions
-        .iter()
-        .map(|e| e.name.as_str())
-        .collect();
-
-    for name in names {
-        if !known.contains(name.as_str()) {
+/// CLI-facing wrapper around `service::ext::set_extensions_enabled` that
+/// formats success / failure for the terminal. Used only by the
+/// `AVOCADO_TEST_MODE` direct dispatch path — the production path goes
+/// through varlink so the daemon owns serialization across callers.
+pub fn set_extensions_enabled(names: &[String], enabled: bool, output: &OutputManager) {
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    match crate::service::ext::set_extensions_enabled(&refs, enabled) {
+        Ok(result) => {
+            let verb = if enabled { "enabled" } else { "disabled" };
+            output.success(
+                "Extension Override",
+                &format!(
+                    "{verb}: {} ({} updated, {} missing)",
+                    names.join(", "),
+                    result.updated,
+                    result.missing
+                ),
+            );
             output.info(
                 "Extension Override",
-                &format!("'{name}' is not in the active manifest — override recorded anyway"),
+                "Run `avocadoctl ext refresh` to apply.",
             );
         }
-        // Clear the override when the desired state matches the
-        // manifest's default, so overrides.json doesn't accumulate
-        // redundant entries.
-        let manifest_default = manifest
-            .extensions
-            .iter()
-            .find(|e| e.name == *name)
-            .map(|e| e.enabled)
-            .unwrap_or(true);
-        if manifest_default == enabled {
-            overrides.set_enabled(name, None);
-        } else {
-            overrides.set_enabled(name, Some(enabled));
+        Err(e) => {
+            output.error("Extension Override", &e.to_string());
+            std::process::exit(1);
         }
     }
-
-    if let Err(e) = overrides.save(&active_dir) {
-        output.error(
-            "Extension Override",
-            &format!("Failed to write overrides: {e}"),
-        );
-        std::process::exit(1);
-    }
-
-    let verb = if enabled { "enabled" } else { "disabled" };
-    output.success(
-        "Extension Override",
-        &format!("{verb}: {}", names.join(", ")),
-    );
-    output.info(
-        "Extension Override",
-        "Run `avocadoctl ext refresh` to apply.",
-    );
 }
 
 /// List all extensions from disk images, annotating which are currently mounted/active.

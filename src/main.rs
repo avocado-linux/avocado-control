@@ -257,6 +257,50 @@ fn main() {
                         Err(e) => varlink_client::exit_with_rpc_error(e, &output),
                     }
                 }
+                // `enable` / `disable` go through the varlink server like
+                // every other state-mutating call, so concurrent CLI
+                // invocations serialize through the daemon and remote
+                // clients get the same interface.
+                Some(("enable", sub)) => {
+                    let names: Vec<String> = sub
+                        .get_many::<String>("names")
+                        .map(|vs| vs.cloned().collect())
+                        .unwrap_or_default();
+                    let mut client = vl_ext::VarlinkClient::new(conn);
+                    match client.set_enabled(names.clone(), true).call() {
+                        Ok(reply) => {
+                            let msg = format!(
+                                "enabled: {} ({} updated, {} missing)",
+                                names.join(", "),
+                                reply.updated,
+                                reply.missing,
+                            );
+                            output.success("Extension Override", &msg);
+                        }
+                        Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                    }
+                    json_ok(&output);
+                }
+                Some(("disable", sub)) => {
+                    let names: Vec<String> = sub
+                        .get_many::<String>("names")
+                        .map(|vs| vs.cloned().collect())
+                        .unwrap_or_default();
+                    let mut client = vl_ext::VarlinkClient::new(conn);
+                    match client.set_enabled(names.clone(), false).call() {
+                        Ok(reply) => {
+                            let msg = format!(
+                                "disabled: {} ({} updated, {} missing)",
+                                names.join(", "),
+                                reply.updated,
+                                reply.missing,
+                            );
+                            output.success("Extension Override", &msg);
+                        }
+                        Err(e) => varlink_client::exit_with_rpc_error(e, &output),
+                    }
+                    json_ok(&output);
+                }
                 _ => {
                     println!("Use 'avocadoctl ext --help' for available extension commands");
                 }
