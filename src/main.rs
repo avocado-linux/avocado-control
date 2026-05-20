@@ -6,6 +6,7 @@ pub mod manifest;
 pub mod metadata;
 pub mod os_update;
 mod output;
+pub mod overrides;
 pub mod service;
 pub mod staging;
 pub mod update;

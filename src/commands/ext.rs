@@ -103,6 +103,26 @@ pub fn create_command() -> Command {
             Command::new("refresh").about("Unmerge and then merge extensions (refresh extensions)"),
         )
         .subcommand(Command::new("status").about("Show status of merged extensions"))
+        .subcommand(
+            Command::new("enable")
+                .about("Mark one or more extensions as enabled (writes to overrides.json)")
+                .arg(
+                    Arg::new("names")
+                        .help("Extension name(s) to enable")
+                        .num_args(1..)
+                        .required(true),
+                ),
+        )
+        .subcommand(
+            Command::new("disable")
+                .about("Mark one or more extensions as disabled (writes to overrides.json)")
+                .arg(
+                    Arg::new("names")
+                        .help("Extension name(s) to disable")
+                        .num_args(1..)
+                        .required(true),
+                ),
+        )
 }
 
 /// Handle ext command and its subcommands
@@ -124,10 +144,92 @@ pub fn handle_command(matches: &ArgMatches, config: &Config, output: &OutputMana
         Some(("status", _)) => {
             status_extensions(config, output);
         }
+        Some(("enable", sub)) => {
+            let names: Vec<String> = sub
+                .get_many::<String>("names")
+                .map(|vs| vs.cloned().collect())
+                .unwrap_or_default();
+            set_extensions_enabled(&names, true, output);
+        }
+        Some(("disable", sub)) => {
+            let names: Vec<String> = sub
+                .get_many::<String>("names")
+                .map(|vs| vs.cloned().collect())
+                .unwrap_or_default();
+            set_extensions_enabled(&names, false, output);
+        }
         _ => {
             println!("Use 'avocadoctl ext --help' for available extension commands");
         }
     }
+}
+
+/// Flip the enabled override for each name in `names`. Persists to
+/// `<active_runtime_dir>/overrides.json`. Names that aren't in the
+/// active manifest are still recorded (cheap to store, validates lazily
+/// at next scan), but a warning is emitted.
+fn set_extensions_enabled(names: &[String], enabled: bool, output: &OutputManager) {
+    let base_dir = crate::manifest::RuntimeManifest::base_dir();
+    let base_path = Path::new(&base_dir);
+    let manifest = crate::manifest::RuntimeManifest::load_active(base_path);
+
+    let Some(manifest) = manifest else {
+        output.error(
+            "Extension Override",
+            "No active runtime manifest. Provision a runtime first.",
+        );
+        return;
+    };
+
+    let active_dir = base_path.join(crate::manifest::ACTIVE_LINK_NAME);
+    let mut overrides = crate::overrides::RuntimeOverrides::load(&active_dir);
+
+    let known: std::collections::HashSet<&str> = manifest
+        .extensions
+        .iter()
+        .map(|e| e.name.as_str())
+        .collect();
+
+    for name in names {
+        if !known.contains(name.as_str()) {
+            output.info(
+                "Extension Override",
+                &format!("'{name}' is not in the active manifest — override recorded anyway"),
+            );
+        }
+        // Clear the override when the desired state matches the
+        // manifest's default, so overrides.json doesn't accumulate
+        // redundant entries.
+        let manifest_default = manifest
+            .extensions
+            .iter()
+            .find(|e| e.name == *name)
+            .map(|e| e.enabled)
+            .unwrap_or(true);
+        if manifest_default == enabled {
+            overrides.set_enabled(name, None);
+        } else {
+            overrides.set_enabled(name, Some(enabled));
+        }
+    }
+
+    if let Err(e) = overrides.save(&active_dir) {
+        output.error(
+            "Extension Override",
+            &format!("Failed to write overrides: {e}"),
+        );
+        std::process::exit(1);
+    }
+
+    let verb = if enabled { "enabled" } else { "disabled" };
+    output.success(
+        "Extension Override",
+        &format!("{verb}: {}", names.join(", ")),
+    );
+    output.info(
+        "Extension Override",
+        "Run `avocadoctl ext refresh` to apply.",
+    );
 }
 
 /// List all extensions from disk images, annotating which are currently mounted/active.
@@ -233,8 +335,42 @@ fn list_extensions(_config: &Config, output: &OutputManager) {
     }
 
     println!("  (low priority / base layer)");
+
+    // Manifest-listed extensions that the scan filtered out because they
+    // are effectively disabled. Surfaced separately so the user can see
+    // them and know they exist to enable, rather than having them
+    // silently vanish from `ext list`.
+    let base_dir = crate::manifest::RuntimeManifest::base_dir();
+    let base_path = Path::new(&base_dir);
+    if let Some(manifest) = crate::manifest::RuntimeManifest::load_active(base_path) {
+        let active_dir = base_path.join(crate::manifest::ACTIVE_LINK_NAME);
+        let overrides = crate::overrides::RuntimeOverrides::load(&active_dir);
+        let scanned: std::collections::HashSet<&str> =
+            sorted.iter().map(|e| e.name.as_str()).collect();
+        let disabled: Vec<&crate::manifest::ManifestExtension> = manifest
+            .extensions
+            .iter()
+            .filter(|m| {
+                !scanned.contains(m.name.as_str())
+                    && !crate::overrides::effective_enabled(m, &overrides)
+            })
+            .collect();
+        if !disabled.is_empty() {
+            println!();
+            println!("Disabled (present in manifest, not activated):");
+            for m in &disabled {
+                let reason = match overrides.enabled_override(&m.name) {
+                    Some(false) => "user override",
+                    None => "manifest default",
+                    Some(true) => continue, // shouldn't happen given filter
+                };
+                println!("  {}-{}  ({reason})", m.name, m.version);
+            }
+        }
+    }
+
     println!();
-    println!("Total: {} extension(s)", sorted.len());
+    println!("Total: {} active extension(s)", sorted.len());
 }
 
 /// Merge extensions using systemd-sysext and systemd-confext
@@ -2166,8 +2302,28 @@ fn scan_extensions_from_all_sources_with_verbosity(
             );
         }
 
+        // Per-runtime user overrides sit alongside the manifest. The
+        // `active` symlink resolves to runtimes/<id>/, so overrides.json
+        // (when present) lives at the same path.
+        let active_dir = base_path.join(crate::manifest::ACTIVE_LINK_NAME);
+        let overrides = crate::overrides::RuntimeOverrides::load(&active_dir);
+
         let ext_count = manifest.extensions.len();
         for (index, mext) in manifest.extensions.iter().enumerate() {
+            // Skip extensions the user (or the build) has marked disabled.
+            // `effective_enabled` is the single policy point — never read
+            // `mext.enabled` directly outside of it.
+            if !crate::overrides::effective_enabled(mext, &overrides) {
+                if verbose {
+                    println!(
+                        "Skipping disabled extension '{}' (manifest={}, override={:?})",
+                        mext.name,
+                        mext.enabled,
+                        overrides.enabled_override(&mext.name)
+                    );
+                }
+                continue;
+            }
             // Inverted index: manifest[0] = highest priority = highest prefix number
             let merge_idx = ext_count - 1 - index;
 
@@ -4143,7 +4299,7 @@ mod tests {
 
         // Check that all subcommands exist
         let subcommands: Vec<_> = cmd.get_subcommands().collect();
-        assert_eq!(subcommands.len(), 5);
+        assert_eq!(subcommands.len(), 7);
 
         let subcommand_names: Vec<&str> = subcommands.iter().map(|cmd| cmd.get_name()).collect();
         assert!(subcommand_names.contains(&"list"));
@@ -4151,6 +4307,8 @@ mod tests {
         assert!(subcommand_names.contains(&"unmerge"));
         assert!(subcommand_names.contains(&"refresh"));
         assert!(subcommand_names.contains(&"status"));
+        assert!(subcommand_names.contains(&"enable"));
+        assert!(subcommand_names.contains(&"disable"));
     }
 
     #[test]

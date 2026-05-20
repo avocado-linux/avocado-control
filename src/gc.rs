@@ -137,6 +137,7 @@ mod tests {
                 image_id: Some(image_id.to_string()),
                 image_type: None,
                 sha256: None,
+                enabled: true,
             }],
             os_bundle: None,
         }

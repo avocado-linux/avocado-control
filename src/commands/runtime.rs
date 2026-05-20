@@ -767,6 +767,7 @@ mod tests {
                 image_id: Some("img-id".to_string()),
                 image_type: None,
                 sha256: None,
+                enabled: true,
             }],
             os_bundle: None,
         }

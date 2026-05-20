@@ -560,6 +560,7 @@ mod tests {
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
                 image_type: None,
                 sha256: None,
+                enabled: true,
             }],
             os_bundle: None,
         }
@@ -742,6 +743,7 @@ mod tests {
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
                 image_type: None,
                 sha256,
+                enabled: true,
             }],
             os_bundle: None,
         }

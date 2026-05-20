@@ -53,9 +53,26 @@ pub struct ManifestExtension {
     /// SHA256 hash of the extension image for integrity verification
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
+    /// Build-time default activation state. Absent/true = auto-activated
+    /// at refresh; false = present-but-inactive (user must opt in via
+    /// `avocadoctl ext enable`). Skipped from JSON when true to keep
+    /// existing manifests serializing byte-identical.
+    #[serde(
+        default = "ManifestExtension::default_enabled",
+        skip_serializing_if = "ManifestExtension::is_default_enabled"
+    )]
+    pub enabled: bool,
 }
 
 impl ManifestExtension {
+    fn default_enabled() -> bool {
+        true
+    }
+
+    fn is_default_enabled(v: &bool) -> bool {
+        *v
+    }
+
     /// Returns true if this extension image is a KAB file.
     pub fn is_kab(&self) -> bool {
         self.image_type.as_deref() == Some("kab")
@@ -181,6 +198,7 @@ mod tests {
                 image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
                 image_type: None,
                 sha256: None,
+                enabled: true,
             }],
             os_bundle: None,
         }
@@ -308,6 +326,7 @@ mod tests {
             image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             image_type: None,
             sha256: None,
+            enabled: true,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
@@ -420,6 +439,7 @@ mod tests {
             image_id: None,
             image_type: None,
             sha256: None,
+            enabled: true,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
@@ -434,6 +454,7 @@ mod tests {
             image_id: None,
             image_type: None,
             sha256: None,
+            enabled: true,
         };
         assert!(!raw_ext.is_kab());
 
@@ -443,6 +464,7 @@ mod tests {
             image_id: None,
             image_type: Some("kab".to_string()),
             sha256: None,
+            enabled: true,
         };
         assert!(kab_ext.is_kab());
     }
@@ -455,6 +477,7 @@ mod tests {
             image_id: Some("a1b2c3d4-e5f6-5789-abcd-ef0123456789".to_string()),
             image_type: Some("kab".to_string()),
             sha256: None,
+            enabled: true,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
@@ -472,6 +495,7 @@ mod tests {
             image_id: None,
             image_type: Some("kab".to_string()),
             sha256: None,
+            enabled: true,
         };
         let base = Path::new("/var/lib/avocado");
         let path = ext.resolve_path(base);
