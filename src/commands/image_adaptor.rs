@@ -978,6 +978,7 @@ pub fn unmount_all_persistent_mounts() -> Result<(), SystemdError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_env::ENV_VAR_MUTEX;
 
     #[test]
     fn test_image_type_from_manifest() {
@@ -995,11 +996,21 @@ mod tests {
 
     #[test]
     fn test_extension_mount_point_test_mode() {
+        // Serialize against every other test that mutates AVOCADO_TEST_MODE.
+        // Without this, a parallel hitl test can observe AVOCADO_TEST_MODE
+        // unset mid-flight when this test's remove_var() races against it.
+        let _guard = ENV_VAR_MUTEX.lock().unwrap();
+        let original = std::env::var("AVOCADO_TEST_MODE").ok();
+
         std::env::set_var("AVOCADO_TEST_MODE", "1");
         let tmpdir = std::env::var("TMPDIR").unwrap_or_else(|_| "/tmp".to_string());
         let mp = extension_mount_point("test-ext");
         assert_eq!(mp, format!("{tmpdir}/avocado/extensions/test-ext"));
-        std::env::remove_var("AVOCADO_TEST_MODE");
+
+        match original {
+            Some(val) => std::env::set_var("AVOCADO_TEST_MODE", val),
+            None => std::env::remove_var("AVOCADO_TEST_MODE"),
+        }
     }
 
     #[test]

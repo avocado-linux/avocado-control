@@ -721,10 +721,7 @@ pub enum HitlError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    // Mutex to serialize tests that modify environment variables
-    static ENV_VAR_MUTEX: Mutex<()> = Mutex::new(());
+    use crate::commands::test_env::ENV_VAR_MUTEX;
 
     #[test]
     fn test_create_command() {
